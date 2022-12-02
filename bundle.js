@@ -24179,8 +24179,8 @@
    const ctx = canvas.getContext("2d");
 
    const gpu = new GPU();
-   function evalCode(view) {
-     const code = view.state.doc.toString();
+   function evalCode(code) {
+     //(x|y)%200
      const codeFn = Function(`
     let x = this.thread.x;
     let y = this.thread.y;
@@ -24201,19 +24201,28 @@
      }
      const output = new ImageData(outputBuffer, width, height);
      ctx.putImageData(output, 0, 0);
+     params.set("c", code);
+     window.history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
      return true;
+   }
+
+   const params = new URLSearchParams(location.search);
+   if (params.get("c")) {
+     evalCode(params.get("c"));
    }
 
    const editorDiv = document.getElementById("editor");
    new EditorView({
+     doc: params.get("c"),
      extensions: [
        keymap.of([{
          key: "Ctrl-Enter",
-         run: evalCode,
+         run: (view) => evalCode(view.state.doc.toString()),
        }]),
        keymap.of(defaultKeymap),
        javascript(),
        basicSetup,
+       EditorView.lineWrapping,
      ],
      parent: editorDiv,
    });
