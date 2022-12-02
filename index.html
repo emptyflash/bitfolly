@@ -1,0 +1,43 @@
+<!doctype html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/gpu.js@latest/dist/gpu-browser.min.js"></script>
+</head>
+<body>
+    <style>
+    html, body {
+        overflow: hidden;
+    }
+
+    body {
+        margin: 0px;
+        width: 100%;
+        height: 100%;
+    }
+
+    #editor {
+        width: 100%;
+        height: 100%;
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+    }
+
+    #canvas {
+        width: 100%;
+        height: 100%;
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        image-rendering: pixelated
+    }
+    </style>
+    <meta charset=utf8>
+    <canvas id="canvas"></canvas>
+    <div id="editor"></div>
+
+    <script src="bundle.js"></script>
+</body>
