@@ -7,21 +7,26 @@ import {javascript} from "@codemirror/lang-javascript"
 const canvas = document.getElementById("canvas");
 canvas.width = Math.floor(window.innerWidth);
 canvas.height = Math.floor(window.innerHeight);
+const width = canvas.width;
+const height = canvas.height;
 const ctx = canvas.getContext("2d");
 
 const gpu = new GPU();
 let kernel;
 function evalCode(code) {
-  //(x|y)%200
-  const codeFn = Function(`
+  const codeFn = Function("t", `
     let x = this.thread.x;
     let y = this.thread.y;
     return ${code};
   `);
-  const width = canvas.width;
-  const height = canvas.height;
-  const kernel = gpu.createKernel(codeFn).setOutput([width, height]);
-  const outputBufferRaw = kernel();
+  kernel = gpu.createKernel(codeFn).setOutput([width, height]);
+  params.set("c", code);
+  window.history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
+  return true;
+}
+
+function render(time) {
+  const outputBufferRaw = kernel(time);
   const outputBuffer = new Uint8ClampedArray(width*height*4);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width*4; x++) {
@@ -33,10 +38,9 @@ function evalCode(code) {
   }
   const output = new ImageData(outputBuffer, width, height);
   ctx.putImageData(output, 0, 0);
-  params.set("c", code);
-  window.history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
-  return true;
+  requestAnimationFrame(render)
 }
+requestAnimationFrame(render);
 
 const params = new URLSearchParams(location.search);
 if (params.get("c")) {
