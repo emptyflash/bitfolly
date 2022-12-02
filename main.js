@@ -58,3 +58,9 @@ const editor = new EditorView({
   ],
   parent: editorDiv,
 });
+
+function runButtonFn() {
+  evalCode(editor.state.doc.toString());
+}
+const runButton = document.getElementById("runButton");
+runButton.onclick = runButtonFn

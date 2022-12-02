@@ -24212,7 +24212,7 @@
    }
 
    const editorDiv = document.getElementById("editor");
-   new EditorView({
+   const editor = new EditorView({
      doc: params.get("c"),
      extensions: [
        keymap.of([{
@@ -24226,5 +24226,11 @@
      ],
      parent: editorDiv,
    });
+
+   function runButtonFn() {
+     evalCode(editor.state.doc.toString());
+   }
+   const runButton = document.getElementById("runButton");
+   runButton.onclick = runButtonFn;
 
 })();
