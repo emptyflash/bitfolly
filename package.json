@@ -20,12 +20,13 @@
   "homepage": "https://github.com/emptyflash/bitfolly#readme",
   "dependencies": {
     "@codemirror/lang-javascript": "^6.1.1",
+    "cm6-theme-nord": "^0.2.0",
     "codemirror": "^6.0.1"
   },
   "devDependencies": {
-    "rollup": "^3.5.1",
-    "@rollup/plugin-node-resolve": "^15.0.1",
     "@rollup/plugin-commonjs": "^23.0.3",
-    "@rollup/plugin-json": "^5.0.2"
+    "@rollup/plugin-json": "^5.0.2",
+    "@rollup/plugin-node-resolve": "^15.0.1",
+    "rollup": "^3.5.1"
   }
 }

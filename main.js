@@ -2,7 +2,7 @@ import {basicSetup} from "codemirror"
 import {EditorView, keymap} from "@codemirror/view"
 import {defaultKeymap} from "@codemirror/commands"
 import {javascript} from "@codemirror/lang-javascript"
-
+import { nord } from 'cm6-theme-nord'
 
 
 const canvas = document.getElementById("canvas");
@@ -46,6 +46,7 @@ const editor = new EditorView({
     javascript(),
     basicSetup,
     EditorView.lineWrapping,
+    nord,
   ],
   parent: editorDiv,
 });
