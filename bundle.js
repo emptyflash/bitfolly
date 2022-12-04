@@ -24418,7 +24418,7 @@
 
    const params = new URLSearchParams(location.search);
    if (params.get("c")) {
-     setTimeout(()=> evalCode(params.get("c")), 1);
+     setTimeout(()=> evalCode(params.get("c")), 10);
    }
 
    const editorDiv = document.getElementById("editor");
