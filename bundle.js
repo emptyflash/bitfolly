@@ -24417,13 +24417,15 @@
    }
 
    const params = new URLSearchParams(location.search);
+   let defaultCode = "(x&y^t/20)%100";
    if (params.get("c")) {
-     setTimeout(()=> evalCode(params.get("c")), 10);
+     defaultCode = params.get("c");
    }
+   setTimeout(()=> evalCode(defaultCode));
 
    const editorDiv = document.getElementById("editor");
    const editor = new EditorView({
-     doc: params.get("c"),
+     doc: defaultCode,
      extensions: [
        keymap.of([{
          key: "Ctrl-Enter",
