@@ -1,3 +1,5 @@
+
+(function(l, r) { if (!l || l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (self.location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.getElementsByTagName('head')[0].appendChild(r) })(self.document);
 (function () {
    'use strict';
 
@@ -21911,6 +21913,14 @@
        },
        enables: lintPlugin
    });
+   /**
+   Given a diagnostic source, this function returns an extension that
+   enables linting with that source. It will be called whenever the
+   editor is idle (after its content changed).
+   */
+   function linter(source, config = {}) {
+       return lintConfig.of({ source, config });
+   }
    function assignKeys(actions) {
        let assigned = [];
        if (actions)
@@ -32025,7 +32035,19 @@
      return /\w\s=\s/.test(code);
    }
 
-   function evalCode(code) {
+   let errors = [];
+   function errorLint(view) {
+     return errors.map(error => {
+       return {
+         from: 0,
+         to: view.state.doc.length,
+         severity: "error",
+         message: error.toString(),
+       }
+     });
+   }
+
+   function evalCode(code, view) {
      let newKernel;
      try {
        const codeFn = Function("t", "p", "w", "h", "a", "at", `
@@ -32052,12 +32074,18 @@
          .setGraphical(true);
        newKernel(previousTime, canvas, width, height, audioData, audioTime);
      } catch (err) {
+       errors = [err];
        console.error(err);
+       // trigger review of the error
+       view?.setState(view?.state);
        return true;
      }
      kernel = newKernel;
      params.set("c", code);
      window.history.pushState({}, '', `${location.pathname}?${params.toString()}`);
+     errors = [];
+     // trigger review to clear errors
+     view?.setState(view?.state);
      return true;
    }
 
@@ -32066,12 +32094,10 @@
    if (params.get("c")) {
      defaultCode = params.get("c");
    }
-   setTimeout(()=> evalCode(defaultCode));
    let vimExtension = [];
    if (params.get("v") !== null) {
      vimExtension = [vim()];
    }
-
 
    const editorDiv = document.getElementById("editor");
    const editor = new EditorView({
@@ -32079,7 +32105,7 @@
      extensions: [
        keymap.of([{
          key: "Ctrl-Enter",
-         run: (view) => evalCode(view.state.doc.toString()),
+         run: (view) => evalCode(view.state.doc.toString(), view),
        },{
          key: "Ctrl-e",
          run: (view) => {
@@ -32093,20 +32119,22 @@
        basicSetup,
        EditorView.lineWrapping,
        nord,
+       linter(errorLint),
      ].concat(vimExtension),
      parent: editorDiv,
    });
 
+   setTimeout(()=> evalCode(defaultCode, editor), 10);
+
    function runButtonFn() {
-     evalCode(editor.state.doc.toString());
+     evalCode(editor.state.doc.toString(), editor);
    }
    const runButton = document.getElementById("runButton");
    runButton.onclick = runButtonFn;
 
    Vim.defineEx('write', 'w', function() {
-     evalCode(editor.state.doc.toString());
+     evalCode(editor.state.doc.toString(), editor);
    });
-   Vim.map("Ctrl-E", "<Esc>", "insert");
 
    function render(time) {
      previousTime = time;

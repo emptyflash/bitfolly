@@ -4,6 +4,7 @@ import {defaultKeymap, indentWithTab} from "@codemirror/commands"
 import {javascript} from "@codemirror/lang-javascript"
 import { nord } from 'cm6-theme-nord'
 import { vim, Vim, getCM } from "@replit/codemirror-vim"
+import { linter } from "@codemirror/lint";
 
 
 const canvas = document.getElementById("canvas");
@@ -42,7 +43,19 @@ function isStatement(code) {
   return /\w\s=\s/.test(code);
 }
 
-function evalCode(code) {
+let errors = [];
+function errorLint(view) {
+  return errors.map(error => {
+    return {
+      from: 0,
+      to: view.state.doc.length,
+      severity: "error",
+      message: error.toString(),
+    }
+  });
+}
+
+function evalCode(code, view) {
   let newKernel;
   try {
     const codeFn = Function("t", "p", "w", "h", "a", "at", `
@@ -69,12 +82,18 @@ function evalCode(code) {
       .setGraphical(true);
     newKernel(previousTime, canvas, width, height, audioData, audioTime);
   } catch (err) {
+    errors = [err];
     console.error(err);
+    // trigger review of the error
+    view?.setState(view?.state);
     return true;
   }
   kernel = newKernel;
   params.set("c", code);
   window.history.pushState({}, '', `${location.pathname}?${params.toString()}`);
+  errors = [];
+  // trigger review to clear errors
+  view?.setState(view?.state);
   return true;
 }
 
@@ -83,12 +102,10 @@ let defaultCode = "(x&y^t/20)%100"
 if (params.get("c")) {
   defaultCode = params.get("c");
 }
-setTimeout(()=> evalCode(defaultCode, 10));
 let vimExtension = [];
 if (params.get("v") !== null) {
   vimExtension = [vim()];
 }
-
 
 const editorDiv = document.getElementById("editor")
 const editor = new EditorView({
@@ -96,7 +113,7 @@ const editor = new EditorView({
   extensions: [
     keymap.of([{
       key: "Ctrl-Enter",
-      run: (view) => evalCode(view.state.doc.toString()),
+      run: (view) => evalCode(view.state.doc.toString(), view),
     },{
       key: "Ctrl-e",
       run: (view) => {
@@ -110,20 +127,22 @@ const editor = new EditorView({
     basicSetup,
     EditorView.lineWrapping,
     nord,
+    linter(errorLint),
   ].concat(vimExtension),
   parent: editorDiv,
 });
 
+setTimeout(()=> evalCode(defaultCode, editor), 10);
+
 function runButtonFn() {
-  evalCode(editor.state.doc.toString());
+  evalCode(editor.state.doc.toString(), editor);
 }
 const runButton = document.getElementById("runButton");
 runButton.onclick = runButtonFn
 
 Vim.defineEx('write', 'w', function() {
-  evalCode(editor.state.doc.toString());
+  evalCode(editor.state.doc.toString(), editor);
 });
-Vim.map("Ctrl-E", "<Esc>", "insert");
 
 function render(time) {
   previousTime = time;
