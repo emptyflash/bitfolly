@@ -24409,6 +24409,10 @@
    const audioData = new Uint8Array(samples);
    let audioTime = 0;
 
+   function isStatement(code) {
+     return /\w\s=\s/.test(code);
+   }
+
    function evalCode(code) {
      let newKernel;
      try {
@@ -24417,7 +24421,7 @@
       let y = this.thread.y;
       let c = [-1,-1,-1,-1];
       let o = -1;
-      ${code.indexOf("o =") >= 0 ? code : "o = " + code}
+      ${isStatement(code) ? code : "o = " + code}
       if (c[0] !== -1 || c[1] !== -1 || c[2] !== -1 || c[3] !== -1) {
         this.color(
           c[0]==-1?0:c[0]/255,
@@ -24480,7 +24484,7 @@
      previousTime = time;
      if (kernel) {
        analyser.getByteFrequencyData(audioData );
-       audioTime = audioData.reduce((a,b) => a+b, 0);
+       audioTime += audioData.reduce((a,b) => a+b, 0)/1000;
        try {
          kernel(time, canvas, width, height, audioData, audioTime);
        } catch (err) {
