@@ -3,6 +3,7 @@ import {EditorView, keymap} from "@codemirror/view"
 import {defaultKeymap, indentWithTab} from "@codemirror/commands"
 import {javascript} from "@codemirror/lang-javascript"
 import { nord } from 'cm6-theme-nord'
+import { vim, Vim, getCM } from "@replit/codemirror-vim"
 
 
 const canvas = document.getElementById("canvas");
@@ -83,6 +84,11 @@ if (params.get("c")) {
   defaultCode = params.get("c");
 }
 setTimeout(()=> evalCode(defaultCode, 10));
+let vimExtension = [];
+if (params.get("v") !== null) {
+  vimExtension = [vim()];
+}
+
 
 const editorDiv = document.getElementById("editor")
 const editor = new EditorView({
@@ -91,6 +97,12 @@ const editor = new EditorView({
     keymap.of([{
       key: "Ctrl-Enter",
       run: (view) => evalCode(view.state.doc.toString()),
+    },{
+      key: "Ctrl-e",
+      run: (view) => {
+        let cm = getCM(view)
+        Vim.exitInsertMode(cm)
+      }
     }]),
     keymap.of(defaultKeymap),
     keymap.of([indentWithTab]),
@@ -98,7 +110,7 @@ const editor = new EditorView({
     basicSetup,
     EditorView.lineWrapping,
     nord,
-  ],
+  ].concat(vimExtension),
   parent: editorDiv,
 });
 
@@ -107,6 +119,11 @@ function runButtonFn() {
 }
 const runButton = document.getElementById("runButton");
 runButton.onclick = runButtonFn
+
+Vim.defineEx('write', 'w', function() {
+  evalCode(editor.state.doc.toString());
+});
+Vim.map("Ctrl-E", "<Esc>", "insert");
 
 function render(time) {
   previousTime = time;

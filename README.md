@@ -41,3 +41,5 @@ c[0] = Math.tan(x^y^at/3) + 0.96 * p0[0]
 c[1] = Math.tan(x^y^at/5) + 0.96 * p0[1]
 c[2] = Math.tan(x^y^at/7) + 0.96 * p0[2]
 ```
+
+Vim mode can also be enabled by adding the `v=1` query param to the URL
