@@ -117,8 +117,9 @@ const editor = new EditorView({
     },{
       key: "Ctrl-e",
       run: (view) => {
-        let cm = getCM(view)
-        Vim.exitInsertMode(cm)
+        let cm = getCM(view);
+        Vim.exitInsertMode(cm);
+        return true;
       }
     }]),
     keymap.of(defaultKeymap),
