@@ -21,7 +21,7 @@ Here's an example of a bitfolly program:
 ```
 To run a program in the editor, press "Ctrl-Enter" or click the ▶️ icon in the top right corner.
 
-Most javascript expression can be used, for example, the javascript ternary operator:
+Most javascript expressions can be used, for example, the javascript ternary operator:
 ```javascript
 (t%1000>500?x|y:x^y)%255
 ```
