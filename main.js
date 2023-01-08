@@ -147,12 +147,16 @@ export const basicSetup = [
 ]
 
 const editorDiv = document.getElementById("editor")
+const runCode = (view) => evalCode(view.state.doc.toString(), view)
 const editor = new EditorView({
   doc: defaultCode,
   extensions: [
     keymap.of([{
       key: "Ctrl-Enter",
-      run: (view) => evalCode(view.state.doc.toString(), view),
+      run: runCode,
+    },{
+      key: "Cmd-Enter",
+      run: runCode
     },{
       key: "Ctrl-e",
       run: (view) => {
