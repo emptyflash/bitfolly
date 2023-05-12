@@ -43,3 +43,25 @@ c[2] = Math.tan(x^y^at/7) + 0.96 * p0[2]
 ```
 
 Vim mode can also be enabled by adding the `v=1` query param to the URL
+
+## Using in Hydra
+
+Import the global bundle and create a bitfolly object. To get the audio
+reactive variables you need to pass it a function that returns Hydra's
+`a.fft` array. Then just call the `update` function and initialize a
+Hydra source with bitfolly's canvas.
+
+``` javascript
+await import("https://emptyfla.sh/bitfolly/bundle-global.js")
+window.bitfolly = window.bitfolly || new Bitfolly(() => a.fft)
+bitfolly.update("(x&y^t/30)%255")
+s0.init({
+    src: bitfolly.canvas
+})
+src(o0)
+    .diff(osc(1, 1, 1)
+        .modulate(src(s0), 10), .1)
+    .modulateScale(src(s0), [.01, -.01].fast(.3).smooth())
+    .modulateRotate(src(s0), [.02,-.02].fast(.7).smooth())
+    .out()
+```
