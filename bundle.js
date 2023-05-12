@@ -1,4 +1,4 @@
-(function (exports) {
+var bitfolly = (function (exports) {
    'use strict';
 
    /**
@@ -1514,11 +1514,10 @@
        /**
        Create a selection range.
        */
-       static range(anchor, head, goalColumn, bidiLevel) {
-           let flags = ((goalColumn !== null && goalColumn !== void 0 ? goalColumn : 33554431 /* RangeFlag.NoGoalColumn */) << 5 /* RangeFlag.GoalColumnOffset */) |
-               (bidiLevel == null ? 3 : Math.min(2, bidiLevel));
-           return head < anchor ? SelectionRange.create(head, anchor, 16 /* RangeFlag.Inverted */ | 8 /* RangeFlag.AssocAfter */ | flags)
-               : SelectionRange.create(anchor, head, (head > anchor ? 4 /* RangeFlag.AssocBefore */ : 0) | flags);
+       static range(anchor, head, goalColumn) {
+           let goal = (goalColumn !== null && goalColumn !== void 0 ? goalColumn : 33554431 /* RangeFlag.NoGoalColumn */) << 5 /* RangeFlag.GoalColumnOffset */;
+           return head < anchor ? SelectionRange.create(head, anchor, 16 /* RangeFlag.Inverted */ | goal | 8 /* RangeFlag.AssocAfter */)
+               : SelectionRange.create(anchor, head, goal | (head > anchor ? 4 /* RangeFlag.AssocBefore */ : 0));
        }
        /**
        @internal
@@ -4125,6 +4124,7 @@
    };
 
    var chrome$1 = typeof navigator != "undefined" && /Chrome\/(\d+)/.exec(navigator.userAgent);
+   typeof navigator != "undefined" && /Gecko\/\d+/.test(navigator.userAgent);
    var mac = typeof navigator != "undefined" && /Mac/.test(navigator.platform);
    var ie$1 = typeof navigator != "undefined" && /MSIE \d|Trident\/(?:[7-9]|\d{2,})\..*rv:(\d+)/.exec(navigator.userAgent);
    var brokenModifierNames = mac || chrome$1 && +chrome$1[1] < 57;
@@ -4346,26 +4346,6 @@
                break;
            }
        }
-   }
-   function scrollableParent(dom) {
-       let doc = dom.ownerDocument;
-       for (let cur = dom.parentNode; cur;) {
-           if (cur == doc.body) {
-               break;
-           }
-           else if (cur.nodeType == 1) {
-               if (cur.scrollHeight > cur.clientHeight || cur.scrollWidth > cur.clientWidth)
-                   return cur;
-               cur = cur.assignedSlot || cur.parentNode;
-           }
-           else if (cur.nodeType == 11) {
-               cur = cur.host;
-           }
-           else {
-               break;
-           }
-       }
-       return null;
    }
    class DOMSelectionState {
        constructor() {
@@ -5503,9 +5483,7 @@
            super(-200000000 /* Side.Line */, -200000000 /* Side.Line */, null, spec);
        }
        eq(other) {
-           return other instanceof LineDecoration &&
-               this.spec.class == other.spec.class &&
-               attrsEq(this.spec.attributes, other.spec.attributes);
+           return other instanceof LineDecoration && attrsEq(this.spec.attributes, other.spec.attributes);
        }
        range(from, to = from) {
            if (to != from)
@@ -5780,7 +5758,6 @@
            this.curLine = null;
            this.breakAtStart = 0;
            this.pendingBuffer = 0 /* Buf.No */;
-           this.bufferMarks = [];
            // Set to false directly after a widget that covers the position after it
            this.atCursorPos = true;
            this.openStart = -1;
@@ -5803,20 +5780,20 @@
            }
            return this.curLine;
        }
-       flushBuffer(active = this.bufferMarks) {
+       flushBuffer(active) {
            if (this.pendingBuffer) {
                this.curLine.append(wrapMarks(new WidgetBufferView(-1), active), active.length);
                this.pendingBuffer = 0 /* Buf.No */;
            }
        }
        addBlockWidget(view) {
-           this.flushBuffer();
+           this.flushBuffer([]);
            this.curLine = null;
            this.content.push(view);
        }
        finish(openEnd) {
-           if (this.pendingBuffer && openEnd <= this.bufferMarks.length)
-               this.flushBuffer();
+           if (!openEnd)
+               this.flushBuffer([]);
            else
                this.pendingBuffer = 0 /* Buf.No */;
            if (!this.posCovered())
@@ -5836,9 +5813,8 @@
                            this.content[this.content.length - 1].breakAfter = 1;
                        else
                            this.breakAtStart = 1;
-                       this.flushBuffer();
+                       this.flushBuffer([]);
                        this.curLine = null;
-                       this.atCursorPos = true;
                        length--;
                        continue;
                    }
@@ -5880,7 +5856,7 @@
                else {
                    let view = WidgetView.create(deco.widget || new NullWidget("span"), len, len ? 0 : deco.startSide);
                    let cursorBefore = this.atCursorPos && !view.isEditable && openStart <= active.length && (from < to || deco.startSide > 0);
-                   let cursorAfter = !view.isEditable && (from < to || openStart > active.length || deco.startSide <= 0);
+                   let cursorAfter = !view.isEditable && (from < to || deco.startSide <= 0);
                    let line = this.getLine();
                    if (this.pendingBuffer == 2 /* Buf.IfCursor */ && !cursorBefore)
                        this.pendingBuffer = 0 /* Buf.No */;
@@ -5891,9 +5867,7 @@
                    }
                    line.append(wrapMarks(view, active), openStart);
                    this.atCursorPos = cursorAfter;
-                   this.pendingBuffer = !cursorAfter ? 0 /* Buf.No */ : from < to || openStart > active.length ? 1 /* Buf.Yes */ : 2 /* Buf.IfCursor */;
-                   if (this.pendingBuffer)
-                       this.bufferMarks = active.slice();
+                   this.pendingBuffer = !cursorAfter ? 0 /* Buf.No */ : from < to ? 1 /* Buf.Yes */ : 2 /* Buf.IfCursor */;
                }
            }
            else if (this.doc.lineAt(this.pos).from == this.pos) { // Line decoration
@@ -7567,30 +7541,22 @@
            this.compositionFirstChange = null;
            this.compositionEndedAt = 0;
            this.mouseSelection = null;
-           let handleEvent = (handler, event) => {
-               if (this.ignoreDuringComposition(event))
-                   return;
-               if (event.type == "keydown" && this.keydown(view, event))
-                   return;
-               if (this.mustFlushObserver(event))
-                   view.observer.forceFlush();
-               if (this.runCustomHandlers(event.type, view, event))
-                   event.preventDefault();
-               else
-                   handler(view, event);
-           };
            for (let type in handlers) {
                let handler = handlers[type];
-               view.contentDOM.addEventListener(type, event => {
-                   if (eventBelongsToEditor(view, event))
-                       handleEvent(handler, event);
+               view.contentDOM.addEventListener(type, (event) => {
+                   if (!eventBelongsToEditor(view, event) || this.ignoreDuringComposition(event))
+                       return;
+                   if (type == "keydown" && this.keydown(view, event))
+                       return;
+                   if (this.mustFlushObserver(event))
+                       view.observer.forceFlush();
+                   if (this.runCustomHandlers(type, view, event))
+                       event.preventDefault();
+                   else
+                       handler(view, event);
                }, handlerOptions[type]);
                this.registeredEvents.push(type);
            }
-           view.scrollDOM.addEventListener("mousedown", (event) => {
-               if (event.target == view.scrollDOM)
-                   handleEvent(handlers.mousedown, event);
-           });
            if (browser.chrome && browser.chrome_version == 102) { // FIXME remove at some point
                // On Chrome 102, viewport updates somehow stop wheel-based
                // scrolling. Turning off pointer events during the scroll seems
@@ -7747,18 +7713,12 @@
    const EmacsyPendingKeys = "dthko";
    // Key codes for modifier keys
    const modifierCodes = [16, 17, 18, 20, 91, 92, 224, 225];
-   function dragScrollSpeed(dist) {
-       return dist * 0.7 + 8;
-   }
    class MouseSelection {
        constructor(view, startEvent, style, mustSelect) {
            this.view = view;
            this.style = style;
            this.mustSelect = mustSelect;
-           this.scrollSpeed = { x: 0, y: 0 };
-           this.scrolling = -1;
            this.lastEvent = startEvent;
-           this.scrollParent = scrollableParent(view.contentDOM);
            let doc = view.contentDOM.ownerDocument;
            doc.addEventListener("mousemove", this.move = this.move.bind(this));
            doc.addEventListener("mouseup", this.up = this.up.bind(this));
@@ -7774,24 +7734,11 @@
            }
        }
        move(event) {
-           var _a;
            if (event.buttons == 0)
                return this.destroy();
            if (this.dragging !== false)
                return;
            this.select(this.lastEvent = event);
-           let sx = 0, sy = 0;
-           let rect = ((_a = this.scrollParent) === null || _a === void 0 ? void 0 : _a.getBoundingClientRect())
-               || { left: 0, top: 0, right: this.view.win.innerWidth, bottom: this.view.win.innerHeight };
-           if (event.clientX <= rect.left)
-               sx = -dragScrollSpeed(rect.left - event.clientX);
-           else if (event.clientX >= rect.right)
-               sx = dragScrollSpeed(event.clientX - rect.right);
-           if (event.clientY <= rect.top)
-               sy = -dragScrollSpeed(rect.top - event.clientY);
-           else if (event.clientY >= rect.bottom)
-               sy = dragScrollSpeed(event.clientY - rect.bottom);
-           this.setScrollSpeed(sx, sy);
        }
        up(event) {
            if (this.dragging == null)
@@ -7801,33 +7748,10 @@
            this.destroy();
        }
        destroy() {
-           this.setScrollSpeed(0, 0);
            let doc = this.view.contentDOM.ownerDocument;
            doc.removeEventListener("mousemove", this.move);
            doc.removeEventListener("mouseup", this.up);
            this.view.inputState.mouseSelection = null;
-       }
-       setScrollSpeed(sx, sy) {
-           this.scrollSpeed = { x: sx, y: sy };
-           if (sx || sy) {
-               if (this.scrolling < 0)
-                   this.scrolling = setInterval(() => this.scroll(), 50);
-           }
-           else if (this.scrolling > -1) {
-               clearInterval(this.scrolling);
-               this.scrolling = -1;
-           }
-       }
-       scroll() {
-           if (this.scrollParent) {
-               this.scrollParent.scrollLeft += this.scrollSpeed.x;
-               this.scrollParent.scrollTop += this.scrollSpeed.y;
-           }
-           else {
-               this.view.win.scrollBy(this.scrollSpeed.x, this.scrollSpeed.y);
-           }
-           if (this.dragging === false)
-               this.select(this.lastEvent);
        }
        select(event) {
            let selection = this.style.get(event, this.extend, this.multiple);
@@ -7835,7 +7759,8 @@
                selection.main.assoc != this.view.state.selection.main.assoc)
                this.view.dispatch({
                    selection,
-                   userEvent: "select.pointer"
+                   userEvent: "select.pointer",
+                   scrollIntoView: true
                });
            this.mustSelect = false;
        }
@@ -8026,15 +7951,23 @@
    function basicMouseSelection(view, event) {
        let start = queryPos(view, event), type = getClickType(event);
        let startSel = view.state.selection;
+       let last = start, lastEvent = event;
        return {
            update(update) {
                if (update.docChanged) {
                    start.pos = update.changes.mapPos(start.pos);
                    startSel = startSel.map(update.changes);
+                   lastEvent = null;
                }
            },
            get(event, extend, multiple) {
-               let cur = queryPos(view, event);
+               let cur;
+               if (lastEvent && event.clientX == lastEvent.clientX && event.clientY == lastEvent.clientY)
+                   cur = last;
+               else {
+                   cur = last = queryPos(view, event);
+                   lastEvent = event;
+               }
                let range = rangeForClick(view, cur.pos, cur.bias, type);
                if (start.pos != cur.pos && !extend) {
                    let startRange = rangeForClick(view, start.pos, start.bias, type);
@@ -9480,7 +9413,7 @@
        });
    }
    const baseTheme$1$3 = /*@__PURE__*/buildTheme("." + baseThemeID, {
-       "&": {
+       "&.cm-editor": {
            position: "relative !important",
            boxSizing: "border-box",
            "&.cm-focused": {
@@ -9511,6 +9444,7 @@
            margin: 0,
            flexGrow: 2,
            flexShrink: 0,
+           minHeight: "100%",
            display: "block",
            whiteSpace: "pre",
            wordWrap: "normal",
@@ -9657,21 +9591,6 @@
            display: "inline-block",
            verticalAlign: "top",
        },
-       ".cm-highlightSpace:before": {
-           content: "attr(data-display)",
-           position: "absolute",
-           pointerEvents: "none",
-           color: "#888"
-       },
-       ".cm-highlightTab": {
-           backgroundImage: `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20"><path stroke="%23888" stroke-width="1" fill="none" d="M1 10H196L190 5M190 15L196 10M197 4L197 16"/></svg>')`,
-           backgroundSize: "auto 100%",
-           backgroundPosition: "right 90%",
-           backgroundRepeat: "no-repeat"
-       },
-       ".cm-trailingSpace": {
-           backgroundColor: "#ff332255"
-       },
        ".cm-button": {
            verticalAlign: "middle",
            color: "inherit",
@@ -9764,7 +9683,7 @@
                    insert: Text.of(domChange.text.slice(diff.from, diff.toB).split(LineBreakPlaceholder)) };
            }
        }
-       else if (newSel && (!view.hasFocus && view.state.facet(editable) || newSel.main.eq(sel))) {
+       else if (newSel && (!view.hasFocus || !view.state.facet(editable) || newSel.main.eq(sel))) {
            newSel = null;
        }
        if (!change && !newSel)
@@ -9974,8 +9893,7 @@
            this.lastChange = 0;
            this.scrollTargets = [];
            this.intersection = null;
-           this.resizeScroll = null;
-           this.resizeContent = null;
+           this.resize = null;
            this.intersecting = false;
            this.gapIntersection = null;
            this.gaps = [];
@@ -10013,14 +9931,12 @@
            this.onPrint = this.onPrint.bind(this);
            this.onScroll = this.onScroll.bind(this);
            if (typeof ResizeObserver == "function") {
-               this.resizeScroll = new ResizeObserver(() => {
+               this.resize = new ResizeObserver(() => {
                    var _a;
                    if (((_a = this.view.docView) === null || _a === void 0 ? void 0 : _a.lastUpdate) < Date.now() - 75)
                        this.onResize();
                });
-               this.resizeScroll.observe(view.scrollDOM);
-               this.resizeContent = new ResizeObserver(() => this.view.requestMeasure());
-               this.resizeContent.observe(view.contentDOM);
+               this.resize.observe(view.scrollDOM);
            }
            this.addWindowListeners(this.win = view.win);
            this.start();
@@ -10339,12 +10255,11 @@
            win.document.removeEventListener("selectionchange", this.onSelectionChange);
        }
        destroy() {
-           var _a, _b, _c, _d;
+           var _a, _b, _c;
            this.stop();
            (_a = this.intersection) === null || _a === void 0 ? void 0 : _a.disconnect();
            (_b = this.gapIntersection) === null || _b === void 0 ? void 0 : _b.disconnect();
-           (_c = this.resizeScroll) === null || _c === void 0 ? void 0 : _c.disconnect();
-           (_d = this.resizeContent) === null || _d === void 0 ? void 0 : _d.disconnect();
+           (_c = this.resize) === null || _c === void 0 ? void 0 : _c.disconnect();
            for (let dom of this.scrollTargets)
                dom.removeEventListener("scroll", this.onScroll);
            this.removeWindowListeners(this.win);
@@ -10443,7 +10358,7 @@
            this.scrollDOM.className = "cm-scroller";
            this.scrollDOM.appendChild(this.contentDOM);
            this.announceDOM = document.createElement("div");
-           this.announceDOM.style.cssText = "position: fixed; top: -10000px";
+           this.announceDOM.style.cssText = "position: absolute; top: -10000px";
            this.announceDOM.setAttribute("aria-live", "polite");
            this.dom = document.createElement("div");
            this.dom.appendChild(this.announceDOM);
@@ -10828,8 +10743,6 @@
            if (this.measureScheduled < 0)
                this.measureScheduled = this.win.requestAnimationFrame(() => this.measure());
            if (request) {
-               if (this.measureRequests.indexOf(request) > -1)
-                   return;
                if (request.key != null)
                    for (let i = 0; i < this.measureRequests.length; i++) {
                        if (this.measureRequests[i].key === request.key) {
@@ -11513,8 +11426,6 @@
            if (runFor(scopeObj[prefix + modifiers(name, event, !isChar)]))
                return true;
            if (isChar && (event.altKey || event.metaKey || event.ctrlKey) &&
-               // Ctrl-Alt may be used for AltGr on Windows
-               !(browser.windows && event.ctrlKey && event.altKey) &&
                (baseName = base[event.keyCode]) && baseName != name) {
                if (runFor(scopeObj[prefix + modifiers(baseName, event, true)]))
                    return true;
@@ -11538,8 +11449,7 @@
    */
    class RectangleMarker {
        /**
-       Create a marker with the given class and dimensions. If `width`
-       is null, the DOM element will get no width style.
+       Create a marker with the given class and dimensions.
        */
        constructor(className, left, top, width, height) {
            this.className = className;
@@ -11563,136 +11473,13 @@
        adjust(elt) {
            elt.style.left = this.left + "px";
            elt.style.top = this.top + "px";
-           if (this.width != null)
+           if (this.width >= 0)
                elt.style.width = this.width + "px";
            elt.style.height = this.height + "px";
        }
        eq(p) {
            return this.left == p.left && this.top == p.top && this.width == p.width && this.height == p.height &&
                this.className == p.className;
-       }
-       /**
-       Create a set of rectangles for the given selection range,
-       assigning them theclass`className`. Will create a single
-       rectangle for empty ranges, and a set of selection-style
-       rectangles covering the range's content (in a bidi-aware
-       way) for non-empty ones.
-       */
-       static forRange(view, className, range) {
-           if (range.empty) {
-               let pos = view.coordsAtPos(range.head, range.assoc || 1);
-               if (!pos)
-                   return [];
-               let base = getBase$1(view);
-               return [new RectangleMarker(className, pos.left - base.left, pos.top - base.top, null, pos.bottom - pos.top)];
-           }
-           else {
-               return rectanglesForRange(view, className, range);
-           }
-       }
-   }
-   function getBase$1(view) {
-       let rect = view.scrollDOM.getBoundingClientRect();
-       let left = view.textDirection == Direction.LTR ? rect.left : rect.right - view.scrollDOM.clientWidth;
-       return { left: left - view.scrollDOM.scrollLeft, top: rect.top - view.scrollDOM.scrollTop };
-   }
-   function wrappedLine(view, pos, inside) {
-       let range = EditorSelection.cursor(pos);
-       return { from: Math.max(inside.from, view.moveToLineBoundary(range, false, true).from),
-           to: Math.min(inside.to, view.moveToLineBoundary(range, true, true).from),
-           type: BlockType.Text };
-   }
-   function blockAt(view, pos) {
-       let line = view.lineBlockAt(pos);
-       if (Array.isArray(line.type))
-           for (let l of line.type) {
-               if (l.to > pos || l.to == pos && (l.to == line.to || l.type == BlockType.Text))
-                   return l;
-           }
-       return line;
-   }
-   function rectanglesForRange(view, className, range) {
-       if (range.to <= view.viewport.from || range.from >= view.viewport.to)
-           return [];
-       let from = Math.max(range.from, view.viewport.from), to = Math.min(range.to, view.viewport.to);
-       let ltr = view.textDirection == Direction.LTR;
-       let content = view.contentDOM, contentRect = content.getBoundingClientRect(), base = getBase$1(view);
-       let lineStyle = window.getComputedStyle(content.firstChild);
-       let leftSide = contentRect.left + parseInt(lineStyle.paddingLeft) + Math.min(0, parseInt(lineStyle.textIndent));
-       let rightSide = contentRect.right - parseInt(lineStyle.paddingRight);
-       let startBlock = blockAt(view, from), endBlock = blockAt(view, to);
-       let visualStart = startBlock.type == BlockType.Text ? startBlock : null;
-       let visualEnd = endBlock.type == BlockType.Text ? endBlock : null;
-       if (view.lineWrapping) {
-           if (visualStart)
-               visualStart = wrappedLine(view, from, visualStart);
-           if (visualEnd)
-               visualEnd = wrappedLine(view, to, visualEnd);
-       }
-       if (visualStart && visualEnd && visualStart.from == visualEnd.from) {
-           return pieces(drawForLine(range.from, range.to, visualStart));
-       }
-       else {
-           let top = visualStart ? drawForLine(range.from, null, visualStart) : drawForWidget(startBlock, false);
-           let bottom = visualEnd ? drawForLine(null, range.to, visualEnd) : drawForWidget(endBlock, true);
-           let between = [];
-           if ((visualStart || startBlock).to < (visualEnd || endBlock).from - 1)
-               between.push(piece(leftSide, top.bottom, rightSide, bottom.top));
-           else if (top.bottom < bottom.top && view.elementAtHeight((top.bottom + bottom.top) / 2).type == BlockType.Text)
-               top.bottom = bottom.top = (top.bottom + bottom.top) / 2;
-           return pieces(top).concat(between).concat(pieces(bottom));
-       }
-       function piece(left, top, right, bottom) {
-           return new RectangleMarker(className, left - base.left, top - base.top - 0.01 /* C.Epsilon */, right - left, bottom - top + 0.01 /* C.Epsilon */);
-       }
-       function pieces({ top, bottom, horizontal }) {
-           let pieces = [];
-           for (let i = 0; i < horizontal.length; i += 2)
-               pieces.push(piece(horizontal[i], top, horizontal[i + 1], bottom));
-           return pieces;
-       }
-       // Gets passed from/to in line-local positions
-       function drawForLine(from, to, line) {
-           let top = 1e9, bottom = -1e9, horizontal = [];
-           function addSpan(from, fromOpen, to, toOpen, dir) {
-               // Passing 2/-2 is a kludge to force the view to return
-               // coordinates on the proper side of block widgets, since
-               // normalizing the side there, though appropriate for most
-               // coordsAtPos queries, would break selection drawing.
-               let fromCoords = view.coordsAtPos(from, (from == line.to ? -2 : 2));
-               let toCoords = view.coordsAtPos(to, (to == line.from ? 2 : -2));
-               top = Math.min(fromCoords.top, toCoords.top, top);
-               bottom = Math.max(fromCoords.bottom, toCoords.bottom, bottom);
-               if (dir == Direction.LTR)
-                   horizontal.push(ltr && fromOpen ? leftSide : fromCoords.left, ltr && toOpen ? rightSide : toCoords.right);
-               else
-                   horizontal.push(!ltr && toOpen ? leftSide : toCoords.left, !ltr && fromOpen ? rightSide : fromCoords.right);
-           }
-           let start = from !== null && from !== void 0 ? from : line.from, end = to !== null && to !== void 0 ? to : line.to;
-           // Split the range by visible range and document line
-           for (let r of view.visibleRanges)
-               if (r.to > start && r.from < end) {
-                   for (let pos = Math.max(r.from, start), endPos = Math.min(r.to, end);;) {
-                       let docLine = view.state.doc.lineAt(pos);
-                       for (let span of view.bidiSpans(docLine)) {
-                           let spanFrom = span.from + docLine.from, spanTo = span.to + docLine.from;
-                           if (spanFrom >= endPos)
-                               break;
-                           if (spanTo > pos)
-                               addSpan(Math.max(spanFrom, pos), from == null && spanFrom <= start, Math.min(spanTo, endPos), to == null && spanTo >= end, span.dir);
-                       }
-                       pos = docLine.to + 1;
-                       if (pos >= endPos)
-                           break;
-                   }
-               }
-           if (horizontal.length == 0)
-               addSpan(start, from == null, end, to == null, view.textDirection);
-           return { top, bottom, horizontal };
-       }
-       function drawForWidget(block, top) {
-           let y = contentRect.top + (top ? block.top : block.bottom);
-           return { top: y, bottom: y, horizontal: [] };
        }
    }
    function sameMarker(a, b) {
@@ -11753,8 +11540,6 @@
            }
        }
        destroy() {
-           if (this.layer.destroy)
-               this.layer.destroy(this.dom, this.view);
            this.dom.remove();
        }
    }
@@ -11809,7 +11594,7 @@
        ];
    }
    function configChanged(update) {
-       return update.startState.facet(selectionConfig) != update.state.facet(selectionConfig);
+       return update.startState.facet(selectionConfig) != update.startState.facet(selectionConfig);
    }
    const cursorLayer = /*@__PURE__*/layer({
        above: true,
@@ -11819,16 +11604,15 @@
            for (let r of state.selection.ranges) {
                let prim = r == state.selection.main;
                if (r.empty ? !prim || CanHidePrimary : conf.drawRangeCursor) {
-                   let className = prim ? "cm-cursor cm-cursor-primary" : "cm-cursor cm-cursor-secondary";
-                   let cursor = r.empty ? r : EditorSelection.cursor(r.head, r.head > r.anchor ? -1 : 1);
-                   for (let piece of RectangleMarker.forRange(view, className, cursor))
+                   let piece = measureCursor$1(view, r, prim);
+                   if (piece)
                        cursors.push(piece);
                }
            }
            return cursors;
        },
        update(update, dom) {
-           if (update.transactions.some(tr => tr.selection))
+           if (update.transactions.some(tr => tr.scrollIntoView))
                dom.style.animationName = dom.style.animationName == "cm-blink" ? "cm-blink2" : "cm-blink";
            let confChange = configChanged(update);
            if (confChange)
@@ -11846,8 +11630,7 @@
    const selectionLayer = /*@__PURE__*/layer({
        above: false,
        markers(view) {
-           return view.state.selection.ranges.map(r => r.empty ? [] : RectangleMarker.forRange(view, "cm-selectionBackground", r))
-               .reduce((a, b) => a.concat(b));
+           return view.state.selection.ranges.map(r => r.empty ? [] : measureRange(view, r)).reduce((a, b) => a.concat(b));
        },
        update(update, dom) {
            return update.docChanged || update.selectionSet || update.viewportChanged || configChanged(update);
@@ -11863,6 +11646,117 @@
    if (CanHidePrimary)
        themeSpec$1[".cm-line"].caretColor = "transparent !important";
    const hideNativeSelection$1 = /*@__PURE__*/Prec.highest(/*@__PURE__*/EditorView.theme(themeSpec$1));
+   function getBase$1(view) {
+       let rect = view.scrollDOM.getBoundingClientRect();
+       let left = view.textDirection == Direction.LTR ? rect.left : rect.right - view.scrollDOM.clientWidth;
+       return { left: left - view.scrollDOM.scrollLeft, top: rect.top - view.scrollDOM.scrollTop };
+   }
+   function wrappedLine(view, pos, inside) {
+       let range = EditorSelection.cursor(pos);
+       return { from: Math.max(inside.from, view.moveToLineBoundary(range, false, true).from),
+           to: Math.min(inside.to, view.moveToLineBoundary(range, true, true).from),
+           type: BlockType.Text };
+   }
+   function blockAt(view, pos) {
+       let line = view.lineBlockAt(pos);
+       if (Array.isArray(line.type))
+           for (let l of line.type) {
+               if (l.to > pos || l.to == pos && (l.to == line.to || l.type == BlockType.Text))
+                   return l;
+           }
+       return line;
+   }
+   function measureRange(view, range) {
+       if (range.to <= view.viewport.from || range.from >= view.viewport.to)
+           return [];
+       let from = Math.max(range.from, view.viewport.from), to = Math.min(range.to, view.viewport.to);
+       let ltr = view.textDirection == Direction.LTR;
+       let content = view.contentDOM, contentRect = content.getBoundingClientRect(), base = getBase$1(view);
+       let lineStyle = window.getComputedStyle(content.firstChild);
+       let leftSide = contentRect.left + parseInt(lineStyle.paddingLeft) + Math.min(0, parseInt(lineStyle.textIndent));
+       let rightSide = contentRect.right - parseInt(lineStyle.paddingRight);
+       let startBlock = blockAt(view, from), endBlock = blockAt(view, to);
+       let visualStart = startBlock.type == BlockType.Text ? startBlock : null;
+       let visualEnd = endBlock.type == BlockType.Text ? endBlock : null;
+       if (view.lineWrapping) {
+           if (visualStart)
+               visualStart = wrappedLine(view, from, visualStart);
+           if (visualEnd)
+               visualEnd = wrappedLine(view, to, visualEnd);
+       }
+       if (visualStart && visualEnd && visualStart.from == visualEnd.from) {
+           return pieces(drawForLine(range.from, range.to, visualStart));
+       }
+       else {
+           let top = visualStart ? drawForLine(range.from, null, visualStart) : drawForWidget(startBlock, false);
+           let bottom = visualEnd ? drawForLine(null, range.to, visualEnd) : drawForWidget(endBlock, true);
+           let between = [];
+           if ((visualStart || startBlock).to < (visualEnd || endBlock).from - 1)
+               between.push(piece(leftSide, top.bottom, rightSide, bottom.top));
+           else if (top.bottom < bottom.top && view.elementAtHeight((top.bottom + bottom.top) / 2).type == BlockType.Text)
+               top.bottom = bottom.top = (top.bottom + bottom.top) / 2;
+           return pieces(top).concat(between).concat(pieces(bottom));
+       }
+       function piece(left, top, right, bottom) {
+           return new RectangleMarker("cm-selectionBackground", left - base.left, top - base.top - 0.01 /* C.Epsilon */, right - left, bottom - top + 0.01 /* C.Epsilon */);
+       }
+       function pieces({ top, bottom, horizontal }) {
+           let pieces = [];
+           for (let i = 0; i < horizontal.length; i += 2)
+               pieces.push(piece(horizontal[i], top, horizontal[i + 1], bottom));
+           return pieces;
+       }
+       // Gets passed from/to in line-local positions
+       function drawForLine(from, to, line) {
+           let top = 1e9, bottom = -1e9, horizontal = [];
+           function addSpan(from, fromOpen, to, toOpen, dir) {
+               // Passing 2/-2 is a kludge to force the view to return
+               // coordinates on the proper side of block widgets, since
+               // normalizing the side there, though appropriate for most
+               // coordsAtPos queries, would break selection drawing.
+               let fromCoords = view.coordsAtPos(from, (from == line.to ? -2 : 2));
+               let toCoords = view.coordsAtPos(to, (to == line.from ? 2 : -2));
+               top = Math.min(fromCoords.top, toCoords.top, top);
+               bottom = Math.max(fromCoords.bottom, toCoords.bottom, bottom);
+               if (dir == Direction.LTR)
+                   horizontal.push(ltr && fromOpen ? leftSide : fromCoords.left, ltr && toOpen ? rightSide : toCoords.right);
+               else
+                   horizontal.push(!ltr && toOpen ? leftSide : toCoords.left, !ltr && fromOpen ? rightSide : fromCoords.right);
+           }
+           let start = from !== null && from !== void 0 ? from : line.from, end = to !== null && to !== void 0 ? to : line.to;
+           // Split the range by visible range and document line
+           for (let r of view.visibleRanges)
+               if (r.to > start && r.from < end) {
+                   for (let pos = Math.max(r.from, start), endPos = Math.min(r.to, end);;) {
+                       let docLine = view.state.doc.lineAt(pos);
+                       for (let span of view.bidiSpans(docLine)) {
+                           let spanFrom = span.from + docLine.from, spanTo = span.to + docLine.from;
+                           if (spanFrom >= endPos)
+                               break;
+                           if (spanTo > pos)
+                               addSpan(Math.max(spanFrom, pos), from == null && spanFrom <= start, Math.min(spanTo, endPos), to == null && spanTo >= end, span.dir);
+                       }
+                       pos = docLine.to + 1;
+                       if (pos >= endPos)
+                           break;
+                   }
+               }
+           if (horizontal.length == 0)
+               addSpan(start, from == null, end, to == null, view.textDirection);
+           return { top, bottom, horizontal };
+       }
+       function drawForWidget(block, top) {
+           let y = contentRect.top + (top ? block.top : block.bottom);
+           return { top: y, bottom: y, horizontal: [] };
+       }
+   }
+   function measureCursor$1(view, cursor, primary) {
+       let pos = view.coordsAtPos(cursor.head, cursor.assoc || 1);
+       if (!pos)
+           return null;
+       let base = getBase$1(view);
+       return new RectangleMarker(primary ? "cm-cursor cm-cursor-primary" : "cm-cursor cm-cursor-secondary", pos.left - base.left, pos.top - base.top, -1, pos.bottom - pos.top);
+   }
 
    const setDropCursorPos = /*@__PURE__*/StateEffect.define({
        map(pos, mapping) { return pos == null ? null : mapping.mapPos(pos); }
@@ -13303,14 +13197,15 @@
        constructor(gutter, viewport, height) {
            this.gutter = gutter;
            this.height = height;
+           this.localMarkers = [];
            this.i = 0;
            this.cursor = RangeSet.iter(gutter.markers, viewport.from);
        }
        line(view, line, extraMarkers) {
-           let localMarkers = [];
-           advanceCursor(this.cursor, localMarkers, line.from);
-           if (extraMarkers.length)
-               localMarkers = localMarkers.concat(extraMarkers);
+           if (this.localMarkers.length)
+               this.localMarkers = [];
+           advanceCursor(this.cursor, this.localMarkers, line.from);
+           let localMarkers = extraMarkers.length ? this.localMarkers.concat(extraMarkers) : this.localMarkers;
            let forLine = this.gutter.config.lineMarker(view, line, localMarkers);
            if (forLine)
                localMarkers.unshift(forLine);
@@ -13348,17 +13243,7 @@
            this.dom.className = "cm-gutter" + (this.config.class ? " " + this.config.class : "");
            for (let prop in config.domEventHandlers) {
                this.dom.addEventListener(prop, (event) => {
-                   let target = event.target, y;
-                   if (target != this.dom && this.dom.contains(target)) {
-                       while (target.parentNode != this.dom)
-                           target = target.parentNode;
-                       let rect = target.getBoundingClientRect();
-                       y = (rect.top + rect.bottom) / 2;
-                   }
-                   else {
-                       y = event.clientY;
-                   }
-                   let line = view.lineBlockAtHeight(y - view.documentTop);
+                   let line = view.lineBlockAtHeight(event.clientY - view.documentTop);
                    if (config.domEventHandlers[prop](view, line, event))
                        event.preventDefault();
                });
@@ -15307,7 +15192,7 @@
        return rule || null;
    }
    const t = Tag.define;
-   const comment = t(), name = t(), typeName = t(name), propertyName = t(name), literal = t(), string = t(literal), number = t(literal), content = t(), heading = t(content), keyword = t(), operator = t(), punctuation = t(), bracket = t(punctuation), meta = t();
+   const comment = t(), name$1 = t(), typeName = t(name$1), propertyName = t(name$1), literal = t(), string = t(literal), number = t(literal), content = t(), heading = t(content), keyword = t(), operator = t(), punctuation = t(), bracket = t(punctuation), meta = t();
    /// The default set of highlighting [tags](#highlight.Tag).
    ///
    /// This collection is heavily biased towards programming languages,
@@ -15336,9 +15221,9 @@
        /// A documentation [comment](#highlight.tags.comment).
        docComment: t(comment),
        /// Any kind of identifier.
-       name,
+       name: name$1,
        /// The [name](#highlight.tags.name) of a variable.
-       variableName: t(name),
+       variableName: t(name$1),
        /// A type [name](#highlight.tags.name).
        typeName: typeName,
        /// A tag name (subtag of [`typeName`](#highlight.tags.typeName)).
@@ -15348,13 +15233,13 @@
        /// An attribute name (subtag of [`propertyName`](#highlight.tags.propertyName)).
        attributeName: t(propertyName),
        /// The [name](#highlight.tags.name) of a class.
-       className: t(name),
+       className: t(name$1),
        /// A label [name](#highlight.tags.name).
-       labelName: t(name),
+       labelName: t(name$1),
        /// A namespace [name](#highlight.tags.name).
-       namespace: t(name),
+       namespace: t(name$1),
        /// The [name](#highlight.tags.name) of a macro.
-       macroName: t(name),
+       macroName: t(name$1),
        /// A literal value.
        literal,
        /// A string [literal](#highlight.tags.literal).
@@ -15778,13 +15663,7 @@
    function ensureSyntaxTree(state, upto, timeout = 50) {
        var _a;
        let parse = (_a = state.field(Language.state, false)) === null || _a === void 0 ? void 0 : _a.context;
-       if (!parse)
-           return null;
-       let oldVieport = parse.viewport;
-       parse.updateViewport({ from: 0, to: upto });
-       let result = parse.isDone(upto) || parse.work(timeout, upto) ? parse.tree : null;
-       parse.updateViewport(oldVieport);
-       return result;
+       return !parse ? null : parse.isDone(upto) || parse.work(timeout, upto) ? parse.tree : null;
    }
    // Lezer-style Input object for a Text document.
    class DocInput {
@@ -17098,7 +16977,7 @@
    */
    const defaultHighlightStyle = /*@__PURE__*/HighlightStyle.define([
        { tag: tags.meta,
-           color: "#404740" },
+           color: "#7a757a" },
        { tag: tags.link,
            textDecoration: "underline" },
        { tag: tags.heading,
@@ -18210,7 +18089,7 @@
    function extendSel(view, how) {
        let selection = updateSel(view.state.selection, range => {
            let head = how(range);
-           return EditorSelection.range(range.anchor, head.head, head.goalColumn, head.bidiLevel || undefined);
+           return EditorSelection.range(range.anchor, head.head, head.goalColumn);
        });
        if (selection.eq(view.state.selection))
            return false;
@@ -20410,7 +20289,6 @@
                closeOnBlur: true,
                maxRenderedOptions: 100,
                defaultKeymap: true,
-               tooltipClass: () => "",
                optionClass: () => "",
                aboveCursor: false,
                icons: true,
@@ -20421,7 +20299,6 @@
                defaultKeymap: (a, b) => a && b,
                closeOnBlur: (a, b) => a && b,
                icons: (a, b) => a && b,
-               tooltipClass: (a, b) => c => joinClass(a(c), b(c)),
                optionClass: (a, b) => c => joinClass(a(c), b(c)),
                addToOptions: (a, b) => a.concat(b)
            });
@@ -20500,17 +20377,14 @@
                key: this
            };
            this.space = null;
-           this.currentClass = "";
            let cState = view.state.field(stateField);
            let { options, selected } = cState.open;
            let config = view.state.facet(completionConfig);
            this.optionContent = optionContent(config);
            this.optionClass = config.optionClass;
-           this.tooltipClass = config.tooltipClass;
            this.range = rangeAroundSelected(options.length, selected, config.maxRenderedOptions);
            this.dom = document.createElement("div");
            this.dom.className = "cm-tooltip-autocomplete";
-           this.updateTooltipClass(view.state);
            this.dom.addEventListener("mousedown", (e) => {
                for (let dom = e.target, match; dom && dom != this.dom; dom = dom.parentNode) {
                    if (dom.nodeName == "LI" && (match = /-(\d+)$/.exec(dom.id)) && +match[1] < options.length) {
@@ -20531,23 +20405,10 @@
            var _a, _b, _c;
            let cState = update.state.field(this.stateField);
            let prevState = update.startState.field(this.stateField);
-           this.updateTooltipClass(update.state);
            if (cState != prevState) {
                this.updateSel();
                if (((_a = cState.open) === null || _a === void 0 ? void 0 : _a.disabled) != ((_b = prevState.open) === null || _b === void 0 ? void 0 : _b.disabled))
                    this.dom.classList.toggle("cm-tooltip-autocomplete-disabled", !!((_c = cState.open) === null || _c === void 0 ? void 0 : _c.disabled));
-           }
-       }
-       updateTooltipClass(state) {
-           let cls = this.tooltipClass(state);
-           if (cls != this.currentClass) {
-               for (let c of this.currentClass.split(" "))
-                   if (c)
-                       this.dom.classList.remove(c);
-               for (let c of cls.split(" "))
-                   if (c)
-                       this.dom.classList.add(c);
-               this.currentClass = cls;
            }
        }
        positioned(space) {
@@ -20810,13 +20671,13 @@
            if (active.length == this.active.length && active.every((a, i) => a == this.active[i]))
                active = this.active;
            let open = this.open;
-           if (open && tr.docChanged)
-               open = open.map(tr.changes);
            if (tr.selection || active.some(a => a.hasResult() && tr.changes.touchesRange(a.from, a.to)) ||
                !sameResults(active, this.active))
-               open = CompletionDialog.build(active, state, this.id, open, conf);
+               open = CompletionDialog.build(active, state, this.id, this.open, conf);
            else if (open && open.disabled && !active.some(a => a.state == 1 /* State.Pending */))
                open = null;
+           else if (open && tr.docChanged)
+               open = open.map(tr.changes);
            if (!open && active.every(a => a.state != 1 /* State.Pending */) && active.some(a => a.hasResult()))
                active = active.map(a => a.hasResult() ? new ActiveSource(a.source, 0 /* State.Inactive */) : a);
            for (let effect of tr.effects)
@@ -23749,17 +23610,19 @@
    }
 
    // This file was generated by lezer-generator. You probably shouldn't edit it.
-   const noSemi = 294,
-     incdec = 1,
-     incdecPrefix = 2,
+   const TSExtends = 1,
+     noSemi = 294,
+     incdec = 2,
+     incdecPrefix = 3,
      templateContent = 295,
-     InterpolationStart = 3,
+     InterpolationStart = 4,
      templateEnd = 296,
      insertSemi = 297,
      spaces = 299,
      newline = 300,
-     LineComment = 4,
-     BlockComment = 5;
+     LineComment = 5,
+     BlockComment = 6,
+     Dialect_ts = 1;
 
    /* Hand-written tokenizers for JavaScript tokens that can't be
       expressed by lezer's built-in tokenizer. */
@@ -23831,6 +23694,18 @@
      }
    });
 
+   const tsExtends = new ExternalTokenizer((input, stack) => {
+     if (input.next != 101 || !stack.dialectEnabled(Dialect_ts)) return
+     input.advance();
+     for (let i = 0; i < 6; i++) {
+       if (input.next != "xtends".charCodeAt(i)) return
+       input.advance();
+     }
+     if (input.next >= 57 && input.next <= 65 || input.next >= 48 && input.next <= 90 ||
+         input.next == 95 || input.next >= 97 && input.next <= 122 || input.next > 160) return
+     input.acceptToken(TSExtends);
+   });
+
    const jsHighlight = styleTags({
      "get set async static": tags.modifier,
      "for while do if else switch try catch finally return throw break continue default case": tags.controlKeyword,
@@ -23891,32 +23766,32 @@
    });
 
    // This file was generated by lezer-generator. You probably shouldn't edit it.
-   const spec_identifier = {__proto__:null,export:16, as:21, from:27, default:30, async:35, function:36, extends:46, this:50, true:58, false:58, null:68, void:72, typeof:76, super:92, new:126, await:143, yield:145, delete:146, class:156, public:211, private:211, protected:211, readonly:213, instanceof:232, satisfies:235, in:236, const:238, import:270, keyof:325, unique:329, infer:335, is:371, abstract:391, implements:393, type:395, let:398, var:400, interface:407, enum:411, namespace:417, module:419, declare:423, global:427, for:448, of:457, while:460, with:464, do:468, if:472, else:474, switch:478, case:484, try:490, catch:494, finally:498, return:502, throw:506, break:510, continue:514, debugger:518};
-   const spec_word = {__proto__:null,async:113, get:115, set:117, public:173, private:173, protected:173, static:175, abstract:177, override:179, readonly:185, accessor:187, new:375};
+   const spec_identifier = {__proto__:null,export:18, as:23, from:29, default:32, async:37, function:38, this:50, true:58, false:58, null:68, void:72, typeof:76, super:92, new:126, await:143, yield:145, delete:146, class:156, extends:158, public:213, private:213, protected:213, readonly:215, instanceof:234, satisfies:237, in:238, const:240, import:272, keyof:327, unique:331, infer:337, is:373, abstract:393, implements:395, type:397, let:400, var:402, interface:409, enum:413, namespace:419, module:421, declare:425, global:429, for:450, of:459, while:462, with:466, do:470, if:474, else:476, switch:480, case:486, try:492, catch:496, finally:500, return:504, throw:508, break:512, continue:516, debugger:520};
+   const spec_word = {__proto__:null,async:113, get:115, set:117, public:175, private:175, protected:175, static:177, abstract:179, override:181, readonly:187, accessor:189, new:377};
    const spec_LessThan = {__proto__:null,"<":133};
    const parser = LRParser.deserialize({
      version: 14,
-     states: "$>lO`QYOOO$}QYOOO&}Q`OOO*_Q$IvO'#CgO*fOSO'#DYO,qQYO'#D_O-RQYO'#DjO$}QYO'#DtO/VQYO'#DzOOQ$IU'#ES'#ESO/mQWO'#EPOOQO'#IW'#IWO/uQWO'#GfOOQO'#Ed'#EdO0QQWO'#EcO0VQWO'#EcO2XQ$IvO'#JQO4xQ$IvO'#JRO5fQWO'#FRO5kQ!bO'#FjOOQ$IU'#FZ'#FZO5vO#tO'#FZO6UQ&jO'#FqO7iQWO'#FpOOQ$IU'#JR'#JROOQ$IS'#JQ'#JQOOQQ'#Jl'#JlO7nQWO'#HzO7sQ$I[O'#H{OOQQ'#Iu'#IuOOQQ'#IO'#IOQ`QYOOO$}QYO'#DlO7{QWO'#GfO8QQ&jO'#ClO8`QWO'#EbO8kQWO'#EmO8pQ&jO'#FYO9[QWO'#GfO9aQWO'#GjO9lQWO'#GjO9zQWO'#GmO9zQWO'#GnO9zQWO'#GpO7{QWO'#GsO:kQWO'#GvO;|QWO'#CcO<^QWO'#HTO<fQWO'#HZO<fQWO'#H]O`QYO'#H_O<fQWO'#HaO<fQWO'#HdO<kQWO'#HjO<pQ$I]O'#HpO$}QYO'#HrO<{Q$I]O'#HtO=WQ$I]O'#HvO7sQ$I[O'#HxO=cQ$IvO'#CgO>PQ`O'#DdQOQWOOO>tQWO'#D{O8QQ&jO'#EbO?PQWO'#EbO?[QpO'#FYOOQO'#Ce'#CeOOQ$IS'#Di'#DiOOQ$IS'#JU'#JUO$}QYO'#JUO@bQ`O'#EZOOQ$IS'#EY'#EYO@lQ$IdO'#EZOAWQ`O'#EOOOQO'#JX'#JXOAiQ`O'#EOOAvQ`O'#EZOB^Q`O'#EaOBaQ`O'#EZO?dQ`O'#EZOAWQ`O'#EZO$}QYO'#DZOOOS'#IQ'#IQOBzOSO,59tOOQ$IU,59t,59tOCVQYO'#IROCjQWO'#JSOElQrO'#JSO*qQYO'#JSOEsQWO,59yOFZQWO'#EdOFhQWO'#JaOFsQWO'#J`OFsQWO'#J`OF{QWO,5;QOGQQWO'#J_OOQ$IU,5:U,5:UOGXQYO,5:UOIYQ$IvO,5:`OIyQWO,5:fOJOQWO'#J]OJxQ$I[O'#J^O9aQWO'#J]OKPQWO'#J]OKXQWO,5;POK^QWO'#J]OOQ$IU'#Cg'#CgO$}QYO'#DzOLQQpO,5:kOOQO'#JY'#JYOOQO-E<U-E<UO7{QWO,5=QOLhQWO,5=QOLmQYO,5:}ONmQ&jO'#E_O! }QWO,5:}O!#dQ&jO'#DnO!#kQYO'#DsO!#uQ`O,5;WO!#}Q`O,5;WO$}QYO,5;WOOQQ'#Ey'#EyOOQQ'#E{'#E{O$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XO$}QYO,5;XOOQQ'#FP'#FPO!$]QYO,5;jOOQ$IU,5;o,5;oOOQ$IU,5;p,5;pO!&]QWO,5;pOOQ$IU,5;q,5;qO$}QYO'#I^O!&eQ$I[O,5<^ONmQ&jO,5;XO!'SQ&jO,5;XO$}QYO,5;mO!'ZQ!bO'#F`O!(WQ!bO'#JeO!'rQ!bO'#JeO!(_Q!bO'#JeOOQO'#Je'#JeO!(sQ!bO,5;xOOOO,5<U,5<UO!)UQYO'#FlOOOO'#I]'#I]O5vO#tO,5;uO!)]Q!bO'#FnOOQ$IU,5;u,5;uO!)|Q,UO'#CrOOQ$IU'#Cv'#CvO!*aQWO'#CvO!*fOSO'#CzO!+SQ&jO,5<ZO!+ZQWO,5<]O!,mQ7[O'#F{O!,zQWO'#F|O!-PQWO'#F|O!-UQ7[O'#GQO!.TQ`O'#GUO!.vQ,UO'#I}OOQ$IU'#I}'#I}O!/QQWO'#I|O!/`QWO'#I{O!/hQWO'#CqOOQ$IU'#Ct'#CtOOQ$IU'#C}'#C}OOQ$IU'#DP'#DPO/pQWO'#DRO!!SQ&jO'#FsO!!SQ&jO'#FuO!/pQWO'#FwO!/uQWO'#FxO!-PQWO'#GOO!!SQ&jO'#GTO!/zQWO'#EeO!0fQWO,5<[O`QYO,5>fOOQQ'#Ix'#IxOOQQ,5>g,5>gOOQQ-E;|-E;|O!2eQ$IvO,5:WOOQ$IS'#Co'#CoO!3XQ&jO,5=QO!3gQ$I[O'#IyO7iQWO'#IyO<kQWO,59WO!3xQ`O,59WO!4QQ&jO,59WO8QQ&jO,59WO!4]QWO,5:}O!4eQWO'#HSO!4sQWO'#JpO$}QYO,5;rO!4{Q`O,5;tO!5QQWO,5=mO!5VQWO,5=mO!5[QWO,5=mO7sQ$I[O,5=mO!5jQWO'#EfO!6aQ`O'#EgOOQ$IS'#J_'#J_O!6hQ$I[O'#JmO7sQ$I[O,5=UO9zQWO,5=[OOQO'#Cr'#CrO!6sQ`O,5=XO!6{Q&jO,5=YO!7WQWO,5=[O!7]QpO,5=_O<kQWO'#GxO7{QWO'#GzO!7eQWO'#GzO8QQ&jO'#G}O!7jQWO'#G}OOQQ,5=b,5=bO!7oQWO'#HOO!7wQWO'#ClO!7|QWO,58}O!8WQWO,58}O!:]QYO,58}OOQQ,58},58}O!:jQ$I[O,58}O$}QYO,58}O!:uQYO'#HVOOQQ'#HW'#HWOOQQ'#HX'#HXO`QYO,5=oO!;VQWO,5=oO`QYO,5=uO`QYO,5=wO!;[QWO,5=yO`QYO,5={O!;aQWO,5>OO!;fQYO,5>UOOQQ,5>[,5>[O$}QYO,5>[O7sQ$I[O,5>^OOQQ,5>`,5>`O!?jQWO,5>`OOQQ,5>b,5>bO!?jQWO,5>bOOQQ,5>d,5>dO!?oQ`O'#DWO$}QYO'#JUO!@^Q`O'#JUO!@{Q`O'#DeO!A^Q`O'#DeO!CiQYO'#DeO!CpQWO'#JTO!CxQWO,5:OO!C}QWO'#EhO!D]QWO'#JbO!DeQWO,5;RO!D{Q`O'#DeO!EVQ`O'#D}OOQ$IU,5:g,5:gO$}QYO,5:gO!E^QWO,5:gO<kQWO,5:|O!3xQ`O,5:|O!4QQ&jO,5:|O8QQ&jO,5:|O!EfQWO,5?pO!EkQMhO,5:kO!FkQ$IdO,5:uOAWQ`O,5:jO!GVQ`O,5:jO!GdQ`O,5:uO!GzQ`O,5:uO!HeQ`O,5:uOAWQ`O,5:uO<kQWO,5:jOOQ$IS'#E^'#E^OOQO,5:u,5:uO$}QYO,5:uO!IUQ$I[O,5:uO!IaQ$I[O,5:uO!3xQ`O,5:jOOQO,5:{,5:{O!IoQ$I[O,5:uO!JTQpO,59uOOOS-E<O-E<OOOQ$IU1G/`1G/`O!JYQrO,5>mO*qQYO,5>mOOQO,5>s,5>sO!JdQYO'#IROOQO-E<P-E<PO!JqQWO,5?nO!JyQrO,5?nO!KQQWO,5?zOOQ$IU1G/e1G/eO$}QYO,5?{O!KYQWO'#IXOOQO-E<V-E<VO!KQQWO,5?zOOQ$IS1G0l1G0lOOQ$IU1G/p1G/pOOQ$IU1G0Q1G0QO!KnQWO,5?wO9aQWO,5?wO!KvQWO,5?wO$}QYO,5?xO!LUQ$I[O,5?xO!LgQ$I[O,5?xO!LnQWO'#IZO!KnQWO,5?wOOQ$IS1G0k1G0kO!#uQ`O,5:mO!$QQ`O,5:mOOQO,5:o,5:oO!M]QWO,5:oO!MeQ&jO1G2lO7{QWO1G2lOOQ$IU1G0i1G0iO!MsQ$IvO1G0iO!NxQ$ItO,5:yOOQ$IU'#Fz'#FzO# fQ$IvO'#I}OLmQYO1G0iO##nQ&jO'#JVO##xQWO,5:YO##}QrO'#JWO$}QYO'#JWO#$XQWO,5:_OOQ$IU'#DW'#DWOOQ$IU1G0r1G0rO$}QYO1G0rOOQ$IU1G1[1G1[O#$^QWO1G0rO#&uQ$IvO1G0sO#&|Q$IvO1G0sO#)gQ$IvO1G0sO#)nQ$IvO1G0sO#+xQ$IvO1G0sO#,`Q$IvO1G0sO#/YQ$IvO1G0sO#/aQ$IvO1G0sO#1zQ$IvO1G0sO#2RQ$IvO1G0sO#3yQ$IvO1G0sO#6yQ!LSO'#CgO#8wQ!LSO1G1UO#:uQ!LSO'#JRO!&`QWO1G1[O#;YQ$IvO,5>xOOQ$IS-E<[-E<[O#;|Q$IvO1G0sOOQ$IU1G0s1G0sO#>XQ$IvO1G1XO#>{Q!bO,5;|O#?TQ!bO,5;}O#?]Q!bO'#FeO#?tQWO'#FdOOQO'#Jf'#JfOOQO'#I['#I[O#?yQ!bO1G1dOOQ$IU1G1d1G1dOOOO1G1o1G1oO#@[Q!LSO'#JQO#@fQWO,5<WO!$]QYO,5<WOOOO-E<Z-E<ZOOQ$IU1G1a1G1aO#@kQ`O'#JeOOQ$IU,5<Y,5<YO#@sQ`O,5<YOOQ$IU,59b,59bONmQ&jO'#C|OOOS'#IP'#IPO#@xOSO,59fOOQ$IU,59f,59fO$}QYO1G1uO!/uQWO'#I`O#ATQWO,5<nOOQ$IU,5<k,5<kOOQO'#Ga'#GaO!!SQ&jO,5<zOOQO'#Gc'#GcO!!SQ&jO,5<|ONmQ&jO,5=OOOQO1G1w1G1wO#A`QpO'#CoO#AsQpO,5<gO#AzQWO'#JiO7{QWO'#JiO#BYQWO,5<iO!!SQ&jO,5<hO#B_QWO'#F}O#BjQWO,5<hO#BoQpO'#FzO#B|QpO'#JjO#CWQWO'#JjONmQ&jO'#JjO#C]QWO,5<lO#CbQ`O'#GVO!.OQ`O'#GVO#CsQWO'#GXO#CxQWO'#GZO!-PQWO'#G^O#C}Q$I[O'#IbO#DYQ`O,5<pOOQ$IU,5<p,5<pO#DaQ`O'#GVO#DoQ`O'#GWO#DwQ`O'#GWOOQ$IU,5=P,5=PO!!SQ&jO,5?hO!!SQ&jO,5?hO#D|QWO'#IcO#EXQWO,5?gO#EaQWO,59]O#FQQ&jO,59mOOQ$IU,59m,59mO#FsQ&jO,5<_O#GfQ&jO,5<aO#GpQWO,5<cOOQ$IU,5<d,5<dO#GuQWO,5<jO#GzQ&jO,5<oOLmQYO1G1vO#H[QWO1G1vOOQQ1G4Q1G4QOOQ$IU1G/r1G/rO!&]QWO1G/rOOQQ1G2l1G2lONmQ&jO1G2lO$}QYO1G2lO#HaQWO1G2lO#IvQ&jO'#E_OOQ$IS,5?e,5?eO#JQQ$I[O,5?eOOQQ1G.r1G.rO<kQWO1G.rO!3xQ`O1G.rO!4QQ&jO1G.rO#JcQWO1G0iO#JhQWO'#CgO#JsQWO'#JqO#J{QWO,5=nO#KQQWO'#JqO#KVQWO'#JqO#K_QWO'#IkO#KmQWO,5@[O#KuQrO1G1^OOQ$IU1G1`1G1`O7{QWO1G3XO#K|QWO1G3XO#LRQWO1G3XO#LWQWO1G3XOOQQ1G3X1G3XO9aQWO'#J`O9aQWO'#EhO$}QYO'#EhO9aQWO'#IeO#L]Q$I[O,5@XOOQQ1G2p1G2pO!7WQWO1G2vONmQ&jO1G2sO#LhQWO1G2sOOQQ1G2t1G2tONmQ&jO1G2tO#LmQWO1G2tO#LuQ`O'#GrOOQQ1G2v1G2vO!.OQ`O'#IgO!7]QpO1G2yOOQQ1G2y1G2yOOQQ,5=d,5=dO#L}Q&jO,5=fO7{QWO,5=fO#CxQWO,5=iO7iQWO,5=iO!3xQ`O,5=iO!4QQ&jO,5=iO8QQ&jO,5=iO#M]QWO'#JoO#MhQWO,5=jOOQQ1G.i1G.iO#MmQ$I[O1G.iO#MxQWO1G.iO#M}QWO1G.iO7sQ$I[O1G.iO#NVQrO,5@^O#NjQWO,5@^O#NuQYO,5=qO#N|QWO,5=qO9aQWO,5@^OOQQ1G3Z1G3ZO`QYO1G3ZOOQQ1G3a1G3aOOQQ1G3c1G3cO<fQWO1G3eO$ RQYO1G3gO$%PQYO'#HfOOQQ1G3j1G3jO$%^QWO'#HlO<kQWO'#HnOOQQ1G3p1G3pO$%fQYO1G3pO7sQ$I[O1G3vOOQQ1G3x1G3xOOQ$IS'#GR'#GRO7sQ$I[O1G3zO7sQ$I[O1G3|O$)gQWO,5?pO!$]QYO,5;SO9aQWO,5;SO<kQWO,5:PO!$]QYO,5:PO!3xQ`O,5:PO$)lQ!LSO,5:POOQO,5;S,5;SO$)vQ`O'#ISO$*^QWO,5?oOOQ$IU1G/j1G/jO$*fQ`O'#IYO$*pQWO,5?|OOQ$IS1G0m1G0mO!A^Q`O,5:POOQO'#IV'#IVO$*xQ`O,5:iOOQ$IU,5:i,5:iO!EaQWO1G0ROOQ$IU1G0R1G0RO$}QYO1G0ROOQ$IU1G0h1G0hO<kQWO1G0hO!3xQ`O1G0hO!4QQ&jO1G0hOOQ$IS1G5[1G5[O<kQWO1G0UOOQO1G0a1G0aO$}QYO1G0aO$+PQ$I[O1G0aO$+[Q$I[O1G0aO!3xQ`O1G0UOAWQ`O1G0UO$+jQ$IdO1G0aO$,UQ`O1G0UOAWQ`O1G0aO$,cQ`O1G0aO$,yQ`O1G0aO$-dQ$I[O1G0aOOQO1G0U1G0UO$-xQ$IvO1G0aOOOS1G/a1G/aO$.SQpO,5<^O$.[QrO1G4XOOQO1G4_1G4_O$}QYO,5>mO$.fQWO1G5YO$.nQWO1G5fO$.vQrO1G5gO9aQWO,5>sO$/QQWO1G5cO$/QQWO1G5cO9aQWO1G5cO$/YQ$IvO1G5dO$}QYO1G5dO$/jQ$I[O1G5dO$/{QWO,5>uO9aQWO,5>uOOQO,5>u,5>uO$0aQWO,5>uOOQO-E<X-E<XOOQO1G0X1G0XOOQO1G0Z1G0ZO!&`QWO1G0ZOOQQ7+(W7+(WONmQ&jO7+(WO$}QYO7+(WO$0oQWO7+(WO$0zQ&jO7+(WO$1YQ$IvO,59mO$3bQ$IvO,5<_O$5mQ$IvO,5<aO$7xQ$IvO,5<oOOQ$IU7+&T7+&TO$:ZQ$IvO7+&TO$:}Q&jO'#ITO$;XQWO,5?qOOQ$IU1G/t1G/tO$;aQYO'#IUO$;nQWO,5?rO$;vQrO,5?rOOQ$IU1G/y1G/yO$<QQWO7+&^OOQ$IU7+&^7+&^O$<VQ!LSO,5:`O$}QYO7+&pO$<aQ!LSO,5:WOOQ$IU7+&v7+&vOOQO1G1h1G1hOOQO1G1i1G1iO$<nQ!bO,5<PO!$]QYO,5<OOOQO-E<Y-E<YOOQ$IU7+'O7+'OOOOO7+'Z7+'ZOOOO1G1r1G1rO$<yQWO1G1rOOQ$IU1G1t1G1tO$=OQpO,59hOOOS-E;}-E;}OOQ$IU1G/Q1G/QO$=VQ$IvO7+'aOOQ$IU,5>z,5>zO$=yQWO,5>zOOQ$IU1G2Y1G2YP$>OQWO'#I`POQ$IU-E<^-E<^O$>oQ&jO1G2fO$?bQ&jO1G2hO$?lQpO1G2jOOQ$IU1G2R1G2RO$?sQWO'#I_O$@RQWO,5@TO$@RQWO,5@TO$@ZQWO,5@TO$@fQWO,5@TOOQO1G2T1G2TO$@tQ&jO1G2SO!!SQ&jO1G2SO$AUQ7[O'#IaO$AfQWO,5@UONmQ&jO,5@UO$AnQpO,5@UOOQ$IU1G2W1G2WOOQ$IS,5<q,5<qOOQ$IS,5<r,5<rO$AxQWO,5<rOARQWO,5<rO!3xQ`O,5<qOOQO'#GY'#GYO$A}QWO,5<sOOQ$IS,5<u,5<uO$AxQWO,5<xOOQO,5>|,5>|OOQO-E<`-E<`OOQ$IU1G2[1G2[O!.OQ`O,5<qO$BVQWO,5<rO#CsQWO,5<sO!.OQ`O,5<rO$BbQ&jO1G5SO$BlQ&jO1G5SOOQO,5>},5>}OOQO-E<a-E<aOOQO1G.w1G.wO!4{Q`O,59oO$}QYO,59oO$ByQWO1G1}O!!SQ&jO1G2UO$COQ$IvO7+'bOOQ$IU7+'b7+'bOLmQYO7+'bOOQ$IU7+%^7+%^O$CrQpO'#JkO!EaQWO7+(WO$C|QrO7+(WO$0rQWO7+(WO$DTQ$ItO'#CgO$DhQ$ItO,5<vO$EYQWO,5<vOOQ$IS1G5P1G5POOQQ7+$^7+$^O<kQWO7+$^O!3xQ`O7+$^OLmQYO7+&TO$E_QWO'#IjO$EpQWO,5@]OOQO1G3Y1G3YO7{QWO,5@]O$EpQWO,5@]O$ExQWO,5@]OOQO,5?V,5?VOOQO-E<i-E<iOOQ$IU7+&x7+&xO$E}QWO7+(sO7sQ$I[O7+(sO7{QWO7+(sO$FSQWO7+(sO$FXQWO,5;SOOQ$IS,5?P,5?POOQ$IS-E<c-E<cOOQQ7+(b7+(bO$F^Q$ItO7+(_ONmQ&jO7+(_O$FhQpO7+(`OOQQ7+(`7+(`ONmQ&jO7+(`O$FoQWO'#JnO$FzQWO,5=^OOQO,5?R,5?ROOQO-E<e-E<eOOQQ7+(e7+(eO$HTQ`O'#G{OOQQ1G3Q1G3QONmQ&jO1G3QO$}QYO1G3QO$H[QWO1G3QO$HgQ&jO1G3QO7sQ$I[O1G3TO#CxQWO1G3TO7iQWO1G3TO!3xQ`O1G3TO!4QQ&jO1G3TO$HuQWO'#IiO$IQQWO,5@ZO$IYQ`O,5@ZOOQ$IS1G3U1G3UOOQQ7+$T7+$TO$IbQWO7+$TO7sQ$I[O7+$TO$IgQWO7+$TO$}QYO1G5xO$}QYO1G5yO$IlQYO1G3]O$IsQWO1G3]O$IxQYO1G3]O$JPQ$I[O1G5xOOQQ7+(u7+(uO7sQ$I[O7+)PO`QYO7+)ROOQQ'#Jt'#JtOOQQ'#Il'#IlO$JZQYO,5>QOOQQ,5>Q,5>QO$}QYO'#HgO$JhQWO'#HiOOQQ,5>W,5>WO9aQWO,5>WOOQQ,5>Y,5>YOOQQ7+)[7+)[OOQQ7+)b7+)bOOQQ7+)f7+)fOOQQ7+)h7+)hO$JmQ`O1G5[O$KRQ!LSO1G0nO$K]QWO1G0nOOQO1G/k1G/kO$KhQ!LSO1G/kO<kQWO1G/kO!$]QYO'#DeOOQO,5>n,5>nOOQO-E<Q-E<QOOQO,5>t,5>tOOQO-E<W-E<WO!3xQ`O1G/kOOQO-E<T-E<TOOQ$IU1G0T1G0TOOQ$IU7+%m7+%mO!EaQWO7+%mOOQ$IU7+&S7+&SO<kQWO7+&SO!3xQ`O7+&SOOQO7+%p7+%pO$-xQ$IvO7+%{OOQO7+%{7+%{O$}QYO7+%{O$KrQ$I[O7+%{O<kQWO7+%pO!3xQ`O7+%pO$K}Q$I[O7+%{OAWQ`O7+%pO$L]Q$I[O7+%{O$LqQ$IdO7+%{O$L{Q`O7+%pOAWQ`O7+%{O$MYQ`O7+%{O$MpQWO7+*}O$MpQWO7+*}O$MxQ$IvO7++OO$}QYO7++OOOQO1G4a1G4aO9aQWO1G4aO$NYQWO1G4aOOQO7+%u7+%uO!EaQWO<<KrO$C|QrO<<KrO$NhQWO<<KrOOQQ<<Kr<<KrONmQ&jO<<KrO$}QYO<<KrO$NpQWO<<KrO$N{Q$IvO1G2fO%#WQ$IvO1G2hO%%cQ$IvO1G2SO%'tQ&jO,5>oOOQO-E<R-E<RO%(OQrO,5>pO$}QYO,5>pOOQO-E<S-E<SO%(YQWO1G5^OOQ$IU<<Ix<<IxO%(bQ!LSO1G0iO%*lQ!LSO1G0sO%*sQ!LSO1G0sO%,wQ!LSO1G0sO%-OQ!LSO1G0sO%.sQ!LSO1G0sO%/ZQ!LSO1G0sO%1nQ!LSO1G0sO%1uQ!LSO1G0sO%3yQ!LSO1G0sO%4QQ!LSO1G0sO%5xQ!LSO1G0sO%6]Q$IvO<<J[O%7bQ!LSO1G0sO%9WQ!LSO'#I}O%;ZQ!LSO1G1XO!$]QYO'#FgOOQO'#Jg'#JgOOQO1G1k1G1kO%;hQWO1G1jO%;mQ!LSO,5>xOOOO7+'^7+'^OOOS1G/S1G/SOOQ$IU1G4f1G4fO!!SQ&jO7+(UO%;wQWO,5>yO7{QWO,5>yOOQO-E<]-E<]O%<VQWO1G5oO%<VQWO1G5oO%<_QWO1G5oO%<jQ&jO7+'nO%<zQpO,5>{O%=UQWO,5>{ONmQ&jO,5>{OOQO-E<_-E<_O%=ZQpO1G5pO%=eQWO1G5pOOQ$IS1G2^1G2^O$AxQWO1G2^OOQ$IS1G2]1G2]O%=mQWO1G2_ONmQ&jO1G2_OOQ$IS1G2d1G2dO!3xQ`O1G2]OARQWO1G2^O%=rQWO1G2_O%=zQWO1G2^O!!SQ&jO7+*nOOQ$IU1G/Z1G/ZO%>VQWO1G/ZOOQ$IU7+'i7+'iO%>[Q&jO7+'pO%>lQ$IvO<<J|OOQ$IU<<J|<<J|ONmQ&jO'#IdO%?`QWO,5@VONmQ&jO1G2bOOQQ<<Gx<<GxO<kQWO<<GxO%?hQ$IvO<<IoOOQ$IU<<Io<<IoOOQO,5?U,5?UO%@[QWO,5?UO%@aQWO,5?UOOQO-E<h-E<hO%@iQWO1G5wO%@iQWO1G5wO7{QWO1G5wO%@qQWO<<L_OOQQ<<L_<<L_O%@vQWO<<L_O7sQ$I[O<<L_O%@{QWO1G0nOOQQ<<Ky<<KyO$F^Q$ItO<<KyOOQQ<<Kz<<KzO$FhQpO<<KzO%AQQ`O'#IfO%A]QWO,5@YO!$]QYO,5@YOOQQ1G2x1G2xO%AeQ$IdO'#JUO%BPQYO'#JUO%BWQ`O'#EZO%BqQ$I[O'#EZO@lQ$IdO'#EZO'|Q`O'#G|OOQO'#Ih'#IhO7sQ$I[O'#IhO%CVQ`O,5=gOOQQ,5=g,5=gO%C^Q`O'#EZO%BgQ`O'#EZO%CoQ`O'#EZO%DYQ`O'#EZO%DyQ`O'#G|O%E[QWO7+(lO%EaQWO7+(lOOQQ7+(l7+(lONmQ&jO7+(lO$}QYO7+(lO%EiQWO7+(lOOQQ7+(o7+(oO7sQ$I[O7+(oO#CxQWO7+(oO7iQWO7+(oO!3xQ`O7+(oO%EtQWO,5?TOOQO-E<g-E<gOOQO'#HP'#HPO%FPQWO1G5uO7sQ$I[O<<GoOOQQ<<Go<<GoO%FXQWO<<GoO%F^QWO7++dO%FcQWO7++eOOQQ7+(w7+(wO%FhQWO7+(wO%FmQYO7+(wO%FtQWO7+(wO$}QYO7++dO$}QYO7++eOOQQ<<Lk<<LkOOQQ<<Lm<<LmOOQQ-E<j-E<jOOQQ1G3l1G3lO%FyQWO,5>ROOQQ,5>T,5>TO%GOQWO1G3rO9aQWO7+&YO!$]QYO7+&YOOQO7+%V7+%VO%GTQ!LSO1G5gO<kQWO7+%VOOQ$IU<<IX<<IXOOQ$IU<<In<<InO<kQWO<<InOOQO<<Ig<<IgO$-xQ$IvO<<IgO$}QYO<<IgOOQO<<I[<<I[O<kQWO<<I[O%G_Q$I[O<<IgO!3xQ`O<<I[O%GjQ$I[O<<IgOAWQ`O<<I[O%GxQ$I[O<<IgO%H^Q$IdO<<IgO%HhQ`O<<I[OAWQ`O<<IgO%HuQWO<<NiO%H}Q$IvO<<NjOOQO7+){7+){O9aQWO7+){OOQQANA^ANA^O%I_QWOANA^ONmQ&jOANA^O!EaQWOANA^O$C|QrOANA^O$}QYOANA^O%IgQ$IvO7+'nO%KxQ$IvO7+'pO%NZQrO1G4[O%NeQ!LSO7+&TO%NrQ!LSO,59mO&!uQ!LSO,5<_O&$xQ!LSO,5<aO&&{Q!LSO,5<oO&(qQ!LSO7+'aO&)OQ!LSO7+'bO&)]QWO,5<ROOQO7+'U7+'UO&)bQ&jO<<KpOOQO1G4e1G4eO&)iQWO1G4eO&)tQWO1G4eO&*SQWO7++ZO&*SQWO7++ZONmQ&jO1G4gO&*[QpO1G4gO&*fQWO7++[OOQ$IS7+'x7+'xO$AxQWO7+'yO&*nQpO7+'yOOQ$IS7+'w7+'wO$AxQWO7+'xO&*uQWO7+'yONmQ&jO7+'yOARQWO7+'xO&*zQ&jO<<NYOOQ$IU7+$u7+$uO&+UQpO,5?OOOQO-E<b-E<bO&+`Q$ItO7+'|OOQQAN=dAN=dO7{QWO1G4pOOQO1G4p1G4pO&+pQWO1G4pO&+uQWO7++cO&+uQWO7++cO7sQ$I[OANAyO&+}QWOANAyOOQQANAyANAyOOQQANAeANAeOOQQANAfANAfO&,SQWO,5?QOOQO-E<d-E<dO&,_Q!LSO1G5tO#CxQWO,5=hO7iQWO,5=hO&.oQrO'#CgO&.yQ`O,5:uO&/TQ`O,5:uO&/bQ`O,5:uO!3xQ`O,5=hOOQO,5?S,5?SOOQO-E<f-E<fOOQQ1G3R1G3RO%BPQYO,5<sO%AeQ$IdO,5=hO!FkQ$IdO,5:uO'|Q`O,5=hO&/uQ`O,5=hO&0WQ`O,5:uOOQQ<<LW<<LWONmQ&jO<<LWO%E[QWO<<LWO&0qQWO<<LWO$}QYO<<LWOOQQ<<LZ<<LZO7sQ$I[O<<LZO#CxQWO<<LZO7iQWO<<LZO&0yQ`O1G4oO&1RQWO7++aOOQQAN=ZAN=ZO7sQ$I[OAN=ZOOQQ<= O<= OOOQQ<= P<= POOQQ<<Lc<<LcO&1ZQWO<<LcO&1`QYO<<LcO&1gQWO<= OO&1lQWO<= POOQQ1G3m1G3mO<kQWO7+)^O&1qQWO<<ItO&1|Q!LSO<<ItOOQO<<Hq<<HqOOQ$IUAN?YAN?YOOQOAN?RAN?RO$-xQ$IvOAN?ROOQOAN>vAN>vO$}QYOAN?RO<kQWOAN>vO&2WQ$I[OAN?RO!3xQ`OAN>vO&2cQ$I[OAN?ROAWQ`OAN>vO&2qQ$I[OAN?ROOQO<<Mg<<MgOOQQG26xG26xONmQ&jOG26xO!EaQWOG26xO&3VQWOG26xO$C|QrOG26xO&3_Q!LSO<<J[O&3lQ!LSO1G2SO&5bQ!LSO1G2fO&7eQ!LSO1G2hO&9hQ!LSO<<J|O&9uQ!LSO<<IoOOQO1G1m1G1mO!!SQ&jOANA[OOQO7+*P7+*PO&:SQWO7+*PO&:_QWO<<NuO&:gQpO7+*ROOQ$IS<<Ke<<KeO$AxQWO<<KeOOQ$IS<<Kd<<KdO&:qQpO<<KeO$AxQWO<<KdOOQO7+*[7+*[O7{QWO7+*[O&:xQWO<<N}OOQQG27eG27eO7sQ$I[OG27eO!$]QYO1G4lO&;QQWO7++`O7sQ$I[O1G3SO#CxQWO1G3SO&;YQ`O1G0aO&;dQ`O1G0aO7iQWO1G3SO!3xQ`O1G3SO'|Q`O1G3SO%AeQ$IdO1G3SO$+jQ$IdO1G0aO&;qQ`O1G3SO%E[QWOANArOOQQANArANArONmQ&jOANArO&<SQWOANArOOQQANAuANAuO7sQ$I[OANAuO#CxQWOANAuOOQO'#HQ'#HQOOQO7+*Z7+*ZOOQQG22uG22uOOQQANA}ANA}O&<[QWOANA}OOQQANDjANDjOOQQANDkANDkOOQQ<<Lx<<LxO!$]QYOAN?`OOQOG24mG24mO$-xQ$IvOG24mOOQOG24bG24bO$}QYOG24mO<kQWOG24bO&<aQ$I[OG24mO!3xQ`OG24bO&<lQ$I[OG24mO!EaQWOLD,dOOQQLD,dLD,dONmQ&jOLD,dO&<zQWOLD,dO&=SQ!LSO7+'nO&>xQ!LSO7+'pO&@nQ&jOG26vOOQO<<Mk<<MkOOQ$ISANAPANAPO$AxQWOANAPOOQ$ISANAOANAOOOQO<<Mv<<MvOOQQLD-PLD-PO&AOQ!LSO7+*WOOQO7+(n7+(nO7sQ$I[O7+(nO&AYQ`O7+%{O#CxQWO7+(nO7iQWO7+(nO!3xQ`O7+(nO'|Q`O7+(nOOQQG27^G27^O%E[QWOG27^ONmQ&jOG27^OOQQG27aG27aO7sQ$I[OG27aOOQQG27iG27iO&AdQ!LSOG24zOOQOLD*XLD*XO$-xQ$IvOLD*XOOQOLD)|LD)|O$}QYOLD*XO<kQWOLD)|O&AnQ$I[OLD*XOOQQ!$(!O!$(!OO!EaQWO!$(!OONmQ&jO!$(!OO&AyQ$IvOG26vOOQ$ISG26kG26kOOQO<<LY<<LYO7sQ$I[O<<LYO#CxQWO<<LYO7iQWO<<LYO!3xQ`O<<LYOOQQLD,xLD,xO%E[QWOLD,xOOQQLD,{LD,{OOQO!$'Ms!$'MsO$-xQ$IvO!$'MsOOQO!$'Mh!$'MhO$}QYO!$'MsOOQQ!)9Ej!)9EjO!EaQWO!)9EjOOQOANAtANAtO7sQ$I[OANAtO#CxQWOANAtO7iQWOANAtOOQQ!$(!d!$(!dOOQO!)9C_!)9C_O$-xQ$IvO!)9C_OOQQ!.K;U!.K;UO&D[Q!LSOG26vOOQOG27`G27`O7sQ$I[OG27`O#CxQWOG27`OOQO!.K8y!.K8yOOQOLD,zLD,zO7sQ$I[OLD,zOOQO!$(!f!$(!fO!$]QYO'#DtO/mQWO'#EPO&FQQrO'#JQO!$]QYO'#DlO&FXQrO'#CgO&HoQrO'#CgO&IPQYO,5:}O!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO,5;XO!$]QYO'#I^O&KPQWO,5<^O&KXQ&jO,5;XO&LiQ&jO,5;XO!$]QYO,5;mO/pQWO'#DRO/pQWO'#DRONmQ&jO'#FsO&KXQ&jO'#FsONmQ&jO'#FuO&KXQ&jO'#FuONmQ&jO'#GTO&KXQ&jO'#GTO!$]QYO,5?{O&IPQYO1G0iO&LpQ!LSO'#CgO!$]QYO1G1uONmQ&jO,5<zO&KXQ&jO,5<zONmQ&jO,5<|O&KXQ&jO,5<|ONmQ&jO,5<hO&KXQ&jO,5<hO&IPQYO1G1vO!$]QYO7+&pONmQ&jO1G2SO&KXQ&jO1G2SONmQ&jO1G2UO&KXQ&jO1G2UO&IPQYO7+'bO&IPQYO7+&TONmQ&jOANA[O&KXQ&jOANA[O&LzQWO'#EcO&MPQWO'#EcO&MXQWO'#FRO&M^QWO'#EmO&McQWO'#JaO&MnQWO'#J_O&MyQWO,5:}O&NOQ&jO,5<ZO&NVQWO'#F|O&N[QWO'#F|O&NaQWO,5<[O&NiQWO,5:}O&NqQ!LSO1G1UO&NxQWO,5<hO&N}QWO,5<hO' SQWO,5<jO' XQWO,5<jO' ^QWO1G1vO' cQWO1G0iO' hQ&jO<<KpO' oQ&jO<<KpO6UQ&jO'#FqO7iQWO'#FpO?PQWO'#EbO!$]QYO,5;jO!-PQWO'#F|O!-PQWO'#F|O!-PQWO'#GOO!-PQWO'#GOO!!SQ&jO7+(UO!!SQ&jO7+(UO$?lQpO1G2jO$?lQpO1G2jONmQ&jO,5=OONmQ&jO,5=O",
-     stateData: "'!w~O'gOS'hOSSOSTOS~OPVOQVOW!OO[hO^mOasObrOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!VUO!apO!fWO!iVO!jVO!kVO!lVO!mVO!pqO!tYO#kxO#{uO$PcO%ZvO%]yO%_wO%`wO%czO%e{O%h|O%i|O%k}O%x!PO&O!QO&Q!RO&S!SO&U!TO&X!UO&_!VO&e!WO&g!XO&i!YO&k!ZO&m![O'jRO'rSO'}XO([fO~OPVOQVO[hOa!bOb!aOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!V!^O!apO!fWO!iVO!jVO!kVO!lVO!mVO!p!`O#{!cO$PcO'j!]O'rSO'}XO([fO~O[!fO^!lOl!fO{!gO!Y!mO!Z!kO![!kO!t;SO!x!qO!y!oO!z!pO!{!nO#O!rO#P!rO'k!dO's!eO'}!iO~OPZXYZX^ZXkZXxZXyZX{ZX!TZX!cZX!dZX!fZX!lZX#SZX#_cX#bZX#cZX#dZX#eZX#fZX#gZX#hZX#iZX#jZX#lZX#nZX#pZX#qZX#vZX'eZX'rZX(OZX(VZX(WZX~O!_$uX~P(UOR!sO'c!tO'd!vO~OPVOQVO[hOa!bOb!aOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!V!^O!apO!fWO!iVO!jVO!kVO!lVO!mVO!p!`O#{!cO$PcO'j;VO'rSO'}XO([fO~O!S!zO!T!wO!Q'vP!Q(SP~P*qO!U#SO~P`OPVOQVO[hOa!bOb!aOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!V!^O!apO!fWO!iVO!jVO!kVO!lVO!mVO!p!`O#{!cO$PcO'rSO'}XO([fO~O!S#YO!tYO#]#]O#^#YO'j;WO!e(PP~P-YO!f#_O'j#^O~O!p#cO!tYO%Z#dO~O#_#eO~O!_#fO#_#eO~OP#|OY$TOk#qOx#jOy#kO{#lO!T$QO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO#n#vO#p#xO#q#yO'rSO(O#zO(V#mO(W#nO~O^'tX'e'tX'a'tX!e'tX!Q'tX!V'tX%['tX!_'tX~P0_O#S$UO#v$UOP'uXY'uXk'uXx'uXy'uX{'uX!T'uX!c'uX!f'uX!l'uX#b'uX#c'uX#d'uX#e'uX#f'uX#g'uX#h'uX#i'uX#j'uX#l'uX#n'uX#p'uX#q'uX'r'uX(O'uX(V'uX(W'uX!V'uX%['uX~O^'uX!d'uX'e'uX'a'uX!Q'uX!e'uXo'uX!_'uX~P2uO#S$UO~O$R$WO$T$VO$[$]O~O!V$^O$PcO$_$_O$a$aO~O[$dOi$sOk$eOl$dOm$dOr$tOt$uOv$vO{$lO!V$mO!a${O!f$iO#^$|O#{$yO$h$wO$j$xO$m$zO'j$cO'n$rO'r$fOd'oP~O!f$}O~O!_%PO~O^%QO'e%QO~O'j%UO~O!f$}O'j%UO'k!dO'n$rO~Ob%]O!f$}O'j%UO~O#j#sO~O[%fOx%bO!V%_O!f%aO%]%eO'j%UO'k!dO](dP~O!p#cO~O{%gO!V%hO'j%UO~O{%gO!V%hO%e%lO'j%UO~O'j%mO~O#kxO%]yO%_wO%`wO%czO%e{O%h|O%i|O~Oa%vOb%uO!p%sO%Z%tO%m%rO~P:POa%yObrO!V%xO!pqO!tYO#kxO%ZvO%_wO%`wO%czO%e{O%h|O%i|O%k}O~O_%|O#S&PO%]%zO'k!dO~P;OO!f&QO!i&UO~O!f#_O~O!VUO~O^%QO'b&^O'e%QO~O^%QO'b&aO'e%QO~O^%QO'b&cO'e%QO~O'aZX!QZXoZX!eZX%|ZX!VZX%[ZX!_ZX~P(UO[&gOl&gO{&fO!S&jO!Y&pO!Z&iO![&iO'k!dO's&eO!U'wP!U(UP~Og&sO!V&qO'j%UO~Ob&xO!f$}O'j%UO~Ox%bO!f%aO~O[!fOl!fO{!gO!Y&}O!Z&|O![&|O!y'PO!z'PO!{'OO#O'RO#P'RO'k!dO's!eO'}!iO~O!t;SO!x'QO~P?dO^%QO!_#fO!f$}O!l'XO#S'VO'e%QO'n$rO(O'TO~O[!fOl!fO{!gO's!eO'}!iO~O!Z&|O![&|O'k!dO~PAWO!Y&}O!Z&|O![&|O#O'RO#P'RO'k!dO~PAWO!VUO!Y&}O!Z&|O![&|O!{'OO#O'RO#P'RO'k!dO~PAWOR!sO'c!tO'd'_O~O!S'aO!Q&uX!Q&{X!T&uX!T&{X~P*qO!T'cO!Q'vX~OP#|OY$TOk#qOx#jOy#kO{#lO!T'cO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO#n#vO#p#xO#q#yO'rSO(O#zO(V#mO(W#nO~O!Q'vX~PCrO!Q'hO~O!Q(RX!T(RX!_(RX!e(RX(O(RX~O#S(RX#_#WX!U(RX~PExO#S'iO!Q(TX!T(TX~O!T'jO!Q(SX~O!Q'mO~O#S$UO~PExO!U'nO~P`Ox#jOy#kO{#lO!d#hO!f#iO'rSOP!haY!hak!ha!T!ha!c!ha!l!ha#b!ha#c!ha#d!ha#e!ha#f!ha#g!ha#h!ha#i!ha#j!ha#l!ha#n!ha#p!ha#q!ha(O!ha(V!ha(W!ha~O^!ha'e!ha'a!ha!Q!ha!e!hao!ha!V!ha%[!ha!_!ha~PG`O!e'oO~O{%gO!V%hO!tYO#]'rO#^'qO'j%UO~O!_#fO#S'sO(O'TO!T(QX^(QX'e(QX~O!e(QX~PJdO!T'vO!e(PX~O!e'xO~O{%gO!V%hO#^'qO'j%UO~Ox'yOy'zO!d#hO!f#iO!t!sa{!sa~O!p!sa%Z!sa!V!sa#]!sa#^!sa'j!sa~PKlO!p(OO~OPVOQVO[hOa!bOb!aOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!VUO!apO!fWO!iVO!jVO!kVO!lVO!mVO!p!`O#{!cO$PcO'j!]O'rSO'}XO([fO~O[$dOi$sOk$eOl$dOm$dOr$tOt$uOv;jO{$lO!V$mO!a<sO!f$iO#^;pO#{$yO$h;lO$j;nO$m$zO'j(SO'n$rO'r$fO~O#_(UO~O[$dOi$sOk$eOl$dOm$dOr$tOt$uOv$vO{$lO!V$mO!a${O!f$iO#^$|O#{$yO$h$wO$j$xO$m$zO'j(SO'n$rO'r$fO~Od'yP~P!!SO!S(YO!e'zP~P$}O's([O'}XO~O{(^O!f#iO's([O'}XO~OP;ROQ;RO[hOa<oOb!aOihOk;ROlhOmhOrhOt;ROv;RO{TO!OhO!PhO!V!^O!a;UO!fWO!i;RO!j;RO!k;RO!l;RO!m;RO!p!`O#{!cO$PcO'j(lO'rSO'}XO([<mO~Oy(oO!f#iO~O!T$QO^$fa'e$fa'a$fa!e$fa!Q$fa!V$fa%[$fa!_$fa~O#k(sO~PNmOx(vO!_(uO!V$SX$O$SX$R$SX$T$SX$[$SX~O!_(uO!V(XX$O(XX$R(XX$T(XX$[(XX~Ox(vO~P!'rOx(vO!V(XX$O(XX$R(XX$T(XX$[(XX~O!V(xO$O(|O$R(wO$T(wO$[(}O~O!S)QO~P!$]O$R$WO$T$VO$[)UO~Og$nXx$nX{$nX!d$nX(V$nX(W$nX~OdfXd$nXgfX!TfX#SfX~P!)hOl)WO~OR)XO'c)YO'd)[O~Og)eOx)^O{)_O(V)aO(W)cO~Od)]O~P!*qOd)fO~O[$dOi$sOk$eOl$dOm$dOr$tOt$uOv;jO{$lO!V$mO!a<sO!f$iO#^;pO#{$yO$h;lO$j;nO$m$zO'n$rO'r$fO~O!S)jO'j)gO!e(]P~P!+`O#_)lO~O!f)mO~O!S)rO'j)oO!Q(^P~P!+`Ok*OO{)vO!Y)|O!Z)uO![)uO!f)mO#O)}O%R)xO'k!dO's!eO~O!U){O~P!-cO!d#hOg'qXx'qX{'qX(V'qX(W'qX!T'qX#S'qX~Od'qX#t'qX~P!.[Og*RO#S*QOd'pX!T'pX~O!T*SOd'oX~O'j%mOd'oP~O!f*ZO~O'j(SO~O{%gO!S#YO!V%hO!tYO#]#]O#^#YO'j%UO!e(PP~O!_#fO#_*_O~OP#|OY$TOk#qOx#jOy#kO{#lO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO#n#vO#p#xO#q#yO'rSO(O#zO(V#mO(W#nO~O^!`a!T!`a'e!`a'a!`a!Q!`a!e!`ao!`a!V!`a%[!`a!_!`a~P!0nOg*fO!V&qO%[*eO'n$rO~O!_*hO!V'mX^'mX!T'mX'e'mX~O!f$}O'n$rO~O!f$}O'j%UO'n$rO~O!_#fO#_(UO~O[*sO%]*tO'j*pO!U(eP~O!T*uO](dX~O's([O~OY*yO~O]*zO~O!V%_O'j%UO'k!dO](dP~O{%gO!S+OO!T'jO!V%hO'j%UO!Q(SP~O[&mOl&mO{+QO!S+PO's([O~O!U(UP~P!6OO!T+RO^(aX'e(aX~O#S+VO'n$rO~Og+YO!V$mO'n$rO~O!V+[O~Ox+^O!VUO~O!p+cO~Ob+hO~O'j#^O!U(cP~Ob%]O~O%]yO'j%mO~P;OOY+nO]+mO~OPVOQVO[hOasObrOihOkVOlhOmhOrhOtVOvVO{TO!OhO!PhO!apO!fWO!iVO!jVO!kVO!lVO!mVO!pqO!tYO$PcO%ZvO'rSO'}XO([fO~O!V!^O#{!cO'j!]O~P!8`O]+mO^%QO'e%QO~O^+rO#k+tO%_+tO%`+tO~P$}O!f&QO~O&O+yO~O!V+{O~O&a+}O&c,OOP&^aQ&^aW&^a[&^a^&^aa&^ab&^ai&^ak&^al&^am&^ar&^at&^av&^a{&^a!O&^a!P&^a!V&^a!a&^a!f&^a!i&^a!j&^a!k&^a!l&^a!m&^a!p&^a!t&^a#k&^a#{&^a$P&^a%Z&^a%]&^a%_&^a%`&^a%c&^a%e&^a%h&^a%i&^a%k&^a%x&^a&O&^a&Q&^a&S&^a&U&^a&X&^a&_&^a&e&^a&g&^a&i&^a&k&^a&m&^a'a&^a'j&^a'r&^a'}&^a([&^a!U&^a&V&^a_&^a&[&^a~O'j,TO~O!TzX!T!]X!UzX!U!]X!_zX!_!]X!f!]X#SzX'n!]X~O!_,YO#S,XO!T#[X!T'xX!U#[X!U'xX!_'xX!f'xX'n'xX~O!_,[O!f$}O'n$rO!T!XX!U!XX~O[!fOl!fO{!gO's!eO~OP;ROQ;RO[hOa<oOb!aOihOk;ROlhOmhOrhOt;ROv;RO{TO!OhO!PhO!V!^O!a;UO!fWO!i;RO!j;RO!k;RO!l;RO!m;RO!p!`O#{!cO$PcO'rSO'}XO([<mO~O'j;tO~P!AlO!T,`O!U'wX~O!U,bO~O!_,YO#S,XO!T#[X!U#[X~O!T,cO!U(UX~O!U,eO~O[!fOl!fO{!gO'k!dO's!eO~O!Z,fO![,fO~P!DjO!U,iO~P&}Og,lO!V&qO~O!Q,qO~O[!sal!sa!Y!sa!Z!sa![!sa!x!sa!y!sa!z!sa!{!sa#O!sa#P!sa'k!sa's!sa'}!sa~PKlO^%QO!_#fO!f$}O!l,vO#S,tO'e%QO'n$rO(O'TO~O!Z,xO![,xO'k!dO~PAWO!Y,zO!Z,xO![,xO#O,{O#P,{O'k!dO~PAWO!Y,zO!Z,xO![,xO!{,|O#O,{O#P,{O'k!dO~PAWO!Y,zO!Z,xO![,xO!y,}O!z,}O!{,|O#O,{O#P,{O'k!dO~PAWO^%QO#S,tO'e%QO~O^%QO!_#fO#S,tO'e%QO~O^%QO!_#fO!l,vO#S,tO'e%QO(O'TO~Oo-RO~O!Q&ua!T&ua~P!0nO!S-VO!Q&uX!T&uX~P$}O!T'cO!Q'va~O!Q'va~PCrO!T'jO!Q(Sa~O{%gO!S-ZO!V%hO'j%UO!Q&{X!T&{X~O!T'vO!e(Pa~O{%gO!V%hO#^-^O'j%UO~O#S-`O!T(Qa!e(Qa^(Qa'e(Qa~O!_#fO~P!LUO{%gO!S-cO!V%hO!tYO#]-eO#^-cO'j%UO!T&}X!e&}X~Oy-iO!f#iO~Og-lO!V&qO%[-kO'n$rO~O^#Vi!T#Vi'e#Vi'a#Vi!Q#Vi!e#Vio#Vi!V#Vi%[#Vi!_#Vi~P!0nOg<yOx)^O{)_O(V)aO(W)cO~O#_#Ra^#Ra#S#Ra'e#Ra!T#Ra!e#Ra!V#Ra!Q#Ra~P!NgO#_'qXP'qXY'qX^'qXk'qXy'qX!c'qX!f'qX!l'qX#b'qX#c'qX#d'qX#e'qX#f'qX#g'qX#h'qX#i'qX#j'qX#l'qX#n'qX#p'qX#q'qX'e'qX'r'qX(O'qX!e'qX!Q'qX'a'qXo'qX!V'qX%['qX!_'qX~P!.[O!T-uOd'yX~P!*qOd-wO~O!T-xO!e'zX~P!0nO!e-{O~O!Q-}O~OP#|Ox#jOy#kO{#lO!d#hO!f#iO!l#|O'rSOY#ai^#aik#ai!T#ai!c#ai#c#ai#d#ai#e#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai'e#ai(O#ai(V#ai(W#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~O#b#ai~P#$cO#b#oO~P#$cOP#|Ox#jOy#kO{#lO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO'rSOY#ai^#ai!T#ai!c#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai'e#ai(O#ai(V#ai(W#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~Ok#ai~P#'TOk#qO~P#'TOP#|Ok#qOx#jOy#kO{#lO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO'rSO^#ai!T#ai#l#ai#n#ai#p#ai#q#ai'e#ai(O#ai(V#ai(W#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~OY#ai!c#ai#g#ai#h#ai#i#ai#j#ai~P#)uOY$TO!c#sO#g#sO#h#sO#i$SO#j#sO~P#)uOP#|OY$TOk#qOx#jOy#kO{#lO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO'rSO^#ai!T#ai#n#ai#p#ai#q#ai'e#ai(O#ai(W#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~O(V#ai~P#,vO(V#mO~P#,vOP#|OY$TOk#qOx#jOy#kO{#lO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO#n#vO'rSO(V#mO^#ai!T#ai#p#ai#q#ai'e#ai(O#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~O(W#ai~P#/hO(W#nO~P#/hOP#|OY$TOk#qOx#jOy#kO{#lO!c#sO!d#hO!f#iO!l#|O#b#oO#c#pO#d#pO#e#pO#f#rO#g#sO#h#sO#i$SO#j#sO#l#tO#n#vO#p#xO'rSO(V#mO(W#nO~O^#ai!T#ai#q#ai'e#ai(O#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~P#2YOPZXYZXkZXxZXyZX{ZX!cZX!dZX!fZX!lZX#SZX#_cX#bZX#cZX#dZX#eZX#fZX#gZX#hZX#iZX#jZX#lZX#nZX#pZX#qZX#vZX'rZX(OZX(VZX(WZX!TZX!UZX~O#tZX~P#4sOP#|OY;hOk;[Ox#jOy#kO{#lO!c;^O!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO#f;]O#g;^O#h;^O#i;gO#j;^O#l;_O#n;aO#p;cO#q;dO'rSO(O#zO(V#mO(W#nO~O#t.PO~P#7QOP'uXY'uXk'uXx'uXy'uX{'uX!c'uX!d'uX!f'uX!l'uX#b'uX#c'uX#d'uX#e'uX#f'uX#g'uX#h'uX#i'uX#l'uX#n'uX#p'uX#q'uX'r'uX(O'uX(V'uX(W'uX!T'uX~O#S;iO#v;iO#j'uX#t'uX!U'uX~P#9OO^'Qa!T'Qa'e'Qa'a'Qa!e'Qa!Q'Qao'Qa!V'Qa%['Qa!_'Qa~P!0nOP#aiY#ai^#aik#aiy#ai!T#ai!c#ai!d#ai!f#ai!l#ai#b#ai#c#ai#d#ai#e#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai'e#ai'r#ai(O#ai'a#ai!Q#ai!e#aio#ai!V#ai%[#ai!_#ai~P!NgO^#ui!T#ui'e#ui'a#ui!Q#ui!e#uio#ui!V#ui%[#ui!_#ui~P!0nO$R.SO$T.SO~O$R.TO$T.TO~O!_(uO#S.UO!V$XX$O$XX$R$XX$T$XX$[$XX~O!S.VO~O!V(xO$O.XO$R(wO$T(wO$[.YO~O!T;eO!U'tX~P#7QO!U.ZO~O!_(uO$[(XX~O$[.]O~OR)XO'c)YO'd.`O~O[.cOl.cO!Q.dO~O!TcX!_cX!ecX!e$nX(OcX~P!)hO!e.jO~P!NgO!T.kO!_#fO(O'TO!e(]X~O!e.pO~O!S)jO'j%UO!e(]P~O#_.rO~O!Q$nX!T$nX!_$uX~P!)hO!T.sO!Q(^X~P!NgO!_.uO~O!Q.wO~Ok.{O!_#fO!f$}O'n$rO(O'TO~O'j.}O~O!_*hO~O^%QO!T/RO'e%QO~O!U/TO~P!-cO!Z/UO![/UO'k!dO's!eO~O{/WO's!eO~O#O/XO~O'j%mOd'VX!T'VX~O!T*SOd'oa~Od/^O~Ox/_Oy/_O{/`Ogua(Vua(Wua!Tua#Sua~Odua#tua~P#EfOx)^O{)_Og$ga(V$ga(W$ga!T$ga#S$ga~Od$ga#t$ga~P#F[Ox)^O{)_Og$ia(V$ia(W$ia!T$ia#S$ia~Od$ia#t$ia~P#F}O[/aO~O#_/bO~Od$wa!T$wa#S$wa#t$wa~P!*qO#_/eO~Og-lO!V&qO%[-kO~O[$dOk$eOl$dOm$dOr$tOt$uOv;jO{$lO!V$mO!a<sO!f$iO#^;pO#{$yO$h;lO$j;nO$m$zO'n$rO'r$fO~Oi/lO'j/kO~P#HlO!_*hO!V'ma^'ma!T'ma'e'ma~O#_/rO~OYZX!TcX!UcX~O!T/sO!U(eX~O!U/uO~OY/vO~O[/xO'j*pO~O!V%_O'j%UO]'_X!T'_X~O!T*uO](da~O!e/{O~P!0nO[/}O~OY0OO~O]0PO~O!T+RO^(aa'e(aa~O#S0VO~Og0YO!V$mO~O's([O!U(bP~Og0cO!V0`O%[0bO'n$rO~OY0mO!T0kO!U(cX~O!U0nO~O]0pO^%QO'e%QO~O[0qO~O[0rO'j#^O~O#S$UO#j0sO#v$UO%|0tO^'uX~P#9OO#S$UO#j0sO%|0tO~O^0uO~P$}O^0wO~O&V0{OP&TiQ&TiW&Ti[&Ti^&Tia&Tib&Tii&Tik&Til&Tim&Tir&Tit&Tiv&Ti{&Ti!O&Ti!P&Ti!V&Ti!a&Ti!f&Ti!i&Ti!j&Ti!k&Ti!l&Ti!m&Ti!p&Ti!t&Ti#k&Ti#{&Ti$P&Ti%Z&Ti%]&Ti%_&Ti%`&Ti%c&Ti%e&Ti%h&Ti%i&Ti%k&Ti%x&Ti&O&Ti&Q&Ti&S&Ti&U&Ti&X&Ti&_&Ti&e&Ti&g&Ti&i&Ti&k&Ti&m&Ti'a&Ti'j&Ti'r&Ti'}&Ti([&Ti!U&Ti_&Ti&[&Ti~O_1RO!U1PO&[1QO~P`O!VUO!f1TO~O&c,OOP&^iQ&^iW&^i[&^i^&^ia&^ib&^ii&^ik&^il&^im&^ir&^it&^iv&^i{&^i!O&^i!P&^i!V&^i!a&^i!f&^i!i&^i!j&^i!k&^i!l&^i!m&^i!p&^i!t&^i#k&^i#{&^i$P&^i%Z&^i%]&^i%_&^i%`&^i%c&^i%e&^i%h&^i%i&^i%k&^i%x&^i&O&^i&Q&^i&S&^i&U&^i&X&^i&_&^i&e&^i&g&^i&i&^i&k&^i&m&^i'a&^i'j&^i'r&^i'}&^i([&^i!U&^i&V&^i_&^i&[&^i~O!Q1ZO~O!T!Xa!U!Xa~P#7QO!S1aO!Y&pO!Z&iO![&iO!T&vX!U&vX~P!DjO!T,`O!U'wa~O!T&|X!U&|X~P!6OO!T,cO!U(Ua~O!U1hO~P&}O^%QO#S1qO'e%QO~O^%QO!_#fO#S1qO'e%QO~O^%QO!_#fO!f$}O!l1uO#S1qO'e%QO'n$rO(O'TO~O!Z1vO![1vO'k!dO~PAWO!Y1yO!Z1vO![1vO#O1zO#P1zO'k!dO~PAWO!Y1yO!Z1vO![1vO!{1{O#O1zO#P1zO'k!dO~PAWO^%QO!_#fO!l1uO#S1qO'e%QO(O'TO~O^%QO'e%QO~P!0nO!T$QOo$fa~O!Q&ui!T&ui~P!0nO!T'cO!Q'vi~O!T'jO!Q(Si~O!Q(Ti!T(Ti~P!0nO!T'vO!e(Pi~O!T(Qi!e(Qi^(Qi'e(Qi~P!0nO#S2PO!T(Qi!e(Qi^(Qi'e(Qi~O{%gO!V%hO!tYO#]2SO#^2RO'j%UO~O{%gO!V%hO#^2RO'j%UO~Og2ZO!V&qO%[2YO~Og2ZO!V&qO%[2YO'n$rO~O#_uaPuaYua^uakua!cua!dua!fua!lua#bua#cua#dua#eua#fua#gua#hua#iua#jua#lua#nua#pua#qua'eua'rua(Oua!eua!Qua'auaoua!Vua%[ua!_ua~P#EfO#_$gaP$gaY$ga^$gak$gay$ga!c$ga!d$ga!f$ga!l$ga#b$ga#c$ga#d$ga#e$ga#f$ga#g$ga#h$ga#i$ga#j$ga#l$ga#n$ga#p$ga#q$ga'e$ga'r$ga(O$ga!e$ga!Q$ga'a$gao$ga!V$ga%[$ga!_$ga~P#F[O#_$iaP$iaY$ia^$iak$iay$ia!c$ia!d$ia!f$ia!l$ia#b$ia#c$ia#d$ia#e$ia#f$ia#g$ia#h$ia#i$ia#j$ia#l$ia#n$ia#p$ia#q$ia'e$ia'r$ia(O$ia!e$ia!Q$ia'a$iao$ia!V$ia%[$ia!_$ia~P#F}O#_$waP$waY$wa^$wak$way$wa!T$wa!c$wa!d$wa!f$wa!l$wa#b$wa#c$wa#d$wa#e$wa#f$wa#g$wa#h$wa#i$wa#j$wa#l$wa#n$wa#p$wa#q$wa'e$wa'r$wa(O$wa!e$wa!Q$wa'a$wa#S$wao$wa!V$wa%[$wa!_$wa~P!NgO^#Vq!T#Vq'e#Vq'a#Vq!Q#Vq!e#Vqo#Vq!V#Vq%[#Vq!_#Vq~P!0nOd&wX!T&wX~P!!SO!T-uOd'ya~O!S2cO!T&xX!e&xX~P$}O!T-xO!e'za~O!T-xO!e'za~P!0nO!Q2fO~O#t!ha!U!ha~PG`O#t!`a!T!`a!U!`a~P#7QO!V2wO$PcO$Y2xO~O!U2|O~Oo2}O~P!NgO^$cq!T$cq'e$cq'a$cq!Q$cq!e$cqo$cq!V$cq%[$cq!_$cq~P!0nO!Q3OO~O[.cOl.cO~Ox)^O{)_O(W)cOg%Si(V%Si!T%Si#S%Si~Od%Si#t%Si~P$>WOx)^O{)_Og%Ui(V%Ui(W%Ui!T%Ui#S%Ui~Od%Ui#t%Ui~P$>yO(O#zO~P!NgO!S3RO'j%UO!T'RX!e'RX~O!T.kO!e(]a~O!T.kO!_#fO!e(]a~O!T.kO!_#fO(O'TO!e(]a~Od$pi!T$pi#S$pi#t$pi~P!*qO!S3ZO'j)oO!Q'TX!T'TX~P!+`O!T.sO!Q(^a~O!T.sO!Q(^a~P!NgO!_#fO~O!_#fO#j3cO~Ok3fO!_#fO(O'TO~Od'pi!T'pi~P!*qO#S3iOd'pi!T'pi~P!*qO!e3lO~O^$dq!T$dq'e$dq'a$dq!Q$dq!e$dqo$dq!V$dq%[$dq!_$dq~P!0nO!T3pO!V(_X~P!NgO!d#hO~P2uO!V$nX%PZX^$nX!T$nX'e$nX~P!)hO%P3rOghXxhX{hX!VhX(VhX(WhX^hX!ThX'ehX~O%P3rO~O[3xO%]3yO'j*pO!T'^X!U'^X~O!T/sO!U(ea~OY3}O~O]4OO~O[4RO~O!Q4SO~O^%QO'e%QO~P!NgO!V$mO~P!NgO!T4XO#S4ZO!U(bX~O!U4[O~O[!fOl!fO{4^O!Y4kO!Z4bO![4bO!t;SO!x4jO!y4iO!z4iO!{4hO#O4gO#P!rO'k!dO's!eO'}!iO~O!U4fO~P$GPOg4pO!V0`O%[4oO~Og4pO!V0`O%[4oO'n$rO~O'j#^O!T']X!U']X~O!T0kO!U(ca~O[4zO's4yO~O[4{O~O]4}O~O!e5QO~P$}O^5SO~O^5SO~P$}O#j5UO%|5VO~PJdO_1RO!U5ZO&[1QO~P`O!_5]O~O!_5_O!T'xi!U'xi!_'xi!f'xi'n'xi~O!T#[i!U#[i~P#7QO#S5`O!T#[i!U#[i~O!T!Xi!U!Xi~P#7QO^%QO#S5iO'e%QO~O^%QO!_#fO#S5iO'e%QO~O^%QO!_#fO!l5nO#S5iO'e%QO(O'TO~O!f$}O'n$rO~P$L]O!Z5oO![5oO'k!dO~PAWO!Y5rO!Z5oO![5oO#O5sO#P5sO'k!dO~PAWO!T'vO!e(Pq~O!T(Qq!e(Qq^(Qq'e(Qq~P!0nO{%gO!V%hO#^5wO'j%UO~O!V&qO%[5zO~Og5}O!V&qO%[5zO~O#_%SiP%SiY%Si^%Sik%Siy%Si!c%Si!d%Si!f%Si!l%Si#b%Si#c%Si#d%Si#e%Si#f%Si#g%Si#h%Si#i%Si#j%Si#l%Si#n%Si#p%Si#q%Si'e%Si'r%Si(O%Si!e%Si!Q%Si'a%Sio%Si!V%Si%[%Si!_%Si~P$>WO#_%UiP%UiY%Ui^%Uik%Uiy%Ui!c%Ui!d%Ui!f%Ui!l%Ui#b%Ui#c%Ui#d%Ui#e%Ui#f%Ui#g%Ui#h%Ui#i%Ui#j%Ui#l%Ui#n%Ui#p%Ui#q%Ui'e%Ui'r%Ui(O%Ui!e%Ui!Q%Ui'a%Uio%Ui!V%Ui%[%Ui!_%Ui~P$>yO#_$piP$piY$pi^$pik$piy$pi!T$pi!c$pi!d$pi!f$pi!l$pi#b$pi#c$pi#d$pi#e$pi#f$pi#g$pi#h$pi#i$pi#j$pi#l$pi#n$pi#p$pi#q$pi'e$pi'r$pi(O$pi!e$pi!Q$pi'a$pi#S$pio$pi!V$pi%[$pi!_$pi~P!NgOd&wa!T&wa~P!*qO!T&xa!e&xa~P!0nO!T-xO!e'zi~O#t#Vi!T#Vi!U#Vi~P#7QOP#|Ox#jOy#kO{#lO!d#hO!f#iO!l#|O'rSOY#aik#ai!c#ai#c#ai#d#ai#e#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai#t#ai(O#ai(V#ai(W#ai!T#ai!U#ai~O#b#ai~P%(oO#b;YO~P%(oOP#|Ox#jOy#kO{#lO!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO'rSOY#ai!c#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai#t#ai(O#ai(V#ai(W#ai!T#ai!U#ai~Ok#ai~P%*zOk;[O~P%*zOP#|Ok;[Ox#jOy#kO{#lO!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO#f;]O'rSO#l#ai#n#ai#p#ai#q#ai#t#ai(O#ai(V#ai(W#ai!T#ai!U#ai~OY#ai!c#ai#g#ai#h#ai#i#ai#j#ai~P%-VOY;hO!c;^O#g;^O#h;^O#i;gO#j;^O~P%-VOP#|OY;hOk;[Ox#jOy#kO{#lO!c;^O!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO#f;]O#g;^O#h;^O#i;gO#j;^O#l;_O'rSO#n#ai#p#ai#q#ai#t#ai(O#ai(W#ai!T#ai!U#ai~O(V#ai~P%/qO(V#mO~P%/qOP#|OY;hOk;[Ox#jOy#kO{#lO!c;^O!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO#f;]O#g;^O#h;^O#i;gO#j;^O#l;_O#n;aO'rSO(V#mO#p#ai#q#ai#t#ai(O#ai!T#ai!U#ai~O(W#ai~P%1|O(W#nO~P%1|OP#|OY;hOk;[Ox#jOy#kO{#lO!c;^O!d#hO!f#iO!l#|O#b;YO#c;ZO#d;ZO#e;ZO#f;]O#g;^O#h;^O#i;gO#j;^O#l;_O#n;aO#p;cO'rSO(V#mO(W#nO~O#q#ai#t#ai(O#ai!T#ai!U#ai~P%4XO^#ry!T#ry'e#ry'a#ry!Q#ry!e#ryo#ry!V#ry%[#ry!_#ry~P!0nOg<zOx)^O{)_O(V)aO(W)cO~OP#aiY#aik#aiy#ai!c#ai!d#ai!f#ai!l#ai#b#ai#c#ai#d#ai#e#ai#f#ai#g#ai#h#ai#i#ai#j#ai#l#ai#n#ai#p#ai#q#ai#t#ai'r#ai(O#ai!T#ai!U#ai~P%7PO!d#hOP'qXY'qXg'qXk'qXx'qXy'qX{'qX!c'qX!f'qX!l'qX#b'qX#c'qX#d'qX#e'qX#f'qX#g'qX#h'qX#i'qX#j'qX#l'qX#n'qX#p'qX#q'qX#t'qX'r'qX(O'qX(V'qX(W'qX!T'qX!U'qX~O#t#ui!T#ui!U#ui~P#7QO!U6ZO~O!T'Qa!U'Qa~P#7QO!_#fO(O'TO!T'Ra!e'Ra~O!T.kO!e(]i~O!T.kO!_#fO!e(]i~Od$pq!T$pq#S$pq#t$pq~P!*qO!Q'Ta!T'Ta~P!NgO!_6bO~O!T.sO!Q(^i~P!NgO!T.sO!Q(^i~O!Q6fO~O!_#fO#j6kO~Ok6lO!_#fO(O'TO~O!Q6nO~Od$rq!T$rq#S$rq#t$rq~P!*qO^$dy!T$dy'e$dy'a$dy!Q$dy!e$dyo$dy!V$dy%[$dy!_$dy~P!0nO!T3pO!V(_a~O^#Vy!T#Vy'e#Vy'a#Vy!Q#Vy!e#Vyo#Vy!V#Vy%[#Vy!_#Vy~P!0nOY6sO~O[6uO'j*pO~O!T/sO!U(ei~O[6xO~O]6yO~O!_5_O~O's([O!T'YX!U'YX~O!T4XO!U(ba~O!f$}O'n$rO^'xX!_'xX!l'xX#S'xX'e'xX(O'xX~O'j7SO~P-YO!t;SO!x7VO!y7UO!z7UO!{7TO#O'RO#P'RO~PAWO^%QO!_#fO!l'XO#S'VO'e%QO(O'TO~O!U7ZO~P$GPO[!fOl!fO{7[O's!eO'}!iO~O!Y7`O!Z7_O![7_O!{7TO#O'RO#P'RO'k!dO~PAWO!Y7`O!Z7_O![7_O!y7aO!z7aO!{7TO#O'RO#P'RO'k!dO~PAWO!Z7_O![7_O'k!dO's!eO'}!iO~O!V0`O~O!V0`O%[7cO~Og7fO!V0`O%[7cO~OY7kO!T']a!U']a~O!T0kO!U(ci~O[7nO~O!e7oO~O!e7pO~O!e7qO~O!e7qO~P$}O^7sO~O!_7vO~O!e7wO~O!T(Ti!U(Ti~P#7QO^%QO#S8PO'e%QO~O^%QO!_#fO#S8PO'e%QO~O^%QO!_#fO!l8TO#S8PO'e%QO(O'TO~O!f$}O'n$rO~P%GxO!Z8UO![8UO'k!dO~PAWO!T'vO!e(Py~O!T(Qy!e(Qy^(Qy'e(Qy~P!0nO!V&qO%[8YO~O#_$pqP$pqY$pq^$pqk$pqy$pq!T$pq!c$pq!d$pq!f$pq!l$pq#b$pq#c$pq#d$pq#e$pq#f$pq#g$pq#h$pq#i$pq#j$pq#l$pq#n$pq#p$pq#q$pq'e$pq'r$pq(O$pq!e$pq!Q$pq'a$pq#S$pqo$pq!V$pq%[$pq!_$pq~P!NgO#_$rqP$rqY$rq^$rqk$rqy$rq!T$rq!c$rq!d$rq!f$rq!l$rq#b$rq#c$rq#d$rq#e$rq#f$rq#g$rq#h$rq#i$rq#j$rq#l$rq#n$rq#p$rq#q$rq'e$rq'r$rq(O$rq!e$rq!Q$rq'a$rq#S$rqo$rq!V$rq%[$rq!_$rq~P!NgO!T&xi!e&xi~P!0nO#t#Vq!T#Vq!U#Vq~P#7QOx/_Oy/_O{/`OPuaYuaguakua!cua!dua!fua!lua#bua#cua#dua#eua#fua#gua#hua#iua#jua#lua#nua#pua#qua#tua'rua(Oua(Vua(Wua!Tua!Uua~Ox)^O{)_OP$gaY$gag$gak$gay$ga!c$ga!d$ga!f$ga!l$ga#b$ga#c$ga#d$ga#e$ga#f$ga#g$ga#h$ga#i$ga#j$ga#l$ga#n$ga#p$ga#q$ga#t$ga'r$ga(O$ga(V$ga(W$ga!T$ga!U$ga~Ox)^O{)_OP$iaY$iag$iak$iay$ia!c$ia!d$ia!f$ia!l$ia#b$ia#c$ia#d$ia#e$ia#f$ia#g$ia#h$ia#i$ia#j$ia#l$ia#n$ia#p$ia#q$ia#t$ia'r$ia(O$ia(V$ia(W$ia!T$ia!U$ia~OP$waY$wak$way$wa!c$wa!d$wa!f$wa!l$wa#b$wa#c$wa#d$wa#e$wa#f$wa#g$wa#h$wa#i$wa#j$wa#l$wa#n$wa#p$wa#q$wa#t$wa'r$wa(O$wa!T$wa!U$wa~P%7PO#t$cq!T$cq!U$cq~P#7QO#t$dq!T$dq!U$dq~P#7QO!U8dO~O#t8eO~P!*qO!_#fO!T'Ri!e'Ri~O!_#fO(O'TO!T'Ri!e'Ri~O!T.kO!e(]q~O!Q'Ti!T'Ti~P!NgO!T.sO!Q(^q~O!Q8kO~P!NgO!Q8kO~Od'py!T'py~P!*qO!T'Wa!V'Wa~P!NgO!V%Oq^%Oq!T%Oq'e%Oq~P!NgOY8pO~O!T/sO!U(eq~O[8sO~O#S8tO!T'Ya!U'Ya~O!T4XO!U(bi~P#7QOPZXYZXkZXxZXyZX{ZX!QZX!TZX!cZX!dZX!fZX!lZX#SZX#_cX#bZX#cZX#dZX#eZX#fZX#gZX#hZX#iZX#jZX#lZX#nZX#pZX#qZX#vZX'rZX(OZX(VZX(WZX~O!_$|X#j$|X~P&,iO#O,{O#P,{O~PAWO!{8xO#O,{O#P,{O~PAWO!y8yO!z8yO!{8xO#O,{O#P,{O~PAWO!Z8|O![8|O'k!dO's!eO'}!iO~O!Y9PO!Z8|O![8|O!{8xO#O,{O#P,{O'k!dO~PAWO!V0`O%[9SO~O[9YO's9XO~O!T0kO!U(cq~O!e9[O~O!e9[O~P$}O!e9^O~O!e9_O~O#S9aO!T#[y!U#[y~O!T#[y!U#[y~P#7QO^%QO#S9eO'e%QO~O^%QO!_#fO#S9eO'e%QO~O^%QO!_#fO!l9iO#S9eO'e%QO(O'TO~O!V&qO%[9lO~O#t#ry!T#ry!U#ry~P#7QOP$piY$pik$piy$pi!c$pi!d$pi!f$pi!l$pi#b$pi#c$pi#d$pi#e$pi#f$pi#g$pi#h$pi#i$pi#j$pi#l$pi#n$pi#p$pi#q$pi#t$pi'r$pi(O$pi!T$pi!U$pi~P%7POx)^O{)_O(W)cOP%SiY%Sig%Sik%Siy%Si!c%Si!d%Si!f%Si!l%Si#b%Si#c%Si#d%Si#e%Si#f%Si#g%Si#h%Si#i%Si#j%Si#l%Si#n%Si#p%Si#q%Si#t%Si'r%Si(O%Si(V%Si!T%Si!U%Si~Ox)^O{)_OP%UiY%Uig%Uik%Uiy%Ui!c%Ui!d%Ui!f%Ui!l%Ui#b%Ui#c%Ui#d%Ui#e%Ui#f%Ui#g%Ui#h%Ui#i%Ui#j%Ui#l%Ui#n%Ui#p%Ui#q%Ui#t%Ui'r%Ui(O%Ui(V%Ui(W%Ui!T%Ui!U%Ui~O#t$dy!T$dy!U$dy~P#7QO#t#Vy!T#Vy!U#Vy~P#7QO!_#fO!T'Rq!e'Rq~O!T.kO!e(]y~O!Q'Tq!T'Tq~P!NgO!Q9sO~P!NgO!T/sO!U(ey~O!T4XO!U(bq~O#O1zO#P1zO~PAWO!{9zO#O1zO#P1zO~PAWO!Z:OO![:OO'k!dO's!eO'}!iO~O!V0`O%[:RO~O!e:UO~O^%QO#S:ZO'e%QO~O^%QO!_#fO#S:ZO'e%QO~O!V&qO%[:`O~OP$pqY$pqk$pqy$pq!c$pq!d$pq!f$pq!l$pq#b$pq#c$pq#d$pq#e$pq#f$pq#g$pq#h$pq#i$pq#j$pq#l$pq#n$pq#p$pq#q$pq#t$pq'r$pq(O$pq!T$pq!U$pq~P%7POP$rqY$rqk$rqy$rq!c$rq!d$rq!f$rq!l$rq#b$rq#c$rq#d$rq#e$rq#f$rq#g$rq#h$rq#i$rq#j$rq#l$rq#n$rq#p$rq#q$rq#t$rq'r$rq(O$rq!T$rq!U$rq~P%7POd%W!Z!T%W!Z#S%W!Z#t%W!Z~P!*qO!T'Yq!U'Yq~P#7QO#O5sO#P5sO~PAWO!T#[!Z!U#[!Z~P#7QO^%QO#S:nO'e%QO~O#_%W!ZP%W!ZY%W!Z^%W!Zk%W!Zy%W!Z!T%W!Z!c%W!Z!d%W!Z!f%W!Z!l%W!Z#b%W!Z#c%W!Z#d%W!Z#e%W!Z#f%W!Z#g%W!Z#h%W!Z#i%W!Z#j%W!Z#l%W!Z#n%W!Z#p%W!Z#q%W!Z'e%W!Z'r%W!Z(O%W!Z!e%W!Z!Q%W!Z'a%W!Z#S%W!Zo%W!Z!V%W!Z%[%W!Z!_%W!Z~P!NgOP%W!ZY%W!Zk%W!Zy%W!Z!c%W!Z!d%W!Z!f%W!Z!l%W!Z#b%W!Z#c%W!Z#d%W!Z#e%W!Z#f%W!Z#g%W!Z#h%W!Z#i%W!Z#j%W!Z#l%W!Z#n%W!Z#p%W!Z#q%W!Z#t%W!Z'r%W!Z(O%W!Z!T%W!Z!U%W!Z~P%7POo'tX~P0_O!QcX!TcX#ScX~P&,iOPZXYZXkZXxZXyZX{ZX!TZX!TcX!cZX!dZX!fZX!lZX#SZX#ScX#_cX#bZX#cZX#dZX#eZX#fZX#gZX#hZX#iZX#jZX#lZX#nZX#pZX#qZX#vZX'rZX(OZX(VZX(WZX~O!_cX!eZX!ecX(OcX~P&FfOP;ROQ;RO[hOa<oOb!aOihOk;ROlhOmhOrhOt;ROv;RO{TO!OhO!PhO!VUO!a;UO!fWO!i;RO!j;RO!k;RO!l;RO!m;RO!p!`O#{!cO$PcO'j(lO'rSO'}XO([<mO~O!T;eO!U$fa~O[$dOi$sOk$eOl$dOm$dOr$tOt$uOv;kO{$lO!V$mO!a<tO!f$iO#^;qO#{$yO$h;mO$j;oO$m$zO'j(SO'n$rO'r$fO~O#k(sO~P&KXO!UZX!UcX~P&FfO#_;XO~O!_#fO#_;XO~O#S;iO~O#j;^O~O#S;rO!T(TX!U(TX~O#S;iO!T(RX!U(RX~O#_;sO~Od;uO~P!*qO#_;zO~O#_;{O~O!_#fO#_;|O~O!_#fO#_;sO~O#t;}O~P#7QO#_<OO~O#_<PO~O#_<QO~O#_<RO~O#_<SO~O#_<TO~O#t<UO~P!*qO#t<VO~P!*qO$P~!d!x!z!{#O#]#^#i([$h$j$m%P%Z%[%]%c%e%h%i%k%m~TS$P([#c!P'g'k#dl#b#ekx'h's'h'j$R$T$R~",
-     goto: "$$n(iPPPPPPP(jP(zP*vPPPP.uPP/[P5S8sP9WP9WPPP9WP:v9WP9WP9WP:zPP;PP;j@YPPP@^PPPP@^CYPPPC`E`P@^PGvPPPPJR@^PPPPPL^@^P! m!!o!!tP!#f!#j!#fPPPP!&p!(uPP!)O!*YP!!o@^@^!-l!0q!5t!5t!9fPPP!9m@^PPPPPPPPPPP!<uP!>ZPP@^!?kP@^P@^@^@^@^P@^!AQPP!DTP!GSP!GW!Gb!Gf!GfP!DQP!Gj!GjP!JiP!Jm@^@^!Js!Mq9WP9WP9W9WP!N{9W9W#!u9W#%S9W#&v9W9W#'d#)`#)`#)d#)l#)`#)tP#)`P9W#*p9W#+x9W9W.uPPP#-TPP#-m#-mP#-mP#.S#-mPP#.YP#.PP#.P#.l!(z#.P#/W#/^#/a(j#/d(jP#/k#/k#/kP(jP(jP(jP(jPP(jP#/q#/tP#/t(jP#/xP#/{P(jP(jP(jP(jP(jP(j(jPP#0R#0]#0c#0i#0w#0}#1T#1_#1e#2a#2p#2v#3Y#3`#3f#3t#4Z#5k#5y#6P#6V#6]#6c#6m#6s#6y#7T#7g#7mPPPPPPPP#7sPP#8g#<RP#=n#=u#=}PP#BX#D}#KZ#K^#Ka#M^#Ma#Md#MkPP#Mq#Mu#Nn$ n$ r$!WPP$![$!b$!fP$!i$!m$!p$#f$#|$$R$$U$$X$$_$$b$$f$$jmmOUo!S#T%P&T&V&W&Y+v+{0{1OU!kQ&q,hQ%[rQ%cuQ%{!OS&i!^,`Q&w!a[&|!h!m!n!o!p!qS)u$m)zQ*n%]Q*{%eQ+g%uQ,f&pQ,p&xW,x&}'O'P'QQ/U)|Q0j+hU1v,z,|,}S4b0`4eS5o1y1{U7_4i4j4kQ8U5rS8|7`7aR:O9P$zaOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_+Q+r+v+{,l,t-V-`-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2c4^4p5S5U5V5i7[7f7s8P9e:Z:nS#aY;S!l(n#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pQ*V$vQ*s%_Q+i%xQ+p&QQ-o;jQ/i*fQ/m*hQ/x*tQ0r+nQ2V-lQ3x/sQ4w0kQ5|2ZQ6S;kQ6u3yR8]5}pjOUo!O!S#T%P%z&T&V&W&Y+v+{0{1OR+k%|&l]OPUVops!S!X!b!g!s#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^%P%a%|&P&Q&T&V&W&Y&^&f&s'V'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<o<p[!|TW!w!z&j'aQ%VqQ%ZrS%`u%e!U%iwx#W#Y#]$}%g'j'q'r'v+O+P+R+t,Y-Z-^-b-c-e1T2R2S5_5wQ%q|Q&t!`Q&v!aQ'}#cS)i$i)mS*m%[%]Q*q%_Q+b%sQ+f%uS,o&w&xQ-n(OQ.o)jQ/q*nQ/w*tQ/y*uQ/|*yQ0e+cS0i+g+hQ1m,pQ3Q.kQ3w/sQ3{/vQ4Q0OQ4v0jQ6_3RQ6t3yQ6w3}Q8o6sR9u8pv$kf#h$w$x$|)b)d)l*Q*R-u.r/b3P3i8e<m<u<v!`%Xr!a!j%Z%[%]&h&v&w&x&{'Y)t*m*n,],o,p,w,y.|/q1f1m1t1x3e5m5q8S9hQ*g%VQ+W%nQ+Z%oQ+e%uQ-m'}Q0d+bU0h+f+g+hQ2[-nQ4q0eS4u0i0jS7R4]4aQ7j4vU8z7W7]7^U9|8{8}9OQ:f9}Q:t:g!z<q#f$S$T$i$l)X)e)r*e*h+V+Y-k.s.u0V0Y0b2Y3Z3c3p3r4o5z6b6k7c8Y9S9l:R:`;l;n;p;v;x;z<O<Q<U<y<zg<r;g;h;m;o;q;w;y;{<P<R<VW$pf$r*S<mS%ny%zQ%ozQ%p{R+U%l$Z$of#f#h$S$T$i$l$w$x$|)X)b)d)e)l)r*Q*R*e*h+V+Y-k-u.r.s.u/b0V0Y0b2Y3P3Z3c3i3p3r4o5z6b6k7c8Y8e9S9l:R:`;g;h;l;m;n;o;p;q;v;w;x;y;z;{<O<P<Q<R<U<V<m<u<v<y<zT)Y$f)ZV*W$v;j;kU&m!^%h,cS(]#j#kQ*x%bS-g'y'zQ0Z+[Q3j/_R6}4X&rhOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<p$c$P`!y#U%T'`'f(Q(X(a(b(c(d(e(f(g(h(i(j(k(m(p(t)O*w,^-Q-T-Y-_-t-z.O.Q.a/c1[1_1o2O2b2g2h2i2j2k2l2m2n2o2p2q2r2s2v2{3n3u5b5h5u6Q6R6W6X7P7y7}8^8b8c9c9w:V:X:l:w;T<dT!tS!u&shOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pQ&k!^R1b,`!z!fQ!^!h!k!m!n!o!p!q!r&i&p&q&|&}'O'P'Q'R,`,f,h,x,z,{,|,}1v1y1z1{4_4g4h5o5r5s7T7U7V8U8x8y9zS)t$m)zS.|)u)|Q/V)}Q0]+^Q3e/UQ3h/XS4]0`4eS7W4b4kS7]4i4jS8{7_7`Q8}7aS9}8|9PR:g:OlmOUo!S#T%P&T&V&W&Y+v+{0{1OQ&[!VQ'Z!oS(P#e;XQ*k%YQ+`%qQ+a%rQ,m&uQ-P'SS-s(U;sS/d*_;|Q/o*lQ0_+_Q1S+}Q1U,OQ1^,ZQ1k,nQ1n,rS3o/e<SQ3s/pS3v/r<TQ5a1`Q5e1lQ5j1sQ6r3tQ7z5cQ7{5fQ8O5kQ9`7wQ9d8QQ:Y9fR:m:[$^$O`!y#U'`'f(Q(X(a(b(c(d(e(f(g(h(i(j(k(m(p(t)O*w,^-Q-T-Y-_-t-z.O.a/c1[1_1o2O2b2g2h2i2j2k2l2m2n2o2p2q2r2s2v2{3n3u5b5h5u6Q6R6W6X7P7y7}8^8b8c9c9w:V:X:l:w;T<dS'|#`&zU*P$n(T2uS*c%T.QQ2W/iQ5y2VQ8[5|R9m8]$^#}`!y#U'`'f(Q(X(a(b(c(d(e(f(g(h(i(j(k(m(p(t)O*w,^-Q-T-Y-_-t-z.O.a/c1[1_1o2O2b2g2h2i2j2k2l2m2n2o2p2q2r2s2v2{3n3u5b5h5u6Q6R6W6X7P7y7}8^8b8c9c9w:V:X:l:w;T<dS'{#`&zS(_#k$OS*b%T.QS-h'z'|Q.R(oQ/f*cR2T-i&rhOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pS#aY;SQ&V!QQ&W!RQ&Y!TQ&Z!UR0z+yQ&r!`Q*d%VQ,k&tS-j'}*gQ1i,jW2X-m-n/h/jQ5d1jU5x2U2W2[S8X5y5{S9k8Z8[S:^9j9mQ:o:_R:x:pV!lQ&q,h!_ZOQUW[o!O!S!h#T#W$}%P%z%|&T&V&W&Y&q'v+v+{,h-b0`0{1O4_4eT#aY;S%UtOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&Q&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_*f+Q+r+v+{,l,t-V-`-l-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2Z2c4^4p5S5U5V5i5}7[7f7s8P9e:Z:nS(]#j#kS-g'y'z!m<Z#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pU!jQ&q,hY&{!h!n!o!p!qS'Y!k!mW'[!r4_4g4hS,w&|&}U,y'O'P'QW-O'R7T7U7VS1t,x,zU1w,{8x8yS1x,|,}S4a0`4eS5m1v1yS5p1z9zQ5q1{S7W4b4kS7^4i4jS8S5o5rQ8V5sS8{7_7`Q9O7aQ9h8US9}8|9PR:g:OU!lQ&q,hT4c0`4eU'X!j4`4aS'u#X0xU,v&{'[7^Q.n)iQ.z)tU1u,y-O9OQ3V.oS3`.{/VS5n1w1xQ6^3QS6i3f3hS8T5p5qQ8g6_Q8n6lR9i8VQ#g_U'W!j4`4aS't#X0xQ*`%OQ*i%WQ*o%^W,u&{'X'[7^Q-a'uQ.m)iQ.y)tQ/P)wQ/n*jQ0f+dW1r,v,y-O9OS3U.n.oS3_.z/VQ3b/OQ3d/QQ4s0gU5l1u1w1xQ6]3QQ6a3VS6e3`3hQ6j3gQ7h4tU8R5n5p5qS8f6^6_Q8j6fQ8l6iQ8v7QQ9V7iS9g8T8VQ9q8gQ9r8kQ9t8nQ9y8wQ:T9WQ:]9iQ:b9sQ:d9{Q:r:eQ:{:sQ;P:|Q<^<XQ<i<bR<j<c%U^OPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&Q&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_*f+Q+r+v+{,l,t-V-`-l-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2Z2c4^4p5S5U5V5i5}7[7f7s8P9e:Z:nS#gs!b!l<W#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pR<^<o%U_OPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&Q&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_*f+Q+r+v+{,l,t-V-`-l-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2Z2c4^4p5S5U5V5i5}7[7f7s8P9e:Z:nQ%Og!`%Wr!a!j%Z%[%]&h&v&w&x&{'Y)t*m*n,],o,p,w,y.|/q1f1m1t1x3e5m5q8S9hS%^s!bQ*j%XQ+d%uW0g+e+f+g+hU4t0h0i0jS7Q4]4aS7i4u4vW8w7R7W7]7^Q9W7jW9{8z8{8}9OS:e9|9}S:s:f:gQ:|:t!l<X#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pQ<b<nR<c<o$xbOPUVop!S!X!g!s#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&T&V&W&Y&^&f&s'V'c'i's(U(Y(^)]*_*f+Q+r+v+{,l,t-V-`-l-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2Z2c4^4p5S5U5V5i5}7[7f7s8P9e:Z:nY#RTW!w!z'a!U%iwx#W#Y#]$}%g'j'q'r'v+O+P+R+t,Y-Z-^-b-c-e1T2R2S5_5wQ+q&Q!j<Y#{$^)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pR<]&jS&n!^%hR1d,c$zaOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_+Q+r+v+{,l,t-V-`-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2c4^4p5S5U5V5i7[7f7s8P9e:Z:n!l(n#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pQ+p&QQ/i*fQ2V-lQ5|2ZR8]5}!l#u`!y%T'`'f(Q(X(h(i(j(k(p(t*w-Q-T-Y-_-t-z.a/c1o2O2b2s3n3u5h5u6Q7}9c:X:l:w;T!T;`(m)O,^.Q1[1_2g2o2p2q2r2v2{5b6R6W6X7P7y8^8b8c9w:V<d!h#w`!y%T'`'f(Q(X(j(k(p(t*w-Q-T-Y-_-t-z.a/c1o2O2b2s3n3u5h5u6Q7}9c:X:l:w;T!P;b(m)O,^.Q1[1_2g2q2r2v2{5b6R6W6X7P7y8^8b8c9w:V<d!d#{`!y%T'`'f(Q(X(p(t*w-Q-T-Y-_-t-z.a/c1o2O2b2s3n3u5h5u6Q7}9c:X:l:w;TQ3P.iz<p(m)O,^.Q1[1_2g2v2{5b6R6W6X7P7y8^8b8c9w:V<dQ<u<wR<v<x&rhOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pS$_e$`R2x.U&ydOPTUVWeop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^$`%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.U.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pT$Zc$aQ$XcS(w$[({R)T$aT$Yc$aT(y$[({&yeOPTUVWeop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y#{$Q$U$^$`%P%a%|&P&Q&T&V&W&Y&^&f&j&s'V'a'c'i's(U(Y(^)Q)]*_*f+Q+r+v+{,X,[,l,t-V-`-l-x.P.U.V/`/e/r0c0s0t0u0w0{1O1Q1a1q2P2Z2c2w4Z4^4p5S5U5V5`5i5}7[7f7s8P8t9a9e:Z:n;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<pT$_e$`Q$beR)S$`%UgOPTUVWop!S!X!g!s!w!z#T#_#e#i#l#o#p#q#r#s#t#u#v#w#x#y$Q$U%P%a%|&P&Q&T&V&W&Y&^&f&s'V'a'c'i's(U(Y(^)]*_*f+Q+r+v+{,l,t-V-`-l-x.P/`/e/r0c0s0t0u0w0{1O1Q1q2P2Z2c4^4p5S5U5V5i5}7[7f7s8P9e:Z:n!m<n#{$^&j)Q,X,[.V1a2w4Z5`8t9a;R;U;X;Y;Z;[;];^;_;`;a;b;c;d;e;i;r;s;u;|;}<S<T<p#aiOPUWo!S!X!g!s#T#_#l$^%P%|&P&Q&T&V&W&Y&^&f&s(^)Q*f+Q+r+v+{,l-l.V/`0c0s0t0u0w0{1O1Q2Z2w4^4p5S5U5V5}7[7f7sv$nf#h$w$x$|)b)d)l*Q*R-u.r/b3P3i8e<m<u<v!z(T#f$S$T$i$l)X)e)r*e*h+V+Y-k.s.u0V0Y0b2Y3Z3c3p3r4o5z6b6k7c8Y9S9l:R:`;l;n;p;v;x;z<O<Q<U<y<zQ*[$zQ.b)^g2u;g;h;m;o;q;w;y;{<P<R<Vv$jf#h$w$x$|)b)d)l*Q*R-u.r/b3P3i8e<m<u<vQ)n$kS)w$m)zQ*]${Q/Q)x!z<`#f$S$T$i$l)X)e)r*e*h+V+Y-k.s.u0V0Y0b2Y3Z3c3p3r4o5z6b6k7c8Y9S9l:R:`;l;n;p;v;x;z<O<Q<U<y<zf<a;g;h;m;o;q;w;y;{<P<R<VQ<e<qQ<f<rQ<g<sR<h<tv$nf#h$w$x$|)b)d)l*Q*R-u.r/b3P3i8e<m<u<v!z(T#f$S$T$i$l)X)e)r*e*h+V+Y-k.s.u0V0Y0b2Y3Z3c3p3r4o5z6b6k7c8Y9S9l:R:`;l;n;p;v;x;z<O<Q<U<y<zg2u;g;h;m;o;q;w;y;{<P<R<VlkOUo!S#T%P&T&V&W&Y+v+{0{1OQ)q$lQ,U&aQ,V&cR3Y.s$Y$of#f#h$S$T$i$l$w$x$|)X)b)d)e)l)r*Q*R*e*h+V+Y-k-u.r.s.u/b0V0Y0b2Y3P3Z3c3i3p3r4o5z6b6k7c8Y8e9S9l:R:`;g;h;l;m;n;o;p;q;v;w;x;y;z;{<O<P<Q<R<U<V<m<u<v<y<zQ+X%oQ0X+ZQ4V0WR6|4WT)y$m)zS)y$m)zT4d0`4eS/O)v4^T3g/W7[Q*i%WQ/P)wQ/n*jQ0f+dQ4s0gQ7h4tQ8v7QQ9V7iQ9y8wQ:T9WQ:d9{Q:r:eQ:{:sR;P:|n)b$g(V*^.q/Y/Z2`3W3m6[6m9p<_<k<l!W;v(R(r)h)p-r.^.i.v/g0U0W2_3X3]4U4W6O6P6c6g6o6q8i8m:a<w<x];w2t6V8_9n9o:yp)d$g(V*^.g.q/Y/Z2`3W3m6[6m9p<_<k<l!Y;x(R(r)h)p-r.^.i.v/g0U0W2]2_3X3]4U4W6O6P6c6g6o6q8i8m:a<w<x_;y2t6V8_8`9n9o:ypjOUo!O!S#T%P%z&T&V&W&Y+v+{0{1OQ%w}R+r&QpjOUo!O!S#T%P%z&T&V&W&Y+v+{0{1OR%w}Q+]%pR0T+UqjOUo!O!S#T%P%z&T&V&W&Y+v+{0{1OQ0a+bS4n0d0eU7b4l4m4qS9R7d7eS:P9Q9TQ:h:QR:u:iQ&O!OR+l%zR4z0mR9Y7kS%`u%eR/y*uQ&T!PR+v&UR+|&ZT0|+{1OR,Q&[Q,P&[R1V,QQoOQ#TUT%So#TQ)Z$fR._)ZQ!uSR'^!uQ!xTU'd!x'e-WQ'e!yR-W'fQ,a&kR1c,aQ-v(VR2a-vQ-y(XS2d-y2eR2e-zQ,h&qR1g,hr[OUo!O!S#T%P%z%|&T&V&W&Y+v+{0{1OU!hQ&q,hS#WW$}Y#b[!h#W-b4_Q-b'vT4_0`4eS#OT%gU'k#O'l-XQ'l#PR-X'gQ,d&nR1e,dQ'w#ZQ-['pW-f'w-[1|5tQ1|-]R5t1}Q({$[R.W({Q$`eR)R$`Q$R`U(q$R-S;fQ-S;TR;f)OQ.l)iW3S.l3T6`8hU3T.m.n.oS6`3U3VR8h6a#m)`$g(R(V(r)h)p*X*Y*^-p-q-r.^.g.h.i.q.v/Y/Z/g0U0W2]2^2_2`2t3W3X3]3m4U4W6O6P6T6U6V6[6c6g6m6o6q8_8`8a8i8m9n9o9p:a:y<_<k<l<w<xQ.t)pU3[.t3^6dQ3^.vR6d3]Q)z$mR/S)zQ*T$qR/]*TQ3q/gR6p3qQ+S%jR0S+SQ4Y0ZS7O4Y8uR8u7PQ+_%qR0^+_Q4e0`R7Y4eQ0l+iS4x0l7lR7l4zQ/t*qW3z/t3|6v8qQ3|/wQ6v3{R8q6wQ*v%`R/z*vQ1O+{R5Y1OWnOUo#TQ&X!SQ*a%PQ+u&TQ+w&VQ+x&WQ+z&YQ0y+vS0|+{1OR5X0{Q%RlQ&]!WQ&`!YQ&b!ZQ&d![U'U!j4`4aQ*}%fQ+T%kQ+k&OQ,S&_Y,s&{'W'X'[7^Q/R)yS0o+l+oQ1W,RQ1X,UQ1Y,V[1p,u,v,y-O-Q9OQ4P/}Q4T0UQ4r0fQ4|0qQ5W0zY5g1o1r1u1w1xQ6z4RQ6{4UQ7X4dQ7g4sQ7m4{Y7|5h5l5n5p5qQ8r6xQ9U7hQ9Z7nW9b7}8R8T8VQ9v8sQ9x8vQ:S9VU:W9c9g9iQ:c9yQ:j:TS:k:X:]Q:q:dQ:v:lQ:z:rQ:}:wQ;O:{R;Q;PQ%YrQ&u!aQ'S!jU*l%Z%[%]Q,Z&hU,n&v&w&xS,r&{'YQ.x)tS/p*m*nQ1`,]S1l,o,pS1s,w,yQ3a.|Q3t/qQ5c1fQ5f1mS5k1t1xQ6h3eS8Q5m5qQ9f8SR:[9hS$hf<mR*U$rU$qf$r<mR/[*SQ$gfS(R#f*hQ(V#hS(r$S$TQ)h$iQ)p$lQ*X$wQ*Y$xQ*^$|Q-p;lQ-q;nQ-r;pQ.^)XQ.g)bQ.h)dQ.i)eQ.q)lQ.v)rQ/Y*QQ/Z*Rh/g*e-k0b2Y4o5z7c8Y9S9l:R:`Q0U+VQ0W+YQ2];vQ2^;xQ2_;zQ2`-uS2t;g;hQ3W.rQ3X.sQ3].uQ3m/bQ4U0VQ4W0YQ6O<OQ6P<QQ6T;mQ6U;oQ6V;qQ6[3PQ6c3ZQ6g3cQ6m3iQ6o3pQ6q3rQ8_;{Q8`;wQ8a;yQ8i6bQ8m6kQ9n<PQ9o<RQ9p8eQ:a<UQ:y<VQ<_<mQ<k<uQ<l<vQ<w<yR<x<zllOUo!S#T%P&T&V&W&Y+v+{0{1OQ!_PS#VW#_Q&_!XU&y!g4^7[Q']!sQ(`#lQ)P$^S+o%|&PQ+s&QQ,R&^Q,W&fQ,j&sQ-|(^Q.[)QQ/j*fQ0Q+QQ0v+rQ1j,lQ2W-lQ2z.VQ3k/`Q4m0cQ5O0sQ5P0tQ5R0uQ5T0wQ5[1QQ5y2ZQ6Y2wQ7e4pQ7r5SQ7t5UQ7u5VQ8[5}Q9T7fR9]7s#U`OPUWo!S!X!g#T#_#l%P%|&P&Q&T&V&W&Y&^&f&s(^*f+Q+r+v+{,l-l/`0c0s0t0u0w0{1O1Q2Z4^4p5S5U5V5}7[7f7sQ!yTQ#UVQ%TpS'`!w'cQ'f!zQ(Q#eQ(X#iQ(a#oQ(b#pQ(c#qQ(d#rQ(e#sQ(f#tQ(g#uQ(h#vQ(i#wQ(j#xQ(k#yQ(m#{Q(p$QQ(t$UW)O$^)Q.V2wQ*w%aS,^&j1aQ-Q'VS-T'a-VQ-Y'iQ-_'sQ-t(UQ-z(YQ.O;RQ.Q;UQ.a)]Q/c*_Q1[,XQ1_,[Q1o,tQ2O-`Q2b-xQ2g;XQ2h;YQ2i;ZQ2j;[Q2k;]Q2l;^Q2m;_Q2n;`Q2o;aQ2p;bQ2q;cQ2r;dQ2s.PQ2v;iQ2{;eQ3n/eQ3u/rQ5b;rQ5h1qQ5u2PQ6Q2cQ6R;sQ6W;uQ6X;|Q7P4ZQ7y5`Q7}5iQ8^;}Q8b<SQ8c<TQ9c8PQ9w8tQ:V9aQ:X9eQ:l:ZQ:w:nQ;T!sR<d<pR!{TR&l!^U!jQ&q,hS&h!^,`Y&{!h!n!o!p!qS'Y!k!m['[!r4_4g4h4i4jS,]&i&pS,w&|&}U,y'O'P'QY-O'R7T7U7V7aQ1f,fS1t,x,zU1w,{8x8yS1x,|,}S4`0`4eS5m1v1yS5p1z9zQ5q1{S8S5o5rQ8V5sR9h8UR(W#hR(Z#iQ!_QT,g&q,hQ#`YR&z;ST#[W$}S#ZW$}U%jwx+tU'p#W#Y#]S-]'q'rQ-d'vQ0R+RQ1}-^U2Q-b-c-eS5v2R2SR8W5w`!}T!w!z%g'a'j+O-Zt#XWwx#W#Y#]$}'q'r'v+R-^-b-c-e2R2S5wQ0x+tQ1],YQ5^1TQ7x5_T<[&j+PT#QT%gS#PT%gS'b!w'jS'g!z+OS,_&j+PT-U'a-ZT&o!^%hQ$[cR)V$aT(z$[({R2y.UT)k$i)mR)s$lQ/h*eQ2U-kQ4l0bQ5{2YQ7d4oQ8Z5zQ9Q7cQ9j8YQ:Q9SQ:_9lQ:i:RR:p:`lmOUo!S#T%P&T&V&W&Y+v+{0{1OQ%}!OR+k%zV%kwx+tR0[+[R+j%xQ%duR*|%eR*r%_T&R!P&UT&S!P&UT0}+{1O",
-     nodeNames: "⚠ ArithOp ArithOp InterpolationStart LineComment BlockComment Script ExportDeclaration export Star as VariableName String from ; default FunctionDeclaration async function VariableDefinition > TypeParamList TypeDefinition extends ThisType this LiteralType ArithOp Number BooleanLiteral TemplateType InterpolationEnd Interpolation NullType null VoidType void TypeofType typeof MemberExpression . ?. PropertyName [ TemplateString Interpolation super RegExp ] ArrayExpression Spread , } { ObjectExpression Property async get set PropertyDefinition Block : NewExpression new TypeArgList CompareOp < ) ( ArgList UnaryExpression await yield delete LogicOp BitOp ParenthesizedExpression ClassExpression class ClassBody MethodDeclaration Decorator @ MemberExpression PrivatePropertyName CallExpression Privacy static abstract override PrivatePropertyDefinition PropertyDeclaration readonly accessor Optional TypeAnnotation Equals StaticBlock FunctionExpression ArrowFunction ParamList ParamList ArrayPattern ObjectPattern PatternProperty Privacy readonly Arrow MemberExpression BinaryExpression ArithOp ArithOp ArithOp ArithOp BitOp CompareOp instanceof satisfies in const CompareOp BitOp BitOp BitOp LogicOp LogicOp ConditionalExpression LogicOp LogicOp AssignmentExpression UpdateOp PostfixExpression CallExpression TaggedTemplateExpression DynamicImport import ImportMeta JSXElement JSXSelfCloseEndTag JSXStartTag JSXSelfClosingTag JSXIdentifier JSXBuiltin JSXIdentifier JSXNamespacedName JSXMemberExpression JSXSpreadAttribute JSXAttribute JSXAttributeValue JSXEscape JSXEndTag JSXOpenTag JSXFragmentTag JSXText JSXEscape JSXStartCloseTag JSXCloseTag PrefixCast ArrowFunction TypeParamList SequenceExpression KeyofType keyof UniqueType unique ImportType InferredType infer TypeName ParenthesizedType FunctionSignature ParamList NewSignature IndexedType TupleType Label ArrayType ReadonlyType ObjectType MethodType PropertyType IndexSignature PropertyDefinition CallSignature TypePredicate is NewSignature new UnionType LogicOp IntersectionType LogicOp ConditionalType ParameterizedType ClassDeclaration abstract implements type VariableDeclaration let var TypeAliasDeclaration InterfaceDeclaration interface EnumDeclaration enum EnumBody NamespaceDeclaration namespace module AmbientDeclaration declare GlobalDeclaration global ClassDeclaration ClassBody MethodDeclaration AmbientFunctionDeclaration ExportGroup VariableName VariableName ImportDeclaration ImportGroup ForStatement for ForSpec ForInSpec ForOfSpec of WhileStatement while WithStatement with DoStatement do IfStatement if else SwitchStatement switch SwitchBody CaseLabel case DefaultLabel TryStatement try CatchClause catch FinallyClause finally ReturnStatement return ThrowStatement throw BreakStatement break ContinueStatement continue DebuggerStatement debugger LabeledStatement ExpressionStatement SingleExpression SingleClassItem",
-     maxTerm: 346,
+     states: "$CWO`QdOOO$}QdOOO)WQ(C|O'#ChO)_OWO'#DYO+jQdO'#D_O+zQdO'#DjO$}QdO'#DtO.OQdO'#DzOOQ(C['#ET'#ETO.fQ`O'#EQOOQO'#IW'#IWO.nQ`O'#GgOOQO'#Ee'#EeO.yQ`O'#EdO/OQ`O'#EdO1QQ(C|O'#JQO3nQ(C|O'#JRO4_Q`O'#FSO4dQ!bO'#FkOOQ(C['#F['#F[O4oO#tO'#F[O4}Q&jO'#FrO6bQ`O'#FqOOQ(C['#JR'#JROOQ(CW'#JQ'#JQOOQS'#Jk'#JkO6gQ`O'#H{O6lQ(ChO'#H|OOQS'#Iu'#IuOOQS'#IO'#IOQ`QdOOO$}QdO'#DlO6tQ`O'#GgO6yQ&jO'#CmO7XQ`O'#EcO7dQ`O'#EnO7iQ&jO'#FZO8TQ`O'#GgO8YQ`O'#GkO8eQ`O'#GkO8sQ`O'#GnO8sQ`O'#GoO8sQ`O'#GqO6tQ`O'#GtO9dQ`O'#GwO:uQ`O'#CdO;VQ`O'#HUO;_Q`O'#H[O;_Q`O'#H^O`QdO'#H`O;_Q`O'#HbO;_Q`O'#HeO;dQ`O'#HkO;iQ(CjO'#HqO$}QdO'#HsO;tQ(CjO'#HuO<PQ(CjO'#HwO6lQ(ChO'#HyO<[Q(C|O'#ChO<xQ,UO'#DdQOQ`OOO=mQaO'#D{O6yQ&jO'#EcO={Q`O'#EcO>WQpO'#FZO$}QdO'#DZOOOW'#IQ'#IQO>`OWO,59tOOQ(C[,59t,59tO>kQdO'#IRO?OQ`O'#JSOAQQtO'#JSO)jQdO'#JSOAXQ`O,59yOAoQ`O'#EeOA|Q`O'#J`OBXQ`O'#J_OBXQ`O'#J_OBaQ`O,5;ROBfQ`O'#J^OOQ(C[,5:U,5:UOBmQdO,5:UODnQ(C|O,5:`OE_Q`O,5:fOEdQ`O'#J[OF^Q(ChO'#J]O8YQ`O'#J[OFeQ`O'#J[OFmQ`O,5;QOFrQ`O'#J[OOQ(C]'#Ch'#ChO$}QdO'#DzOGfQpO,5:lOOQO'#JX'#JXOOQO-E<U-E<UO6tQ`O,5=ROG|Q`O,5=ROHRQdO,5;OOJRQ&jO'#E`OKcQ`O,5;OOLxQ&jO'#DnOMPQdO'#DsOMZQ,UO,5;XOMcQ,UO,5;XO$}QdO,5;XOOQS'#Ez'#EzOOQS'#E|'#E|O$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YO$}QdO,5;YOOQS'#FQ'#FQOMqQdO,5;kOOQ(C[,5;p,5;pOOQ(C[,5;q,5;qO! qQ`O,5;qOOQ(C[,5;r,5;rO$}QdO'#I^O! yQ(ChO,5<_OJRQ&jO,5;YO!!hQ&jO,5;YO$}QdO,5;nO!!oQ!bO'#FaO!#lQ!bO'#JdO!#WQ!bO'#JdO!#sQ!bO'#JdOOQO'#Jd'#JdO!$XQ!bO,5;yOOOO,5<V,5<VO!$jQdO'#FmOOOO'#I]'#I]O4oO#tO,5;vO!$qQ!bO'#FoOOQ(C[,5;v,5;vO!%bQ7]O'#CsOOQ(C]'#Cv'#CvO!%uQ`O'#CvO!%zOWO'#CzO!&hQ&kO,5<[O!&oQ`O,5<^O!(RQMhO'#F|O!(`Q`O'#F}O!(eQ`O'#F}O!(jQMhO'#GRO!)iQ,UO'#GVO!*_Q7]O'#I}OOQ(C]'#I}'#I}O!+eQaO'#I|O!+sQ`O'#I{O!+{Q`O'#CrOOQ(C]'#Ct'#CtOOQ(C]'#C}'#C}OOQ(C]'#DP'#DPO.iQ`O'#DROKhQ&jO'#FtOKhQ&jO'#FvO!,TQ`O'#FxO!,YQ`O'#FyO!(eQ`O'#GPOKhQ&jO'#GUO!,_Q`O'#EfO!,yQ`O,5<]O`QdO,5>gOOQS'#Ix'#IxOOQS,5>h,5>hOOQS-E;|-E;|O!.xQ(C|O,5:WOOQ(CX'#Cp'#CpO!/lQ&kO,5=ROOQO'#Cf'#CfO!/}Q(ChO'#IyO6bQ`O'#IyO;dQ`O,59XO!0`Q!bO,59XO!0hQ&jO,59XO6yQ&jO,59XO!0sQ`O,5;OO!0{Q`O'#HTO!1ZQ`O'#JoO$}QdO,5;sO!1cQ,UO,5;uO!1hQ`O,5=nO!1mQ`O,5=nO!1rQ`O,5=nO6lQ(ChO,5=nO!2QQ`O'#EgO!2wQ,UO'#EhOOQ(CW'#J^'#J^O!3OQ(ChO'#JlO6lQ(ChO,5=VO8sQ`O,5=]OOQP'#Cs'#CsO!3ZQ!bO,5=YO!3cQ!cO,5=ZO!3nQ`O,5=]O!3sQpO,5=`O;dQ`O'#GyO6tQ`O'#G{O!3{Q`O'#G{O6yQ&jO'#HOO!4QQ`O'#HOOOQS,5=c,5=cO!4VQ`O'#HPO!4_Q`O'#CmO!4dQ`O,59OO!4nQ`O,59OO!6sQdO,59OOOQS,59O,59OO!7QQ(ChO,59OO$}QdO,59OO!7]QdO'#HWOOQS'#HX'#HXOOQS'#HY'#HYO`QdO,5=pO!7mQ`O,5=pO`QdO,5=vO`QdO,5=xO!7rQ`O,5=zO`QdO,5=|O!7wQ`O,5>PO!7|QdO,5>VOOQS,5>],5>]O$}QdO,5>]O6lQ(ChO,5>_OOQS,5>a,5>aO!<QQ`O,5>aOOQS,5>c,5>cO!<QQ`O,5>cOOQS,5>e,5>eO!<VQ!bO'#DWOOQ(CW'#JU'#JUO$}QdO'#JUO!<tQ!bO'#JUO!=cQ!bO'#DeO!=tQ,UO'#DeO!@PQdO'#DeO!@WQ`O'#JTO!@`Q`O,5:OO!@eQ`O'#EiO!@sQ`O'#JaO!@{Q`O,5;SO!AcQ,UO'#DeO!AmQ,UO'#EOOOQ(C[,5:g,5:gO$}QdO,5:gOJRQ&jO,5:gO!BjQaO,5:gO;dQ`O,5:}O!0`Q!bO,5:}O!0hQ&jO,5:}O6yQ&jO,5:}O!BuQpO,59uOOOW-E<O-E<OOOQ(C[1G/`1G/`O!BzQtO,5>mO)jQdO,5>mOOQO,5>s,5>sO!CUQdO'#IROOQO-E<P-E<PO!CcQ`O,5?nO!CkQtO,5?nO!CrQ`O,5?yOOQ(C[1G/e1G/eO$}QdO,5?zO!CzQ`O'#IXOOQO-E<V-E<VO!CrQ`O,5?yOOQ(CW1G0m1G0mOOQ(C[1G/p1G/pOOQ(C[1G0Q1G0QO!D`Q`O,5?vO8YQ`O,5?vO!DhQ`O,5?vOOQ(CW'#E_'#E_O$}QdO,5?wO!DvQ(ChO,5?wO!EXQ(ChO,5?wO!E`Q`O'#IZO!D`Q`O,5?vOOQ(CW1G0l1G0lOMZQ,UO,5:nOMfQ,UO,5:nOOQO,5:p,5:pO!E}Q`O,5:pO!FVQ&kO1G2mO6tQ`O1G2mOOQ(C[1G0j1G0jO!FhQ(C|O1G0jO!GmQ(CyO,5:zOOQ(C]'#F{'#F{O!JWQ(C}O'#I}OHRQdO1G0jO!J}Q&kO'#JVO!KXQ`O,5:YO!K^QtO'#JWO$}QdO'#JWO!KhQ`O,5:_OOQ(C]'#DW'#DWOOQ(C[1G0s1G0sO$}QdO1G0sOOQ(C[1G1]1G1]O!KmQ`O1G0sO!NUQ(C|O1G0tO!N]Q(C|O1G0tO#!vQ(C|O1G0tO#!}Q(C|O1G0tO#%XQ(C|O1G0tO#%oQ(C|O1G0tO#(iQ(C|O1G0tO#(pQ(C|O1G0tO#+ZQ(C|O1G0tO#+bQ(C|O1G0tO#-YQ(C|O1G0tO#0YQ!LUO'#ChO#2WQ!LUO1G1VO#4UQ!LUO'#JRO! tQ`O1G1]O#4iQ(C|O,5>xOOQ(CW-E<[-E<[O#5]Q(C}O1G0tOOQ(C[1G0t1G0tO#7hQ(C|O1G1YO#8[Q!bO,5;}O#8dQ!bO,5<OO#8lQ!bO'#FfO#9TQ`O'#FeOOQO'#Je'#JeOOQO'#I['#I[O#9YQ!bO1G1eOOQ(C[1G1e1G1eOOOO1G1p1G1pO#9kQ!LUO'#JQO#9uQ`O,5<XOMqQdO,5<XOOOO-E<Z-E<ZOOQ(C[1G1b1G1bOOQ(C[,5<Z,5<ZO#9zQ!bO,5<ZOOQ(C],59b,59bOJRQ&jO'#C|OOOW'#IP'#IPO#:POWO,59fOOQ(C],59f,59fO$}QdO1G1vO!,YQ`O'#I`O#:[Q`O,5<oOOQ(C],5<l,5<lOOQO'#Gb'#GbOKhQ&jO,5<{OOQO'#Gd'#GdOKhQ&jO,5<}OJRQ&jO,5=POOQO1G1x1G1xO#:gQqO'#CpO#:zQqO,5<hO#;RQ`O'#JhO6tQ`O'#JhO#;aQ`O,5<jOKhQ&jO,5<iO#;fQ`O'#GOO#;qQ`O,5<iO#;vQqO'#F{O#<TQqO'#JiO#<_Q`O'#JiOJRQ&jO'#JiO#<dQ`O,5<mOOQ(CW'#Di'#DiO#<iQ!bO'#GWO!)dQ,UO'#GWO#<zQ`O'#GYO#=PQ`O'#G[O!(eQ`O'#G_O#=UQ(ChO'#IbO#=aQ,UO,5<qOOQ(C],5<q,5<qO#=hQ,UO'#GWO#=vQ,UO'#GXO#>OQ,UO'#GXOOQ(C],5=Q,5=QOKhQ&jO,5?hOKhQ&jO,5?hO#>TQ`O'#IcO#>`Q`O,5?gO#>hQ`O,59^O#?XQ&kO,59mOOQ(C],59m,59mO#?zQ&kO,5<`O#@mQ&kO,5<bO#@wQ`O,5<dOOQ(C],5<e,5<eO#@|Q`O,5<kO#ARQ&kO,5<pOHRQdO1G1wO#AcQ`O1G1wOOQS1G4R1G4ROOQ(C[1G/r1G/rO! qQ`O1G/rOOQS1G2m1G2mOJRQ&jO1G2mO$}QdO1G2mOJRQ&jO1G2mO#AhQaO1G2mO#CQQ&jO'#E`OOQ(CW,5?e,5?eO#C[Q(ChO,5?eOOQS1G.s1G.sO;dQ`O1G.sO!0`Q!bO1G.sO!0hQ&jO1G.sO#CmQ`O1G0jO#CrQ`O'#ChO#C}Q`O'#JpO#DVQ`O,5=oO#D[Q`O'#JpO#DaQ`O'#JpO#DiQ`O'#IkO#DwQ`O,5@ZO#EPQtO1G1_OOQ(C[1G1a1G1aO6tQ`O1G3YO#EWQ`O1G3YO#E]Q`O1G3YO#EbQ`O1G3YOOQS1G3Y1G3YO8YQ`O'#J_O8YQ`O'#EiO$}QdO'#EiO8YQ`O'#IeO#EgQ(ChO,5@WOOQS1G2q1G2qO!3nQ`O1G2wOJRQ&jO1G2tO#ErQ`O1G2tOOQS1G2u1G2uOJRQ&jO1G2uO#EwQaO1G2uO#FPQ,UO'#GsOOQS1G2w1G2wO!)dQ,UO'#IgO!3sQpO1G2zOOQS1G2z1G2zOOQS,5=e,5=eO#FXQ&kO,5=gO6tQ`O,5=gO#=PQ`O,5=jO6bQ`O,5=jO!0`Q!bO,5=jO!0hQ&jO,5=jO6yQ&jO,5=jO#FjQ`O'#JnO#FuQ`O,5=kOOQS1G.j1G.jO#FzQ(ChO1G.jO#GVQ`O1G.jO#G[Q`O1G.jO6lQ(ChO1G.jO#GdQtO,5@]O#GnQ`O,5@]O#GyQdO,5=rO#HQQ`O,5=rO8YQ`O,5@]OOQS1G3[1G3[O`QdO1G3[OOQS1G3b1G3bOOQS1G3d1G3dO;_Q`O1G3fO#HVQdO1G3hO#LTQdO'#HgOOQS1G3k1G3kO#LbQ`O'#HmO;dQ`O'#HoOOQS1G3q1G3qO#LjQdO1G3qO6lQ(ChO1G3wOOQS1G3y1G3yOOQ(CW'#GS'#GSO6lQ(ChO1G3{O6lQ(ChO1G3}O$!kQ`O,5?pOMqQdO,5;TO8YQ`O,5;TO;dQ`O,5:POMqQdO,5:PO$}QdO'#JUO!0`Q!bO,5:PO$!pQ!LUO,5:POOQO,5;T,5;TO$!zQ,UO'#ISO$#bQ`O,5?oOOQ(C[1G/j1G/jO$#jQ,UO'#IYO$#tQ`O,5?{OOQ(CW1G0n1G0nO!=tQ,UO,5:PO$#|Q,UO'#E[OOQ(CW'#EZ'#EZO$$sQ(DjO'#E[O$%_Q,UO'#EPOOQO'#IV'#IVO$%pQ,UO,5:jOOQ(C[,5:j,5:jO$&mQ,UO'#EPO$&zQ,UO'#EPO$'[Q,UO'#EbO$'_Q,UO'#E[O$'xQ,UO'#E[O$%_Q,UO'#E[O$(iQ`O1G0RO$(nQqO1G0ROOQ(C[1G0R1G0RO$}QdO1G0ROJRQ&jO1G0ROOQ(C[1G0i1G0iO;dQ`O1G0iO!0`Q!bO1G0iO!0hQ&jO1G0iOOOW1G/a1G/aO$(uQpO,5<_O$(}QtO1G4XOOQO1G4_1G4_O$}QdO,5>mO$)XQ`O1G5YO$)aQ`O1G5eO$)iQtO1G5fO8YQ`O,5>sO$)sQ`O1G5bO$)sQ`O1G5bO8YQ`O1G5bO$){Q(C|O1G5cO$}QdO1G5cO$*]Q(ChO1G5cO$*nQ`O,5>uO8YQ`O,5>uOOQO,5>u,5>uO$+SQ`O,5>uOOQO-E<X-E<XOOQO1G0Y1G0YOOQO1G0[1G0[O! tQ`O1G0[OOQS7+(X7+(XOJRQ&jO7+(XO$}QdO7+(XOJRQ&jO7+(XO$+bQaO7+(XO$+pQ&kO7+(XO$,RQ(C}O,59mO$.ZQ(C}O,5<`O$0fQ(C}O,5<bO$2qQ(C}O,5<pOOQ(C[7+&U7+&UO$5SQ(C|O7+&UO$5vQ&jO'#ITO$6QQ`O,5?qOOQ(C]1G/t1G/tO$6YQdO'#IUO$6gQ`O,5?rO$6oQtO,5?rOOQ(C[1G/y1G/yO$6yQ`O7+&_OOQ(C[7+&_7+&_O$7OQ!LUO,5:`O$}QdO7+&qO$7YQ!LUO,5:WOOQ(C[7+&w7+&wOOQO1G1i1G1iOOQO1G1j1G1jO$7gQ$ISO,5<QOMqQdO,5<POOQO-E<Y-E<YOOQ(C[7+'P7+'POOOO7+'[7+'[OOOO1G1s1G1sO$7rQ`O1G1sOOQ(C[1G1u1G1uO$7wQqO,59hOOOW-E;}-E;}OOQ(C]1G/Q1G/QO$8OQ(C|O7+'bOOQ(C],5>z,5>zO$8rQ`O,5>zOOQ(C]1G2Z1G2ZP$8wQ`O'#I`POQ(C]-E<^-E<^O$9hQ&kO1G2gO$:ZQ&kO1G2iO$:eQqO1G2kOOQ(C]1G2S1G2SO$:lQ`O'#I_O$:zQ`O,5@SO$:zQ`O,5@SO$;SQ`O,5@SO$;_Q`O,5@SOOQO1G2U1G2UO$;mQ&kO1G2TOKhQ&jO1G2TO$;}QMhO'#IaO$<_Q`O,5@TOJRQ&jO,5@TO$<gQqO,5@TOOQ(C]1G2X1G2XOOQ(CW,5<r,5<rOOQ(CW,5<s,5<sO$<qQ`O,5<sO#<uQ`O,5<sO!0`Q!bO,5<rOOQO'#GZ'#GZO$<vQ`O,5<tOOQ(CW,5<v,5<vO$<qQ`O,5<yOOQO,5>|,5>|OOQO-E<`-E<`OOQ(C]1G2]1G2]O!)dQ,UO,5<rO$=OQ`O,5<sO#<zQ`O,5<tO!)dQ,UO,5<sO$=ZQ&kO1G5SO$=eQ&kO1G5SOOQO,5>},5>}OOQO-E<a-E<aOOQP1G.x1G.xO!1cQ,UO,59oO$}QdO,59oO$=rQ`O1G2OOKhQ&jO1G2VO$=wQ(C|O7+'cOOQ(C[7+'c7+'cOHRQdO7+'cOOQ(C[7+%^7+%^O$>kQqO'#JjO$(iQ`O7+(XO$>uQ`O7+(XO$>}QqO7+(XO$?XQ(CyO'#ChO$?lQ(CyO,5<wO$@^Q`O,5<wOOQ(CW1G5P1G5POOQS7+$_7+$_O;dQ`O7+$_O!0`Q!bO7+$_OHRQdO7+&UO$@cQ`O'#IjO$@tQ`O,5@[OOQO1G3Z1G3ZO6tQ`O,5@[O$@tQ`O,5@[O$@|Q`O,5@[OOQO,5?V,5?VOOQO-E<i-E<iOOQ(C[7+&y7+&yO$ARQ`O7+(tO6lQ(ChO7+(tO6tQ`O7+(tO$AWQ`O7+(tO$A]Q`O,5;TOOQ(CW,5?P,5?POOQ(CW-E<c-E<cOOQS7+(c7+(cO$AbQ(CyO7+(`OJRQ&jO7+(`O$AlQqO7+(aOOQS7+(a7+(aOJRQ&jO7+(aO$AsQ`O'#JmO$BOQ`O,5=_OOQO,5?R,5?ROOQO-E<e-E<eOOQS7+(f7+(fO$CUQ,UO'#G|OOQS1G3R1G3ROJRQ&jO1G3RO$}QdO1G3ROJRQ&jO1G3RO$C]QaO1G3RO$CkQ&kO1G3RO6lQ(ChO1G3UO#=PQ`O1G3UO6bQ`O1G3UO!0`Q!bO1G3UO!0hQ&jO1G3UO$C|Q`O'#IiO$DXQ`O,5@YO$DaQ,UO,5@YOOQ(CW1G3V1G3VOOQS7+$U7+$UO$DiQ`O7+$UO6lQ(ChO7+$UO$DnQ`O7+$UO$}QdO1G5wO$}QdO1G5xO$DsQdO1G3^O$DzQ`O1G3^O$EPQdO1G3^O$EWQ(ChO1G5wOOQS7+(v7+(vO6lQ(ChO7+)QO`QdO7+)SOOQS'#Js'#JsOOQS'#Il'#IlO$EbQdO,5>ROOQS,5>R,5>RO$}QdO'#HhO$EoQ`O'#HjOOQS,5>X,5>XO8YQ`O,5>XOOQS,5>Z,5>ZOOQS7+)]7+)]OOQS7+)c7+)cOOQS7+)g7+)gOOQS7+)i7+)iO$EtQ!bO1G5[O$FYQ!LUO1G0oO$FdQ`O1G0oOOQO1G/k1G/kO$FoQ!LUO1G/kO$FyQ`O,5?pO;dQ`O1G/kOMqQdO'#DeOOQO,5>n,5>nOOQO-E<Q-E<QOOQO,5>t,5>tOOQO-E<W-E<WO!0`Q!bO1G/kO$GOQ7[O,5:lO$HOQ(DjO,5:vO$%_Q,UO,5:kO$HjQ,UO,5:kO$HwQ,UO,5:kO$IXQ,UO,5:vO$IrQ,UO,5:vO$%_Q,UO,5:vO;dQ`O,5:kOOQO,5:v,5:vO$}QdO,5:vO$JcQ(ChO,5:vO$JnQ(ChO,5:vO!0`Q!bO,5:kOOQO-E<T-E<TOOQ(C[1G0U1G0UOOQO,5:|,5:|O$J|Q(ChO,5:vOOQ(C[7+%m7+%mO$(iQ`O7+%mO$(nQqO7+%mOOQ(C[7+&T7+&TO;dQ`O7+&TO!0`Q!bO7+&TO$KbQ`O7+*|O$KbQ`O7+*|O$KjQ(C|O7+*}O$}QdO7+*}OOQO1G4a1G4aO8YQ`O1G4aO$KzQ`O1G4aOOQO7+%v7+%vO$(iQ`O<<KsO$LYQ`O<<KsO$LbQqO<<KsOOQS<<Ks<<KsOJRQ&jO<<KsO$}QdO<<KsOJRQ&jO<<KsO$LlQaO<<KsO$LzQ(C}O1G2gO% VQ(C}O1G2iO%#bQ(C}O1G2TO%%sQ&kO,5>oOOQO-E<R-E<RO%%}QtO,5>pO$}QdO,5>pOOQO-E<S-E<SO%&XQ`O1G5^OOQ(C[<<Iy<<IyO%&aQ!LUO1G0jO%(kQ!LUO1G0tO%(rQ!LUO1G0tO%*vQ!LUO1G0tO%*}Q!LUO1G0tO%,rQ!LUO1G0tO%-YQ!LUO1G0tO%/mQ!LUO1G0tO%/tQ!LUO1G0tO%1xQ!LUO1G0tO%2PQ!LUO1G0tO%3wQ!LUO1G0tO%4[Q(C|O<<J]O%5aQ!LVO1G0tO%7VQ!LVO'#I}O%7aQ!LUO1G1YOMqQdO'#FhOOQO'#Jf'#JfOOQO1G1l1G1lO%7nQ`O1G1kO%7sQ!LUO,5>xOOOO7+'_7+'_OOOW1G/S1G/SOOQ(C]1G4f1G4fOKhQ&jO7+(VO%7}Q`O,5>yO6tQ`O,5>yOOQO-E<]-E<]O%8]Q`O1G5nO%8]Q`O1G5nO%8eQ`O1G5nO%8pQ&kO7+'oO%9QQqO,5>{O%9[Q`O,5>{OJRQ&jO,5>{OOQO-E<_-E<_O%9aQqO1G5oO%9kQ`O1G5oOOQ(CW1G2_1G2_O$<qQ`O1G2_OOQ(CW1G2^1G2^O%9sQ`O1G2`OJRQ&jO1G2`OOQ(CW1G2e1G2eO!0`Q!bO1G2^O#<uQ`O1G2_O%9xQ`O1G2`O%:QQ`O1G2_OKhQ&jO7+*nOOQ(C]1G/Z1G/ZO%:]Q`O1G/ZOOQ(C]7+'j7+'jO%:bQ&kO7+'qO%:rQ(C|O<<J}OOQ(C[<<J}<<J}OJRQ&jO'#IdO%;fQ`O,5@UOJRQ&jO1G2cOOQS<<Gy<<GyO;dQ`O<<GyO%;nQ(C|O<<IpOOQ(C[<<Ip<<IpOOQO,5?U,5?UO%<bQ`O,5?UO%<gQ`O,5?UOOQO-E<h-E<hO%<oQ`O1G5vO%<oQ`O1G5vO6tQ`O1G5vO%<wQ`O<<L`OOQS<<L`<<L`O%<|Q`O<<L`O6lQ(ChO<<L`O%=RQ`O1G0oOOQS<<Kz<<KzO$AbQ(CyO<<KzOOQS<<K{<<K{O$AlQqO<<K{O%=WQ,UO'#IfO%=cQ`O,5@XOMqQdO,5@XOOQS1G2y1G2yO%=kQ(DjO'#JUO%>VQdO'#JUO%>^Q,UO'#E[O%>tQ(ChO'#E[O$$sQ(DjO'#E[O$%hQ,UO'#G}OOQO'#Ih'#IhO%?YQ,UO,5=hOOQS,5=h,5=hO%?aQ,UO'#E[O%?rQ,UO'#E[O%@YQ,UO'#E[O%@vQ,UO'#G}O%AXQ`O7+(mO%A^Q`O7+(mO%AfQqO7+(mOOQS7+(m7+(mOJRQ&jO7+(mO$}QdO7+(mOJRQ&jO7+(mO%ApQaO7+(mOOQS7+(p7+(pO6lQ(ChO7+(pO#=PQ`O7+(pO6bQ`O7+(pO!0`Q!bO7+(pO%BOQ`O,5?TOOQO-E<g-E<gOOQO'#HQ'#HQO%BZQ`O1G5tO6lQ(ChO<<GpOOQS<<Gp<<GpO%BcQ`O<<GpO%BhQ`O7++cO%BmQ`O7++dOOQS7+(x7+(xO%BrQ`O7+(xO%BwQdO7+(xO%COQ`O7+(xO$}QdO7++cO$}QdO7++dOOQS<<Ll<<LlOOQS<<Ln<<LnOOQS-E<j-E<jOOQS1G3m1G3mO%CTQ`O,5>SOOQS,5>U,5>UO%CYQ`O1G3sO8YQ`O7+&ZOMqQdO7+&ZOOQ(CW1G5[1G5[OOQO7+%V7+%VO%C_Q!LUO1G5fO;dQ`O7+%VO;dQ`O1G0VOOQO1G0b1G0bO$}QdO1G0bO%CiQ(ChO1G0bO%CtQ(ChO1G0bO!0`Q!bO1G0VO$%_Q,UO1G0VO%DSQ,UO1G0VO%DaQ(DjO1G0bO%D{Q,UO1G0VO$%_Q,UO1G0bO%E]Q,UO1G0bO%EvQ(ChO1G0bOOQO1G0V1G0VO%F[Q(C|O1G0bOOQ(C[<<IX<<IXOOQ(C[<<Io<<IoO;dQ`O<<IoO%FfQ`O<<NhO%FnQ(C|O<<NiOOQO7+){7+){O8YQ`O7+){OOQSANA_ANA_OJRQ&jOANA_O$(iQ`OANA_O%GOQ`OANA_O%GWQqOANA_O$}QdOANA_OJRQ&jOANA_O%GbQ(C}O7+'oO%IsQ(C}O7+'qO%LUQtO1G4[O%L`Q!LUO7+&UO%MUQ!LVO,59mO& YQ!LVO,5<`O&#aQ!LVO,5<bO&%SQ!LVO,5<pO&&xQ!LUO7+'bO&'VQ!LUO7+'cO&'dQ`O,5<SOOQO7+'V7+'VO&'iQ&kO<<KqOOQO1G4e1G4eO&'pQ`O1G4eO&'{Q`O1G4eO&(ZQ`O7++YO&(ZQ`O7++YOJRQ&jO1G4gO&(cQqO1G4gO&(mQ`O7++ZOOQ(CW7+'y7+'yO$<qQ`O7+'zO&(uQqO7+'zOOQ(CW7+'x7+'xO$<qQ`O7+'yO&(|Q`O7+'zOJRQ&jO7+'zO#<uQ`O7+'yO&)RQ&kO<<NYOOQ(C]7+$u7+$uO&)]QqO,5?OOOQO-E<b-E<bO&)gQ(CyO7+'}OOQSAN=eAN=eO6tQ`O1G4pOOQO1G4p1G4pO&)wQ`O1G4pO&)|Q`O7++bO&)|Q`O7++bO6lQ(ChOANAzO&*UQ`OANAzOOQSANAzANAzOOQSANAfANAfOOQSANAgANAgO&*ZQ`O,5?QOOQO-E<d-E<dO&*fQ!LUO1G5sO#=PQ`O,5=iO6bQ`O,5=iO&,vQtO'#ChO&-QQ,UO,5:vO&-[Q,UO,5:vO!0`Q!bO,5=iOOQO-E<f-E<fOOQS1G3S1G3SO%>VQdO,5<tO%=kQ(DjO,5=iO$HOQ(DjO,5:vO$%hQ,UO,5=iO&-lQ,UO,5=iO&-}Q,UO,5:vOOQS<<LX<<LXOJRQ&jO<<LXO%AXQ`O<<LXO&.eQ`O<<LXO&.mQqO<<LXO$}QdO<<LXOJRQ&jO<<LXOOQS<<L[<<L[O6lQ(ChO<<L[O#=PQ`O<<L[O6bQ`O<<L[O&.wQ,UO1G4oO&/PQ`O7++`OOQSAN=[AN=[O6lQ(ChOAN=[OOQS<<N}<<N}OOQS<= O<= OOOQS<<Ld<<LdO&/XQ`O<<LdO&/^QdO<<LdO&/eQ`O<<N}O&/jQ`O<= OOOQS1G3n1G3nO;dQ`O7+)_O&/oQ`O<<IuO&/zQ!LUO<<IuOOQO<<Hq<<HqOOQO7+%q7+%qO%F[Q(C|O7+%|OOQO7+%|7+%|O$}QdO7+%|O&0UQ(ChO7+%|O;dQ`O7+%qO!0`Q!bO7+%qO$%_Q,UO7+%qO&0aQ(ChO7+%|O&0oQ,UO7+%qO&0|Q(ChO7+%|O&1bQ(DjO7+%|O&1lQ,UO7+%qO$%_Q,UO7+%|OOQ(C[AN?ZAN?ZOOQO<<Mg<<MgO$(iQ`OG26yOOQSG26yG26yOJRQ&jOG26yO&1|Q`OG26yO&2UQqOG26yO&2`Q!LUO<<J]O&2mQ!LVO1G2TO&4wQ!LVO1G2gO&7OQ!LVO1G2iO&8qQ!LUO<<J}O&9OQ!LUO<<IpOOQO1G1n1G1nOKhQ&jOANA]OOQO7+*P7+*PO&9]Q`O7+*PO&9hQ`O<<NtO&9pQqO7+*ROOQ(CW<<Kf<<KfO$<qQ`O<<KfOOQ(CW<<Ke<<KeO&9zQqO<<KfO$<qQ`O<<KeOOQO7+*[7+*[O6tQ`O7+*[O&:RQ`O<<N|OOQSG27fG27fO6lQ(ChOG27fOMqQdO1G4lO&:ZQ`O7++_O6lQ(ChO1G3TO#=PQ`O1G3TO&:cQ,UO1G0bO6bQ`O1G3TO!0`Q!bO1G3TO$%hQ,UO1G3TO%=kQ(DjO1G3TO%DaQ(DjO1G0bO&:mQ,UO1G3TO%AXQ`OANAsOOQSANAsANAsOJRQ&jOANAsO&;OQ`OANAsO&;WQqOANAsOOQSANAvANAvO6lQ(ChOANAvO#=PQ`OANAvOOQO'#HR'#HROOQO7+*Z7+*ZOOQSG22vG22vOOQSANBOANBOO&;bQ`OANBOOOQSANDiANDiOOQSANDjANDjOOQS<<Ly<<LyOMqQdOAN?aOOQO<<Ih<<IhO%F[Q(C|O<<IhO$}QdO<<IhOOQO<<I]<<I]O;dQ`O<<I]O!0`Q!bO<<I]O&;gQ(ChO<<IhO$%_Q,UO<<I]O&;rQ(ChO<<IhO&<QQ,UO<<I]O&<_Q(ChO<<IhOOQSLD,eLD,eO$(iQ`OLD,eOJRQ&jOLD,eO&<sQ!LVO7+'oO&>iQ!LVO7+'qO&@_Q&kOG26wOOQO<<Mk<<MkOOQ(CWANAQANAQO$<qQ`OANAQOOQ(CWANAPANAPOOQO<<Mv<<MvOOQSLD-QLD-QO&@oQ!LUO7+*WOOQO7+(o7+(oO6lQ(ChO7+(oO#=PQ`O7+(oO6bQ`O7+(oO!0`Q!bO7+(oO$%hQ,UO7+(oOOQSG27_G27_O%AXQ`OG27_OJRQ&jOG27_OOQSG27bG27bO6lQ(ChOG27bOOQSG27jG27jO&@yQ!LUOG24{OOQOAN?SAN?SO%F[Q(C|OAN?SOOQOAN>wAN>wO;dQ`OAN>wO$}QdOAN?SO!0`Q!bOAN>wO&ATQ(ChOAN?SO$%_Q,UOAN>wO&A`Q(ChOAN?SOOQS!$(!P!$(!PO$(iQ`O!$(!PO&AnQ(C}OG26wOOQ(CWG26lG26lOOQO<<LZ<<LZO6lQ(ChO<<LZO#=PQ`O<<LZO6bQ`O<<LZO!0`Q!bO<<LZOOQSLD,yLD,yO%AXQ`OLD,yOOQSLD,|LD,|OOQOG24nG24nOOQOG24cG24cO%F[Q(C|OG24nO;dQ`OG24cO$}QdOG24nO!0`Q!bOG24cO&DPQ(ChOG24nOOQS!)9Ek!)9EkO&DmQ7]O,5:zOOQOANAuANAuO6lQ(ChOANAuO#=PQ`OANAuO6bQ`OANAuOOQS!$(!e!$(!eOOQOLD*YLD*YOOQOLD)}LD)}O%F[Q(C|OLD*YO;dQ`OLD)}O$}QdOLD*YO&EpQ!LVOG26wO&GfQ7]O,59mO&HfQ7]O,5<`O&IfQ7]O,5<bO&JfQ7]O,5<pOOQOG27aG27aO6lQ(ChOG27aO#=PQ`OG27aOOQO!$'Mt!$'MtOOQO!$'Mi!$'MiO%F[Q(C|O!$'MtO&KiQ7]O1G2gO&LiQ7]O1G2iO&MiQ7]O1G2TOOQOLD,{LD,{O6lQ(ChOLD,{OOQO!)9C`!)9C`O&NlQ7]O7+'oO' oQ7]O7+'qOOQO!$(!g!$(!gO'!rQ7]OG26wOMqQdO'#DtO.fQ`O'#EQO'#uQtO'#JQOMqQdO'#DlO'#|QtO'#ChO'&dQtO'#ChO'&tQdO,5;OO'(tQ&jO'#E`OMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO,5;YOMqQdO'#I^O'*UQ`O,5<_O'*^Q&jO,5;YO'+nQ&jO,5;YOMqQdO,5;nO.iQ`O'#DRO.iQ`O'#DRO.iQ`O'#DROJRQ&jO'#FtO'(tQ&jO'#FtO'*^Q&jO'#FtOJRQ&jO'#FvO'(tQ&jO'#FvO'*^Q&jO'#FvOJRQ&jO'#GUO'(tQ&jO'#GUO'*^Q&jO'#GUOMqQdO,5?zO'&tQdO1G0jO'+uQ!LUO'#ChOMqQdO1G1vOJRQ&jO,5<{O'(tQ&jO,5<{O'*^Q&jO,5<{OJRQ&jO,5<}O'(tQ&jO,5<}O'*^Q&jO,5<}OJRQ&jO,5<iO'(tQ&jO,5<iO'*^Q&jO,5<iO'&tQdO1G1wOMqQdO7+&qOJRQ&jO1G2TO'(tQ&jO1G2TO'*^Q&jO1G2TOJRQ&jO1G2VO'(tQ&jO1G2VO'*^Q&jO1G2VO'&tQdO7+'cO'&tQdO7+&UO',PQ`O7+'zOJRQ&jOANA]O'(tQ&jOANA]O'*^Q&jOANA]O',PQ`O<<KfO',PQ`OANAQO',UQ`O'#EdO',ZQ`O'#EdO',cQ`O'#FSO',hQ`O'#EnO',mQ`O'#J`O',xQ`O'#J^O'-TQ`O,5;OO'-YQ&kO,5<[O'-aQ`O'#F}O'-fQ`O'#F}O'-kQ`O'#F}O'-pQ`O,5<]O'-xQ`O,5;OO'.QQ!LUO1G1VO'.XQ`O,5<iO'.^Q`O,5<iO'.cQ`O,5<iO'.hQ`O,5<kO'.mQ`O,5<kO'.rQ`O,5<kO'.wQ`O1G1wO'.|Q`O1G0jO'/RQ`O1G2`O'/WQ&kO<<KqO'/_Q&kO<<KqO'/fQ&kO<<KqO'/mQqO7+'zO'/tQ`O7+'zO'/yQqO<<KfO4}Q&jO'#FrO6bQ`O'#FqO={Q`O'#EcOMqQdO,5;kO!(eQ`O'#F}O!(eQ`O'#F}O!(eQ`O'#F}O!(eQ`O'#GPO!(eQ`O'#GPO!(eQ`O'#GPO'0QQ`O,5<tOKhQ&jO7+(VOKhQ&jO7+(VOKhQ&jO7+(VOJRQ&jO1G2`O'0YQ`O1G2`OJRQ&jO7+'zO$:eQqO1G2kO$:eQqO1G2kO$:eQqO1G2kOJRQ&jO,5=POJRQ&jO,5=POJRQ&jO,5=P",
+     stateData: "'1c~O'gOS'hOSTOSUOS~OQUORUOX}O]gO_lObrOcqOigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!VTO!aoO!fVO!iUO!jUO!kUO!lUO!mUO!ppO!uXO#lwO#|tO$QbO%[uO%^xO%`vO%avO%dyO%fzO%i{O%j{O%l|O%y!OO&P!PO&R!QO&T!RO&V!SO&Y!TO&`!UO&f!VO&h!WO&j!XO&l!YO&n!ZO'jQO'rRO'|WO(ZeO~OQUORUO]gOb!aOc!`OigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!V!]O!aoO!fVO!iUO!jUO!kUO!lUO!mUO!p!_O#|!bO$QbO'j![O'rRO'|WO(ZeO~OQ[XZ[X_[Xk[Xx[Xy[X{[X!T[X!c[X!d[X!f[X!l[X#T[X#`dX#c[X#d[X#e[X#f[X#g[X#h[X#i[X#j[X#k[X#m[X#o[X#q[X#r[X#w[X'e[X'r[X'}[X(U[X(V[X~O!_$vX~P&}OS!cO'c!dO'd!fO~OQUORUO]gOb!aOc!`OigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!V!]O!aoO!fVO!iUO!jUO!kUO!lUO!mUO!p!_O#|!bO$QbO'j;ZO'rRO'|WO(ZeO~O!S!jO!T!gO!Q'vP!Q(RP~P)jO!U!rO~P`OQUORUO]gOb!aOc!`OigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!V!]O!aoO!fVO!iUO!jUO!kUO!lUO!mUO!p!_O#|!bO$QbO'rRO'|WO(ZeO~O!S!xO!uXO#^!{O#_!xO'j;[O!e(OP~P,RO!f!}O'j!|O~O!p#RO!uXO%[#SO~O#`#TO~O!_#UO#`#TO~OQ#lOZ#sOk#aOx#YOy#ZO{#[O!T#pO!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO#o#fO#q#hO#r#iO'rRO'}#jO(U#]O(V#^O~O_'tX'e'tX'a'tX!e'tX!Q'tX!V'tX%]'tX!_'tX~P/WO#T#tO#w#tOQ'uXZ'uX_'uXk'uXx'uXy'uX{'uX!T'uX!c'uX!d'uX!f'uX!l'uX#c'uX#d'uX#e'uX#f'uX#g'uX#h'uX#i'uX#j'uX#m'uX#o'uX#q'uX#r'uX'r'uX'}'uX(U'uX(V'uX~O#k'uX'e'uX'a'uX!Q'uX!e'uXo'uX!V'uX%]'uX!_'uX~P1nO#T#tO~O$S#vO$U#uO$]#{O~O!V#|O$QbO$`#}O$b$PO~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv$fO{$[O!V$]O!a$kO!f$XO#_$lO#|$iO$i$gO$k$hO$n$jO'j$RO'n$bO'r$UOe'oP~O!f$mO~O!_$oO~O_$pO'e$pO~O'j$tO~O!f$mO'j$tO'k$vO'n$bO~Oc$|O!f$mO'j$tO~O#k#cO~O]%VOx%RO!V%OO!f%QO%^%UO'j$tO'k$vO^(cP~O!p#RO~O{%WO!V%XO'j$tO~O{%WO!V%XO%f%]O'j$tO~O'j%^O~O#lwO%^xO%`vO%avO%dyO%fzO%i{O%j{O~Ob%gOc%fO!p%dO%[%eO%n%cO~P8xOb%jOcqO!V%iO!ppO!uXO#lwO%[uO%`vO%avO%dyO%fzO%i{O%j{O%l|O~O`%mO#T%pO%^%kO'k$vO~P9wO!f%qO!i%uO~O!f!}O~O!VTO~O_$pO'b%}O'e$pO~O_$pO'b&QO'e$pO~O_$pO'b&SO'e$pO~O'a[Xo[X!Q[X!e[X%}[X!V[X%][X!_[X~P&}O]&XOl&XO{&WO!S&[O!Y&bO!Z&ZO![&ZO'k$vO's&UO!U'wP!U(TP~OP&fO!V&cO!q&eO'j$tO~Oc&kO!f$mO'j$tO~Ox%RO!f%QO~OS!cO'c!dO'd&nO~O!S&pO!Q&uX!Q&{X!T&uX!T&{X~P)jO!T&rO!Q'vX~OQ#lOZ#sOk#aOx#YOy#ZO{#[O!T&rO!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO#o#fO#q#hO#r#iO'rRO'}#jO(U#]O(V#^O~O!Q'vX~P?WO!Q&wO~O!Q(QX!T(QX!_(QX!e(QX'}(QX~O#T(QX#`#XX!U(QX~PA^O#T&xO!Q(SX!T(SX~O!T&yO!Q(RX~O!Q&|O~O#T#tO~PA^O!U&}O~P`Ox#YOy#ZO{#[O!d#WO!f#XO'rROQ!haZ!hak!ha!T!ha!c!ha!l!ha#c!ha#d!ha#e!ha#f!ha#g!ha#h!ha#i!ha#j!ha#k!ha#m!ha#o!ha#q!ha#r!ha'}!ha(U!ha(V!ha~O_!ha'e!ha'a!ha!Q!ha!e!hao!ha!V!ha%]!ha!_!ha~PBtO!e'OO~O{%WO!V%XO!uXO#^'RO#_'QO'j$tO~O!_#UO#T'TO'}'SO!T(PX_(PX'e(PX~O!e(PX~PExO!T'WO!e(OX~O!e'YO~O{%WO!V%XO#_'QO'j$tO~Ox'ZOy'[O!d#WO!f#XO!u!ta{!ta~O!p!ta%[!ta!V!ta#^!ta#_!ta'j!ta~PGQO!p'`O~OQUORUO]gOb!aOc!`OigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!VTO!aoO!fVO!iUO!jUO!kUO!lUO!mUO!p!_O#|!bO$QbO'j![O'rRO'|WO(ZeO~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv;oO{$[O!V$]O!a=`O!f$XO#_;xO#|$iO$i;rO$k;uO$n$jO'j'dO'n$bO'r$UO~O#`'fO~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv$fO{$[O!V$]O!a$kO!f$XO#_$lO#|$iO$i$gO$k$hO$n$jO'j'dO'n$bO'r$UO~Oe'yP~PKhO!S'jO!e'zP~P$}O's'lO'|WO~O{'nO!f#XO's'lO'|WO~OQ;VOR;VO]gOb=ZOc!`OigOk;VOlgOmgOrgOt;VOv;VO{SO!OgO!PgO!V!]O!a;YO!fVO!i;VO!j;VO!k;VO!l;VO!m;VO!p!_O#|!bO$QbO'j'|O'rRO'|WO(Z=XO~Oy(PO!f#XO~O!T#pO_$ga'e$ga'a$ga!e$ga!Q$ga!V$ga%]$ga!_$ga~O#l(TO~PJROx(WO!_(VO!V$TX$P$TX$S$TX$U$TX$]$TX~O!_(VO!V(WX$P(WX$S(WX$U(WX$](WX~Ox(WO~P!#WOx(WO!V(WX$P(WX$S(WX$U(WX$](WX~O!V(YO$P(^O$S(XO$U(XO$](_O~O!S(bO~PMqO$S#vO$U#uO$](eO~OP$oXx$oX{$oX!d$oX(U$oX(V$oX~OPgXegXe$oX!TgX#TgX~P!$|Ol(gO~OS(hO'c(iO'd(kO~OP(tOx(mO{(nO(U(pO(V(rO~Oe(lO~P!&VOe(uO~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv;oO{$[O!V$]O!a=`O!f$XO#_;xO#|$iO$i;rO$k;uO$n$jO'n$bO'r$UO~O!S(yO'j(vO!e([P~P!&tO#`({O~O!f(|O~O!S)RO'j)OO!Q(]P~P!&tOk)`O{)WO!Y)^O!Z)VO![)VO!f(|O#P)_O%S)YO'k$vO's)TO~O!U)]O~P!(wO!d#WOP'qXx'qX{'qX(U'qX(V'qX!T'qX#u'qX!U'qX~Oe'qX#T'qX]'qXl'qX!Y'qX!Z'qX!['qX!u'qX!y'qX!z'qX!{'qX#P'qX#Q'qX'k'qX's'qX'|'qX~P!)pOP)cO#T)bOe'pX!T'pX~O!T)dOe'oX~O'j%^Oe'oP~O!f)kO~O'j'dO~O{%WO!S!xO!V%XO!uXO#^!{O#_!xO'j$tO!e(OP~O!_#UO#`)oO~OQ#lOZ#sOk#aOx#YOy#ZO{#[O!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO#o#fO#q#hO#r#iO'rRO'}#jO(U#]O(V#^O~O_!`a!T!`a'e!`a'a!`a!Q!`a!e!`ao!`a!V!`a%]!`a!_!`a~P!-ROP)wO!V&cO!q)vO%])uO'n$bO~O!_)yO!V'mX_'mX!T'mX'e'mX~O!f$mO'n$bO~O!f$mO'j$tO'n$bO~O!_#UO#`'fO~O]*UO%^*VO'j*RO!U(dP~O!T*WO^(cX~O's'lO~OZ*[O~O^*]O~O!V%OO'j$tO'k$vO^(cP~O{%WO!S*aO!T&yO!V%XO'j$tO!Q(RP~O]&_Ol&_O{*cO!S*bO's'lO~O!U(TP~P!2fO!T*dO_(`X'e(`X~O#T*hO'n$bO~OP*kO!V$]O'n$bO~O!V*mO~Ox*oO!VTO~O!p*tO~Oc*yO~O'j!|O!U(bP~Oc$|O~O%^xO'j%^O~P9wOZ+PO^+OO~OQUORUO]gObrOcqOigOkUOlgOmgOrgOtUOvUO{SO!OgO!PgO!aoO!fVO!iUO!jUO!kUO!lUO!mUO!ppO!uXO$QbO%[uO'rRO'|WO(ZeO~O!V!]O#|!bO'j![O~P!4vO^+OO_$pO'e$pO~O_+TO#l+VO%`+VO%a+VO~P$}O!f%qO~O&P+[O~O!V+^O~O&b+`O&d+aOQ&_aR&_aX&_a]&_a_&_ab&_ac&_ai&_ak&_al&_am&_ar&_at&_av&_a{&_a!O&_a!P&_a!V&_a!a&_a!f&_a!i&_a!j&_a!k&_a!l&_a!m&_a!p&_a!u&_a#l&_a#|&_a$Q&_a%[&_a%^&_a%`&_a%a&_a%d&_a%f&_a%i&_a%j&_a%l&_a%y&_a&P&_a&R&_a&T&_a&V&_a&Y&_a&`&_a&f&_a&h&_a&j&_a&l&_a&n&_a'a&_a'j&_a'r&_a'|&_a(Z&_a!U&_a&W&_a`&_a&]&_a~O'j+fO~O!TzX!T!]X!UzX!U!]X!_zX!_!]X!f!]X#TzX'n!]X~O!_+kO#T+jO!T#]X!T'xX!U#]X!U'xX!_'xX!f'xX'n'xX~O!_+mO!f$mO'n$bO!T!XX!U!XX~O]&VOl&VO{+nO's)TO~OQ;VOR;VO]gOb=ZOc!`OigOk;VOlgOmgOrgOt;VOv;VO{SO!OgO!PgO!V!]O!a;YO!fVO!i;VO!j;VO!k;VO!l;VO!m;VO!p!_O#|!bO$QbO'rRO'|WO(Z=XO~O'j;}O~P!>SO!T+rO!U'wX~O!U+tO~O!_+kO#T+jO!T#]X!U#]X~O!T+uO!U(TX~O!U+wO~O]&VOl&VO{+nO'k$vO's)TO~O!Z+xO![+xO~P!AQO_+}O!U,PO!Y,QO!Z+|O![+|O!u;WO!y,UO!z,SO!{,TO!|,RO#P,VO#Q,VO'|+zO~P!AQOP,[O!V&cO!q,ZO~Oo,aO~O!Q&ua!T&ua~P!-RO!S,eO!Q&uX!T&uX~P$}O!T&rO!Q'va~O!Q'va~P?WO!T&yO!Q(Ra~O{%WO!S,iO!V%XO'j$tO!Q&{X!T&{X~O!T'WO!e(Oa~O{%WO!V%XO#_,lO'j$tO~O#T,nO!T(Pa!e(Pa_(Pa'e(Pa~O!_#UO~P!DvO{%WO!S,qO!V%XO!uXO#^,sO#_,qO'j$tO!T&}X!e&}X~Oy,wO!f#XO~OP,{O!V&cO!q,zO%],yO'n$bO~O_#Wi!T#Wi'e#Wi'a#Wi!Q#Wi!e#Wio#Wi!V#Wi%]#Wi!_#Wi~P!-ROP=mOx(mO{(nO(U(pO(V(rO~O#`#Sa!T#Sa!e#Sa#T#Sa!V#Sa_#Sa'e#Sa!Q#Sa~P!G[O!d#WOP'qXx'qX{'qX(U'qX(V'qXQ'qXZ'qXk'qXy'qX!T'qX!c'qX!f'qX!l'qX#c'qX#d'qX#e'qX#f'qX#g'qX#h'qX#i'qX#j'qX#k'qX#m'qX#o'qX#q'qX#r'qX'r'qX'}'qX~O#`'qX_'qX'e'qX!e'qX!Q'qX'a'qX!V'qX#T'qXo'qX%]'qX!_'qX~P!HZO!T-UOe'yX~P!&VOe-WO~O!T-XO!e'zX~P!-RO!e-[O~O!Q-^O~OQ#lOx#YOy#ZO{#[O!d#WO!f#XO!l#lO'rROZ#bi_#bik#bi!T#bi!c#bi#d#bi#e#bi#f#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi'e#bi'}#bi(U#bi(V#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~O#c#bi~P!KrO#c#_O~P!KrOQ#lOx#YOy#ZO{#[O!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O'rROZ#bi_#bi!T#bi!c#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi'e#bi'}#bi(U#bi(V#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~Ok#bi~P!NdOk#aO~P!NdOQ#lOk#aOx#YOy#ZO{#[O!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO'rRO_#bi!T#bi#m#bi#o#bi#q#bi#r#bi'e#bi'}#bi(U#bi(V#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~OZ#bi!c#bi#h#bi#i#bi#j#bi#k#bi~P##UOZ#sO!c#cO#h#cO#i#cO#j#rO#k#cO~P##UOQ#lOZ#sOk#aOx#YOy#ZO{#[O!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO'rRO_#bi!T#bi#o#bi#q#bi#r#bi'e#bi'}#bi(V#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~O(U#bi~P#&VO(U#]O~P#&VOQ#lOZ#sOk#aOx#YOy#ZO{#[O!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO#o#fO'rRO(U#]O_#bi!T#bi#q#bi#r#bi'e#bi'}#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~O(V#bi~P#(wO(V#^O~P#(wOQ#lOZ#sOk#aOx#YOy#ZO{#[O!c#cO!d#WO!f#XO!l#lO#c#_O#d#`O#e#`O#f#`O#g#bO#h#cO#i#cO#j#rO#k#cO#m#dO#o#fO#q#hO'rRO(U#]O(V#^O~O_#bi!T#bi#r#bi'e#bi'}#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~P#+iOQ[XZ[Xk[Xx[Xy[X{[X!c[X!d[X!f[X!l[X#T[X#`dX#c[X#d[X#e[X#f[X#g[X#h[X#i[X#j[X#k[X#m[X#o[X#q[X#r[X#w[X'r[X'}[X(U[X(V[X!T[X!U[X~O#u[X~P#.SOQ#lOZ;mOk;aOx#YOy#ZO{#[O!c;cO!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O#g;bO#h;cO#i;cO#j;lO#k;cO#m;dO#o;fO#q;hO#r;iO'rRO'}#jO(U#]O(V#^O~O#u-`O~P#0aOQ'uXZ'uXk'uXx'uXy'uX{'uX!c'uX!d'uX!f'uX!l'uX#c'uX#d'uX#e'uX#f'uX#g'uX#h'uX#i'uX#j'uX#m'uX#o'uX#q'uX#r'uX'r'uX'}'uX(U'uX(V'uX!T'uX~O#T;nO#w;nO#k'uX#u'uX!U'uX~P#2_O_'Qa!T'Qa'e'Qa'a'Qa!e'Qao'Qa!Q'Qa!V'Qa%]'Qa!_'Qa~P!-ROQ#biZ#bi_#bik#biy#bi!T#bi!c#bi!d#bi!f#bi!l#bi#c#bi#d#bi#e#bi#f#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi'e#bi'r#bi'}#bi'a#bi!Q#bi!e#bio#bi!V#bi%]#bi!_#bi~P!G[O_#vi!T#vi'e#vi'a#vi!Q#vi!e#vio#vi!V#vi%]#vi!_#vi~P!-RO$S-cO$U-cO~O$S-dO$U-dO~O!_(VO#T-eO!V$YX$P$YX$S$YX$U$YX$]$YX~O!S-fO~O!V(YO$P-hO$S(XO$U(XO$]-iO~O!T;jO!U'tX~P#0aO!U-jO~O$]-lO~OS(hO'c(iO'd-oO~O]-rOl-rO!Q-sO~O!TdX!_dX!edX!e$oX'}dX~P!$|O!e-yO~P!G[O!T-zO!_#UO'}'SO!e([X~O!e.PO~O!S(yO'j$tO!e([P~O#`.RO~O!Q$oX!T$oX!_$vX~P!$|O!T.SO!Q(]X~P!G[O!_.UO~O!Q.WO~Ok.[O!_#UO!f$mO'n$bO'}'SO~O'j.^O~O!_)yO~O_$pO!T.bO'e$pO~O!U.dO~P!(wO!Z.eO![.eO'k$vO's)TO~O{.gO's)TO~O#P.hO~O'j%^Oe'VX!T'VX~O!T)dOe'oa~Oe.mO~Ox.nOy.nO{.oOPua(Uua(Vua!Tua#Tua~Oeua#uua~P#>mOx(mO{(nOP$ha(U$ha(V$ha!T$ha#T$ha~Oe$ha#u$ha~P#?cOx(mO{(nOP$ja(U$ja(V$ja!T$ja#T$ja~Oe$ja#u$ja~P#@UO].pO~O#`.qO~Oe$xa!T$xa#T$xa#u$xa~P!&VO#`.tO~OP,{O!V&cO!q,zO%],yO~O]$SOk$TOl$SOm$SOr$dOt$eOv;oO{$[O!V$]O!a=`O!f$XO#_;xO#|$iO$i;rO$k;uO$n$jO'n$bO'r$UO~Oi.{O'j.zO~P#AvO!_)yO!V'ma_'ma!T'ma'e'ma~O#`/RO~OZ[X!TdX!UdX~O!T/SO!U(dX~O!U/UO~OZ/VO~O]/XO'j*RO~O!V%OO'j$tO^'_X!T'_X~O!T*WO^(ca~O!e/[O~P!-RO]/^O~OZ/_O~O^/`O~O!T*dO_(`a'e(`a~O#T/fO~OP/iO!V$]O~O's'lO!U(aP~OP/sO!V/oO!q/rO%]/qO'n$bO~OZ/}O!T/{O!U(bX~O!U0OO~O^0QO_$pO'e$pO~O]0RO~O]0SO'j!|O~O#k0TO%}0UO~P1nO#T#tO#k0TO%}0UO~O_0VO~P$}O_0XO~O&W0]OQ&UiR&UiX&Ui]&Ui_&Uib&Uic&Uii&Uik&Uil&Uim&Uir&Uit&Uiv&Ui{&Ui!O&Ui!P&Ui!V&Ui!a&Ui!f&Ui!i&Ui!j&Ui!k&Ui!l&Ui!m&Ui!p&Ui!u&Ui#l&Ui#|&Ui$Q&Ui%[&Ui%^&Ui%`&Ui%a&Ui%d&Ui%f&Ui%i&Ui%j&Ui%l&Ui%y&Ui&P&Ui&R&Ui&T&Ui&V&Ui&Y&Ui&`&Ui&f&Ui&h&Ui&j&Ui&l&Ui&n&Ui'a&Ui'j&Ui'r&Ui'|&Ui(Z&Ui!U&Ui`&Ui&]&Ui~O`0cO!U0aO&]0bO~P`O!VTO!f0eO~O&d+aOQ&_iR&_iX&_i]&_i_&_ib&_ic&_ii&_ik&_il&_im&_ir&_it&_iv&_i{&_i!O&_i!P&_i!V&_i!a&_i!f&_i!i&_i!j&_i!k&_i!l&_i!m&_i!p&_i!u&_i#l&_i#|&_i$Q&_i%[&_i%^&_i%`&_i%a&_i%d&_i%f&_i%i&_i%j&_i%l&_i%y&_i&P&_i&R&_i&T&_i&V&_i&Y&_i&`&_i&f&_i&h&_i&j&_i&l&_i&n&_i'a&_i'j&_i'r&_i'|&_i(Z&_i!U&_i&W&_i`&_i&]&_i~O!Q0kO~O!T!Xa!U!Xa~P#0aO!S0rO!Y&bO!Z&ZO![&ZO!T&vX!U&vX~P!AQO!T+rO!U'wa~O!T&|X!U&|X~P!2fO!T+uO!U(Ta~O!Y0{O!Z0zO![0zO!u;WO!y1OO!z0}O!{0}O!|0|O#P1PO#Q1PO'|+zO~P!AQO_$pO!_#UO!f$mO!l1UO#T1SO'e$pO'n$bO'}'SO~O]&VOl&VO{+nO's)TO'|+zO~O_+}O!U1XO!Y,QO!Z+|O![+|O!u;WO!y,UO!z,SO!{,TO!|,RO#P,VO#Q,VO'|+zO~P!AQO!Z0zO![0zO'|+zO~P!AQO!Y0{O!Z0zO![0zO'|+zO~P!AQO!VTO!Y0{O!Z0zO![0zO!|0|O#P1PO#Q1PO'|+zO~P!AQO!Y0{O!Z0zO![0zO!z0}O!{0}O!|0|O#P1PO#Q1PO'|+zO~P!AQO!V&cO~O!V&cO~P!G[O!T#pOo$ga~O!Q&ui!T&ui~P!-RO!T&rO!Q'vi~O!T&yO!Q(Ri~O!Q(Si!T(Si~P!-RO!T'WO!e(Oi~O!T(Pi!e(Pi_(Pi'e(Pi~P!-RO#T1eO!T(Pi!e(Pi_(Pi'e(Pi~O{%WO!V%XO!uXO#^1hO#_1gO'j$tO~O{%WO!V%XO#_1gO'j$tO~OP1pO!V&cO!q1oO%]1nO~OP1pO!V&cO!q1oO%]1nO'n$bO~O#`uaQuaZua_uakua!cua!dua!fua!lua#cua#dua#eua#fua#gua#hua#iua#jua#kua#mua#oua#qua#rua'eua'rua'}ua!eua!Qua'aua!Vuaoua%]ua!_ua~P#>mO#`$haQ$haZ$ha_$hak$hay$ha!c$ha!d$ha!f$ha!l$ha#c$ha#d$ha#e$ha#f$ha#g$ha#h$ha#i$ha#j$ha#k$ha#m$ha#o$ha#q$ha#r$ha'e$ha'r$ha'}$ha!e$ha!Q$ha'a$ha!V$hao$ha%]$ha!_$ha~P#?cO#`$jaQ$jaZ$ja_$jak$jay$ja!c$ja!d$ja!f$ja!l$ja#c$ja#d$ja#e$ja#f$ja#g$ja#h$ja#i$ja#j$ja#k$ja#m$ja#o$ja#q$ja#r$ja'e$ja'r$ja'}$ja!e$ja!Q$ja'a$ja!V$jao$ja%]$ja!_$ja~P#@UO#`$xaQ$xaZ$xa_$xak$xay$xa!T$xa!c$xa!d$xa!f$xa!l$xa#c$xa#d$xa#e$xa#f$xa#g$xa#h$xa#i$xa#j$xa#k$xa#m$xa#o$xa#q$xa#r$xa'e$xa'r$xa'}$xa!e$xa!Q$xa'a$xa!V$xa#T$xao$xa%]$xa!_$xa~P!G[O_#Wq!T#Wq'e#Wq'a#Wq!Q#Wq!e#Wqo#Wq!V#Wq%]#Wq!_#Wq~P!-ROe&wX!T&wX~PKhO!T-UOe'ya~O!S1xO!T&xX!e&xX~P$}O!T-XO!e'za~O!T-XO!e'za~P!-RO!Q1{O~O#u!ha!U!ha~PBtO#u!`a!T!`a!U!`a~P#0aO!V2^O$QbO$Z2_O~O!U2cO~Oo2dO~P!G[O_$dq!T$dq'e$dq'a$dq!Q$dq!e$dqo$dq!V$dq%]$dq!_$dq~P!-RO!Q2eO~O]-rOl-rO~Ox(mO{(nO(V(rOP%Ti(U%Ti!T%Ti#T%Ti~Oe%Ti#u%Ti~P$9POx(mO{(nOP%Vi(U%Vi(V%Vi!T%Vi#T%Vi~Oe%Vi#u%Vi~P$9rO'}#jO~P!G[O!S2hO'j$tO!T'RX!e'RX~O!T-zO!e([a~O!T-zO!_#UO!e([a~O!T-zO!_#UO'}'SO!e([a~Oe$qi!T$qi#T$qi#u$qi~P!&VO!S2pO'j)OO!Q'TX!T'TX~P!&tO!T.SO!Q(]a~O!T.SO!Q(]a~P!G[O!_#UO~O!_#UO#k2xO~Ok2{O!_#UO'}'SO~Oe'pi!T'pi~P!&VO#T3OOe'pi!T'pi~P!&VO!e3RO~O_$eq!T$eq'e$eq'a$eq!Q$eq!e$eqo$eq!V$eq%]$eq!_$eq~P!-RO!T3VO!V(^X~P!G[O!V&cO%]1nO~O!V&cO%]1nO~P!G[O!V$oX%Q[X_$oX!T$oX'e$oX~P!$|O%Q3XOPhXxhX{hX!VhX(UhX(VhX_hX!ThX'ehX~O%Q3XO~O]3_O%^3`O'j*RO!T'^X!U'^X~O!T/SO!U(da~OZ3dO~O^3eO~O]3hO~O!Q3iO~O_$pO'e$pO~P!G[O!V$]O~P!G[O!T3nO#T3pO!U(aX~O!U3qO~O]&VOl&VO{3sO!Y4OO!Z3wO![3wO!u;WO!y3}O!z3|O!{3|O#P3{O#Q,VO'k$vO's)TO'|+zO~O!U3zO~P$BTOP4VO!V/oO!q4UO%]4TO~OP4VO!V/oO!q4UO%]4TO'n$bO~O'j!|O!T']X!U']X~O!T/{O!U(ba~O]4aO's4`O~O]4bO~O^4dO~O!e4gO~P$}O_4iO~O_4iO~P$}O#k4kO%}4lO~PExO`0cO!U4pO&]0bO~P`O!_4rO~O!_4tO!T'xi!U'xi!_'xi!f'xi'n'xi~O!T#]i!U#]i~P#0aO#T4uO!T#]i!U#]i~O!T!Xi!U!Xi~P#0aO!Q4vO~O]!tal!ta!Y!ta!Z!ta![!ta!y!ta!z!ta!{!ta!|!ta#P!ta#Q!ta'k!ta's!ta'|!ta~PGQO_$pO!_#UO!f$mO!l5OO#T4|O'e$pO'n$bO'}'SO~O!Z5QO![5QO'|+zO~P!AQO!Y5RO!Z5QO![5QO'|+zO~P!AQO!Y5RO!Z5QO![5QO!|5TO#P5UO#Q5UO'|+zO~P!AQO!Y5RO!Z5QO![5QO!z5VO!{5VO!|5TO#P5UO#Q5UO'|+zO~P!AQO_$pO#T4|O'e$pO~O_$pO!_#UO#T4|O'e$pO~O_$pO!_#UO!l5OO#T4|O'e$pO'}'SO~O!T'WO!e(Oq~O!T(Pq!e(Pq_(Pq'e(Pq~P!-RO{%WO!V%XO#_5aO'j$tO~O!V&cO%]5cO~O!V&cO%]5cO~P!G[OP5hO!V&cO!q5gO%]5cO~O#`%TiQ%TiZ%Ti_%Tik%Tiy%Ti!c%Ti!d%Ti!f%Ti!l%Ti#c%Ti#d%Ti#e%Ti#f%Ti#g%Ti#h%Ti#i%Ti#j%Ti#k%Ti#m%Ti#o%Ti#q%Ti#r%Ti'e%Ti'r%Ti'}%Ti!e%Ti!Q%Ti'a%Ti!V%Tio%Ti%]%Ti!_%Ti~P$9PO#`%ViQ%ViZ%Vi_%Vik%Viy%Vi!c%Vi!d%Vi!f%Vi!l%Vi#c%Vi#d%Vi#e%Vi#f%Vi#g%Vi#h%Vi#i%Vi#j%Vi#k%Vi#m%Vi#o%Vi#q%Vi#r%Vi'e%Vi'r%Vi'}%Vi!e%Vi!Q%Vi'a%Vi!V%Vio%Vi%]%Vi!_%Vi~P$9rO#`$qiQ$qiZ$qi_$qik$qiy$qi!T$qi!c$qi!d$qi!f$qi!l$qi#c$qi#d$qi#e$qi#f$qi#g$qi#h$qi#i$qi#j$qi#k$qi#m$qi#o$qi#q$qi#r$qi'e$qi'r$qi'}$qi!e$qi!Q$qi'a$qi!V$qi#T$qio$qi%]$qi!_$qi~P!G[Oe&wa!T&wa~P!&VO!T&xa!e&xa~P!-RO!T-XO!e'zi~O#u#Wi!T#Wi!U#Wi~P#0aOQ#lOx#YOy#ZO{#[O!d#WO!f#XO!l#lO'rROZ#bik#bi!c#bi#d#bi#e#bi#f#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi#u#bi'}#bi(U#bi(V#bi!T#bi!U#bi~O#c#bi~P%&nO#c;_O~P%&nOQ#lOx#YOy#ZO{#[O!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O'rROZ#bi!c#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi#u#bi'}#bi(U#bi(V#bi!T#bi!U#bi~Ok#bi~P%(yOk;aO~P%(yOQ#lOk;aOx#YOy#ZO{#[O!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O#g;bO'rRO#m#bi#o#bi#q#bi#r#bi#u#bi'}#bi(U#bi(V#bi!T#bi!U#bi~OZ#bi!c#bi#h#bi#i#bi#j#bi#k#bi~P%+UOZ;mO!c;cO#h;cO#i;cO#j;lO#k;cO~P%+UOQ#lOZ;mOk;aOx#YOy#ZO{#[O!c;cO!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O#g;bO#h;cO#i;cO#j;lO#k;cO#m;dO'rRO#o#bi#q#bi#r#bi#u#bi'}#bi(V#bi!T#bi!U#bi~O(U#bi~P%-pO(U#]O~P%-pOQ#lOZ;mOk;aOx#YOy#ZO{#[O!c;cO!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O#g;bO#h;cO#i;cO#j;lO#k;cO#m;dO#o;fO'rRO(U#]O#q#bi#r#bi#u#bi'}#bi!T#bi!U#bi~O(V#bi~P%/{O(V#^O~P%/{OQ#lOZ;mOk;aOx#YOy#ZO{#[O!c;cO!d#WO!f#XO!l#lO#c;_O#d;`O#e;`O#f;`O#g;bO#h;cO#i;cO#j;lO#k;cO#m;dO#o;fO#q;hO'rRO(U#]O(V#^O~O#r#bi#u#bi'}#bi!T#bi!U#bi~P%2WO_#sy!T#sy'e#sy'a#sy!Q#sy!e#syo#sy!V#sy%]#sy!_#sy~P!-ROP=oOx(mO{(nO(U(pO(V(rO~OQ#biZ#bik#biy#bi!c#bi!d#bi!f#bi!l#bi#c#bi#d#bi#e#bi#f#bi#g#bi#h#bi#i#bi#j#bi#k#bi#m#bi#o#bi#q#bi#r#bi#u#bi'r#bi'}#bi!T#bi!U#bi~P%5OO#u'qX!U'qX~P!HZO#u#vi!T#vi!U#vi~P#0aO!U5tO~O!T'Qa!U'Qa~P#0aO!_#UO'}'SO!T'Ra!e'Ra~O!T-zO!e([i~O!T-zO!_#UO!e([i~Oe$qq!T$qq#T$qq#u$qq~P!&VO!Q'Ta!T'Ta~P!G[O!_5{O~O!T.SO!Q(]i~P!G[O!T.SO!Q(]i~O!Q6PO~O!_#UO#k6UO~Ok6VO!_#UO'}'SO~O!Q6XO~Oe$sq!T$sq#T$sq#u$sq~P!&VO_$ey!T$ey'e$ey'a$ey!Q$ey!e$eyo$ey!V$ey%]$ey!_$ey~P!-RO!T3VO!V(^a~O_#Wy!T#Wy'e#Wy'a#Wy!Q#Wy!e#Wyo#Wy!V#Wy%]#Wy!_#Wy~P!-ROZ6^O~O]6`O'j*RO~O!T/SO!U(di~O]6cO~O^6dO~O!_4tO~O's'lO!T'YX!U'YX~O!T3nO!U(aa~O!f$mO'n$bO_'xX!_'xX!l'xX#T'xX'e'xX'}'xX~O'j6mO~P,RO!u;WO!y6oO!z6nO!{6nO#P1PO#Q1PO~P$%_O_$pO!_#UO!l1UO#T1SO'e$pO'}'SO~O!U6rO~P$BTO]&VOl&VO{6sO's)TO'|+zO~O!Y6wO!Z6vO![6vO#P1PO#Q1PO'|+zO~P!AQO!Y6wO!Z6vO![6vO!z6xO!{6xO#P1PO#Q1PO'|+zO~P!AQO!Z6vO![6vO'k$vO's)TO'|+zO~O!V/oO~O!V/oO%]6zO~O!V/oO%]6zO~P!G[OP7PO!V/oO!q7OO%]6zO~OZ7UO!T']a!U']a~O!T/{O!U(bi~O]7XO~O!e7YO~O!e7ZO~O!e7[O~O!e7[O~P$}O_7^O~O!_7aO~O!e7bO~O!T(Si!U(Si~P#0aO_$pO#T7iO'e$pO~O_$pO!_#UO#T7iO'e$pO~O!Z7mO![7mO'|+zO~P!AQO_$pO!_#UO!f$mO!l7nO#T7iO'e$pO'n$bO'}'SO~O!Y7oO!Z7mO![7mO'|+zO~P!AQO!Y7oO!Z7mO![7mO!|7rO#P7sO#Q7sO'|+zO~P!AQO_$pO!_#UO!l7nO#T7iO'e$pO'}'SO~O_$pO'e$pO~P!-RO!T'WO!e(Oy~O!T(Py!e(Py_(Py'e(Py~P!-RO!V&cO%]7xO~O!V&cO%]7xO~P!G[O#`$qqQ$qqZ$qq_$qqk$qqy$qq!T$qq!c$qq!d$qq!f$qq!l$qq#c$qq#d$qq#e$qq#f$qq#g$qq#h$qq#i$qq#j$qq#k$qq#m$qq#o$qq#q$qq#r$qq'e$qq'r$qq'}$qq!e$qq!Q$qq'a$qq!V$qq#T$qqo$qq%]$qq!_$qq~P!G[O#`$sqQ$sqZ$sq_$sqk$sqy$sq!T$sq!c$sq!d$sq!f$sq!l$sq#c$sq#d$sq#e$sq#f$sq#g$sq#h$sq#i$sq#j$sq#k$sq#m$sq#o$sq#q$sq#r$sq'e$sq'r$sq'}$sq!e$sq!Q$sq'a$sq!V$sq#T$sqo$sq%]$sq!_$sq~P!G[O!T&xi!e&xi~P!-RO#u#Wq!T#Wq!U#Wq~P#0aOx.nOy.nO{.oOPua(Uua(Vua!Uua~OQuaZuakua!cua!dua!fua!lua#cua#dua#eua#fua#gua#hua#iua#jua#kua#mua#oua#qua#rua#uua'rua'}ua!Tua~P%LmOx(mO{(nOP$ha(U$ha(V$ha!U$ha~OQ$haZ$hak$hay$ha!c$ha!d$ha!f$ha!l$ha#c$ha#d$ha#e$ha#f$ha#g$ha#h$ha#i$ha#j$ha#k$ha#m$ha#o$ha#q$ha#r$ha#u$ha'r$ha'}$ha!T$ha~P%NtOx(mO{(nOP$ja(U$ja(V$ja!U$ja~OQ$jaZ$jak$jay$ja!c$ja!d$ja!f$ja!l$ja#c$ja#d$ja#e$ja#f$ja#g$ja#h$ja#i$ja#j$ja#k$ja#m$ja#o$ja#q$ja#r$ja#u$ja'r$ja'}$ja!T$ja~P&!{OQ$xaZ$xak$xay$xa!c$xa!d$xa!f$xa!l$xa#c$xa#d$xa#e$xa#f$xa#g$xa#h$xa#i$xa#j$xa#k$xa#m$xa#o$xa#q$xa#r$xa#u$xa'r$xa'}$xa!T$xa!U$xa~P%5OO#u$dq!T$dq!U$dq~P#0aO#u$eq!T$eq!U$eq~P#0aO!U8RO~O#u8SO~P!&VO!_#UO!T'Ri!e'Ri~O!_#UO'}'SO!T'Ri!e'Ri~O!T-zO!e([q~O!Q'Ti!T'Ti~P!G[O!T.SO!Q(]q~O!Q8YO~P!G[O!Q8YO~Oe'py!T'py~P!&VO!T'Wa!V'Wa~P!G[O!V%Pq_%Pq!T%Pq'e%Pq~P!G[OZ8_O~O!T/SO!U(dq~O]8bO~O#T8cO!T'Ya!U'Ya~O!T3nO!U(ai~P#0aOQ[XZ[Xk[Xx[Xy[X{[X!Q[X!T[X!c[X!d[X!f[X!l[X#T[X#`dX#c[X#d[X#e[X#f[X#g[X#h[X#i[X#j[X#k[X#m[X#o[X#q[X#r[X#w[X'r[X'}[X(U[X(V[X~O!_$}X#k$}X~P&*pO#P5UO#Q5UO~P$%_O!z8gO!{8gO#P5UO#Q5UO~P$%_O!Z8jO![8jO'k$vO's)TO'|+zO~O!Y8mO!Z8jO![8jO#P5UO#Q5UO'|+zO~P!AQO!V/oO%]8pO~O!V/oO%]8pO~P!G[O]8wO's8vO~O!T/{O!U(bq~O!e8yO~O!e8yO~P$}O!e8{O~O!e8|O~O#T9OO!T#]y!U#]y~O!T#]y!U#]y~P#0aO_$pO#T9RO'e$pO~O_$pO!_#UO#T9RO'e$pO~O!Z9WO![9WO'|+zO~P!AQO_$pO!_#UO!l9XO#T9RO'e$pO'}'SO~O!f$mO'n$bO~P&0|O!Y9YO!Z9WO![9WO'|+zO~P!AQO!V&cO%]9^O~O!V&cO%]9^O~P!G[O#u#sy!T#sy!U#sy~P#0aOQ$qiZ$qik$qiy$qi!c$qi!d$qi!f$qi!l$qi#c$qi#d$qi#e$qi#f$qi#g$qi#h$qi#i$qi#j$qi#k$qi#m$qi#o$qi#q$qi#r$qi#u$qi'r$qi'}$qi!T$qi!U$qi~P%5OOx(mO{(nO(V(rOP%Ti(U%Ti!U%Ti~OQ%TiZ%Tik%Tiy%Ti!c%Ti!d%Ti!f%Ti!l%Ti#c%Ti#d%Ti#e%Ti#f%Ti#g%Ti#h%Ti#i%Ti#j%Ti#k%Ti#m%Ti#o%Ti#q%Ti#r%Ti#u%Ti'r%Ti'}%Ti!T%Ti~P&4cOx(mO{(nOP%Vi(U%Vi(V%Vi!U%Vi~OQ%ViZ%Vik%Viy%Vi!c%Vi!d%Vi!f%Vi!l%Vi#c%Vi#d%Vi#e%Vi#f%Vi#g%Vi#h%Vi#i%Vi#j%Vi#k%Vi#m%Vi#o%Vi#q%Vi#r%Vi#u%Vi'r%Vi'}%Vi!T%Vi~P&6jO#u$ey!T$ey!U$ey~P#0aO#u#Wy!T#Wy!U#Wy~P#0aO!_#UO!T'Rq!e'Rq~O!T-zO!e([y~O!Q'Tq!T'Tq~P!G[O!Q9dO~P!G[O!T/SO!U(dy~O!T3nO!U(aq~O#P7sO#Q7sO~P$%_O!Z9nO![9nO'k$vO's)TO'|+zO~O!V/oO%]9qO~O!V/oO%]9qO~P!G[O!e9tO~O_$pO#T9zO'e$pO~O_$pO!_#UO#T9zO'e$pO~O!Z9}O![9}O'|+zO~P!AQO_$pO!_#UO!l:OO#T9zO'e$pO'}'SO~OQ$qqZ$qqk$qqy$qq!c$qq!d$qq!f$qq!l$qq#c$qq#d$qq#e$qq#f$qq#g$qq#h$qq#i$qq#j$qq#k$qq#m$qq#o$qq#q$qq#r$qq#u$qq'r$qq'}$qq!T$qq!U$qq~P%5OOQ$sqZ$sqk$sqy$sq!c$sq!d$sq!f$sq!l$sq#c$sq#d$sq#e$sq#f$sq#g$sq#h$sq#i$sq#j$sq#k$sq#m$sq#o$sq#q$sq#r$sq#u$sq'r$sq'}$sq!T$sq!U$sq~P%5OOe%X!Z!T%X!Z#T%X!Z#u%X!Z~P!&VO!T'Yq!U'Yq~P#0aO!T#]!Z!U#]!Z~P#0aO_$pO#T:aO'e$pO~O_$pO!_#UO#T:aO'e$pO~O#`%X!ZQ%X!ZZ%X!Z_%X!Zk%X!Zy%X!Z!T%X!Z!c%X!Z!d%X!Z!f%X!Z!l%X!Z#c%X!Z#d%X!Z#e%X!Z#f%X!Z#g%X!Z#h%X!Z#i%X!Z#j%X!Z#k%X!Z#m%X!Z#o%X!Z#q%X!Z#r%X!Z'e%X!Z'r%X!Z'}%X!Z!e%X!Z!Q%X!Z'a%X!Z!V%X!Z#T%X!Zo%X!Z%]%X!Z!_%X!Z~P!G[O_$pO#T:oO'e$pO~OP=nOx(mO{(nO(U(pO(V(rO~O]#Sal#Sa!U#Sa!Y#Sa!Z#Sa![#Sa!u#Sa!y#Sa!z#Sa!{#Sa#P#Sa#Q#Sa'k#Sa's#Sa'|#Sa~P&D[OQ%X!ZZ%X!Zk%X!Zy%X!Z!c%X!Z!d%X!Z!f%X!Z!l%X!Z#c%X!Z#d%X!Z#e%X!Z#f%X!Z#g%X!Z#h%X!Z#i%X!Z#j%X!Z#k%X!Z#m%X!Z#o%X!Z#q%X!Z#r%X!Z#u%X!Z'r%X!Z'}%X!Z!T%X!Z!U%X!Z~P%5OO]ualua!Yua!Zua![ua!uua!yua!zua!{ua#Pua#Qua'kua'sua'|ua~P%LmO]$hal$ha!Y$ha!Z$ha![$ha!u$ha!y$ha!z$ha!{$ha#P$ha#Q$ha'k$ha's$ha'|$ha~P%NtO]$jal$ja!Y$ja!Z$ja![$ja!u$ja!y$ja!z$ja!{$ja#P$ja#Q$ja'k$ja's$ja'|$ja~P&!{O]$xal$xa!U$xa!Y$xa!Z$xa![$xa!u$xa!y$xa!z$xa!{$xa#P$xa#Q$xa'k$xa's$xa'|$xa~P&D[O]%Til%Ti!Y%Ti!Z%Ti![%Ti!u%Ti!y%Ti!z%Ti!{%Ti#P%Ti#Q%Ti'k%Ti's%Ti'|%Ti~P&4cO]%Vil%Vi!Y%Vi!Z%Vi![%Vi!u%Vi!y%Vi!z%Vi!{%Vi#P%Vi#Q%Vi'k%Vi's%Vi'|%Vi~P&6jO]$qil$qi!U$qi!Y$qi!Z$qi![$qi!u$qi!y$qi!z$qi!{$qi#P$qi#Q$qi'k$qi's$qi'|$qi~P&D[O]$qql$qq!U$qq!Y$qq!Z$qq![$qq!u$qq!y$qq!z$qq!{$qq#P$qq#Q$qq'k$qq's$qq'|$qq~P&D[O]$sql$sq!U$sq!Y$sq!Z$sq![$sq!u$sq!y$sq!z$sq!{$sq#P$sq#Q$sq'k$sq's$sq'|$sq~P&D[O]%X!Zl%X!Z!U%X!Z!Y%X!Z!Z%X!Z![%X!Z!u%X!Z!y%X!Z!z%X!Z!{%X!Z#P%X!Z#Q%X!Z'k%X!Z's%X!Z'|%X!Z~P&D[Oo'tX~P/WO!QdX!TdX#TdX~P&*pOQ[XZ[Xk[Xx[Xy[X{[X!T[X!TdX!c[X!d[X!f[X!l[X#T[X#TdX#`dX#c[X#d[X#e[X#f[X#g[X#h[X#i[X#j[X#k[X#m[X#o[X#q[X#r[X#w[X'r[X'}[X(U[X(V[X~O!_dX!e[X!edX'}dX~P'$ZOQ;VOR;VO]gOb=ZOc!`OigOk;VOlgOmgOrgOt;VOv;VO{SO!OgO!PgO!VTO!a;YO!fVO!i;VO!j;VO!k;VO!l;VO!m;VO!p!_O#|!bO$QbO'j'|O'rRO'|WO(Z=XO~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv;pO{$[O!V$]O!a=aO!f$XO#_;yO#|$iO$i;sO$k;vO$n$jO'j'dO'n$bO'r$UO~O!T;jO!U$ga~O]$SOi$cOk$TOl$SOm$SOr$dOt$eOv;qO{$[O!V$]O!a=bO!f$XO#_;zO#|$iO$i;tO$k;wO$n$jO'j'dO'n$bO'r$UO~O#l(TO~P'*^O!U[X!UdX~P'$ZO!_;^O~O#`;]O~O!_#UO#`;]O~O#T;nO~O#k;cO~O#T;{O!T(SX!U(SX~O#T;nO!T(QX!U(QX~O#`;|O~Oe<OO~P!&VO#`<VO~O#`<WO~O#`<XO~O!_#UO#`<YO~O!_#UO#`;|O~O#u<ZO~P#0aO#`<[O~O#`<]O~O#`<^O~O#`<_O~O#`<`O~O#`<aO~O#`<bO~O#`<cO~O!Q<dO~O#u<eO~P!&VO#u<fO~P!&VO#u<gO~P!&VO!Q<hO~P!G[O!Q<hO~O!Q<iO~P!G[O!_#UO#k=gO~O!_#UO#k=iO~O$Q~!d!y!{!|#P#^#_#j(Z$i$k$n%Q%[%]%^%d%f%i%j%l%n~UT$Q(Z#d!P'g'k#el#c#fkx'h's'h'j$S$U$S~",
+     goto: "$(n(hPPPPPPPP(iP(yP*tPPPP.mPP/SP4y9R9fP9fPPP9fP;l9fP9fP9fP;pPP;vP<a@}PPPARPPPPARC|PPPDSE|PARPHdPPPPJbARPPPPPLlARPP! z!#O!#SP!#s!#w!#sPPPP!&|!(wPP!)P!*VP!#OARAR!-m!0q!5r!5r!9cPPP!9jARPPPPPPPPPPP!<iP!=|PPAR!?]PARPARARARARPAR!@tPP!CvP!FtP!Fx!GQ!GU!GUP!CsP!GY!GYP!JWP!J[ARAR!Jb!M_9fP9fP9f9fP!Ni9f9f#!y9f#%v9f#(Q9f9f#(n#+Q#+Q#+U#+^#+Q#+jP#+QP9f#,f9f#.T9f9f.mPPP#/vPP#0`#0`P#0`P#0u#0`PP#0{P#0rP#0r#1_!({#0r#1|#2S#2V(i#2Y(iP#2a#2a#2aP(iP(iP(iP(iPP(iP#2g#2jP#2j(iP#2nP#2qP(iP(iP(iP(iP(iP(i(iP#2w#3R#3X#3_#3m#3s#3y#4T#4Z#5U#5e#5k#5}#6T#6Z#6i#7O#8w#9V#9]#9c#9i#9o#9y#:P#:V#:a#:s#:yPPPPPPPP#;PPP#;s#?TP#@o#@v#AOPP#Fp#If$ o$ r$ u$#h$#k$#nPP$#t$#x$$q$%q$%u$&ZPP$&_$&e$&iP$&l$&p$&s$'f$'|$(R$(U$(X$(_$(b$(f$(jmlOTn!R!s$o%t%v%w%y+X+^0]0`Q${qQ%StQ%l}S&Z!]+rQ&j!`S)V$])[Q*P$|Q*^%UQ*x%fQ+x&bS+|&c,OQ,`&kQ.e)^Q/z*y[0z+y,Q,R,S,T,US3w/o3yW5Q0{0|0}1OU6v3|3}4OU7m5R5T5VS8j6w6xS9W7o7rQ9n8mR9}9Y%Q`OPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:oS#PX;W!l(O#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[Q)g$fQ*U%OQ*z%iQ+R%qQ-O;oQ.|)yQ/X*VQ0S+PQ3_/SQ4^/{Q5m;qQ6`3`R:q;ppiOTn}!R!s$o%k%t%v%w%y+X+^0]0`R*|%m&j[OPTUnor!R!W!a!c!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$o%Q%m%p%q%t%v%w%y%}&W&e&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=Z=[[!lSV!g!j&[&pQ$upQ$zqS%Pt%U!U%Yvw!v!x!{$m%W&y'Q'R'W*a*b*d+V+k,i,l,p,q,s0e1g1h4t5aQ%b{Q&g!_Q&i!`Q'_#RS(x$X(|S*O${$|Q*S%OQ*s%dQ*w%fS,_&j&kQ,}'`Q.O(yQ/Q*PQ/W*VQ/Y*WQ/]*[Q/u*tS/y*x*yQ1a,`Q2g-zQ3^/SQ3b/VQ3g/_Q4]/zQ5x2hQ6_3`Q6b3dQ8^6^R9f8_x$Ze#W$g$h$l(q(s({)b)c-U.R.q2f3O8S=X=d=e=f!^$xq!`$z${$|&Y&i&j&k)U*O*P+o+{,_,`.]/Q0w0y1V1a2z5P5S7l7q9U9{:bQ)x$uQ*i%_Q*l%`Q*v%fQ,|'_Q/t*sU/x*w*x*yQ1q,}Q4W/uS4[/y/zS6l3r3vQ7T4]U8h6p6t6uU9l8i8k8lQ:W9mQ:i:X#b=]#U#r#s$X$[&f(h(t)R)u)w)y*h*k,[,y,{.S.U/f/i/q/s1n1p2p2x3V3X4T4V5c5h5{6U6z7P7x8p9^9q;r;u;x<P<S<V<[<_<e=g=i=m=n=od=^;^;s;v;y<Q<T<W<]<`<fg=_;l;m;t;w;z<R<U<X<^<a<gW$`e$b)d=XS%_x%kQ%`yQ%azR*g%]%X$_e#U#W#r#s$X$[$g$h$l&f(h(q(s(t({)R)b)c)u)w)y*h*k,[,y,{-U.R.S.U.q/f/i/q/s1n1p2f2p2x3O3V3X4T4V5c5h5{6U6z7P7x8S8p9^9q;^;l;m;r;s;t;u;v;w;x;y;z<P<Q<R<S<T<U<V<W<X<[<]<^<_<`<a<e<f<g=X=d=e=f=g=i=m=n=oT(i$U(jX)h$f;o;p;qU&_!]%X+uS'm#Y#ZQ*Z%RS,u'Z'[Q/j*mQ3P.nR6h3n&pgOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[$a#o_!i!t$s&o&u'b'i'q'r's't'u'v'w'x'y'z'{'}(Q(U(`*Y+p,c,h,m-T-Z-_-a-p.r0l0o1d1w1|1}2O2P2Q2R2S2T2U2V2W2X2Y2]2b3T3[4x5Y5_5k5l5q5r6j7d7g7{8P8Q9Q9h9u9w:_:m:z;X<wT!dR!e&qgOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[Q&]!]R0s+r!n&V!]&Z&b&c+r+x+y+|,O,Q,R,S,T,U,V0z0{0|0}1O1P3t3{5Q5R5T5U5V6n6o7m7o7r7s8g9W9Y9}S)U$])[S.])V)^Q.f)_Q/l*oQ2z.eQ2}.hS3r/o3yS6p3w4OS6t3|3}S8i6v6wQ8k6xS9m8j8mR:X9nllOTn!R!s$o%t%v%w%y+X+^0]0`Q%{!US'a#T;]Q)|$yQ*q%bQ*r%cQ,]&hS-S'f;|S.s)o<YQ/O)}Q/n*pQ0d+`Q0f+aQ0n+lQ1Y,SQ1_,^S3U.t<bQ3Y/PS3]/R<cQ4w0qQ5X1QQ5[1`Q6]3ZQ7e4yQ7f4zQ7t5]Q8}7bQ9S7kQ9x9TQ:^9yQ:l:`R:y:n$[#n_!i!t&o&u'b'i'q'r's't'u'v'w'x'y'z'{'}(Q(U(`*Y+p,c,h,m-T-Z-_-p.r0l0o1d1w1|1}2O2P2Q2R2S2T2U2V2W2X2Y2]2b3T3[4x5Y5_5k5l5q5r6j7d7g7{8P8Q9Q9h9u9w:_:m:z;X<wS'^#O0xU)a$^'e2[T)s$s-a$[#m_!i!t&o&u'b'i'q'r's't'u'v'w'x'y'z'{'}(Q(U(`*Y+p,c,h,m-T-Z-_-p.r0l0o1d1w1|1}2O2P2Q2R2S2T2U2V2W2X2Y2]2b3T3[4x5Y5_5k5l5q5r6j7d7g7{8P8Q9Q9h9u9w:_:m:z;X<wS']#O0xS'o#Z#nS)r$s-aS,v'['^Q-b(PQ.u)sR1i,w&pgOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[S#PX;WQ%v!PQ%w!QQ%y!SQ%z!TR0[+[Q&d!_Q)t$uQ,Y&gS,x'_)xS1[,W,XY1m,|,}.w.x.yS5Z1]1^W5b1j1k1l1qU7w5d5e5fU9[7v7y7zQ:P9]R:d:QT+}&c,O!]YOTVZn}!R!s!v$m$o%k%m%t%v%w%y&c'W+X+^+y,O,p/o0]0`3t3yT#PX;W%SsOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%q%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:oS'm#Y#ZS,u'Z'[!m<m#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[S+{&c,OW0y+y,S,T,UU1V+|,Q,RU1Z,V3t3{S3v/o3yU5P0z0{0|S5S0}1OU5W1P6n6oS6p3w4OS6u3|3}U7l5Q5R5TS7p5U8gQ7q5VS8i6v6wQ8l6xU9U7m7o7rQ9Z7sS9m8j8mS9{9W9YQ:X9nR:b9}S+}&c,OT3x/o3yS'V!w0YQ-}(xQ.Z)UU1U+{3u3vQ2l.OS2u.[.fU5O0y1Z6uQ5w2gS6S2{2}U7n5S5W8lQ8U5xQ8]6VS9X7p7qR:O9ZQ#V^S'U!w0YQ)p$nQ)z$wQ*Q$}Q,o'VQ-|(xQ.Y)UQ.`)XQ.}){Q/v*uU1T+{3u3vS2k-}.OS2t.Z.fQ2w._Q2y.aQ4Y/wW4}0y1U1Z6uQ5v2gQ5z2lS6O2u2}Q6T2|Q7R4ZW7j5O5S5W8lS8T5w5xS8X6P<dQ8Z6SQ8e6kQ8t7SU9V7n7p7qQ9b8US9c8Y<hQ9e8]Q9j8fQ9s8uS9|9X9ZS:S9d<iQ:U9kQ:c:OQ:g:VQ:v:hQ;P:wQ<p<kQ=O<uQ=P<vQ=Q=cR=V=h%S]OPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%q%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:oS#Vr!a!l<j#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[R<p=Z%S^OPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%q%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:oQ$nf!^$wq!`$z${$|&Y&i&j&k)U*O*P+o+{,_,`.]/Q0w0y1V1a2z5P5S7l7q9U9{:bS$}r!aQ){$xQ*u%fW/w*v*w*x*yU4Z/x/y/zS6k3r3vS7S4[4]W8f6l6p6t6uQ8u7TW9k8h8i8k8lS:V9l9mS:h:W:XQ:w:i!l<k#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[Q<u=YR<v=Z$vaOPTUno!R!W!c!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%t%v%w%y%}&W&e&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:oY!qSV!g!j&p!U%Yvw!v!x!{$m%W&y'Q'R'W*a*b*d+V+k,i,l,p,q,s0e1g1h4t5aQ+S%q!j<l#k#|(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[R<o&[S&`!]%XR0u+u%Q`OPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:o!l(O#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[R+R%q!j#e_!i$s&o&u'b'i'x'y'z'{(Q(U*Y,c,h,m-T-Z-p.r1d1w2Y3T3[5Y5_5k7g9Q9w:_:m:z;X!T;e'}(`+p-a0l0o1|2U2V2W2X2]2b4x5l5q5r6j7d7{8P8Q9h9u<w!f#g_!i$s&o&u'b'i'z'{(Q(U*Y,c,h,m-T-Z-p.r1d1w2Y3T3[5Y5_5k7g9Q9w:_:m:z;X!P;g'}(`+p-a0l0o1|2W2X2]2b4x5l5q5r6j7d7{8P8Q9h9u<w!b#k_!i$s&o&u'b'i(Q(U*Y,c,h,m-T-Z-p.r1d1w2Y3T3[5Y5_5k7g9Q9w:_:m:z;XQ2f-xz=['}(`+p-a0l0o1|2]2b4x5l5q5r6j7d7{8P8Q9h9u<wQ=d=jQ=e=kR=f=l&pgOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[S#}d$OR2_-e&wcOPSTUVdno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$O$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-e-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[T#yb$PS#wb$PT(X#z(]T#xb$PT(Z#z(]&wdOPSTUVdno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#k#p#t#|$O$o%Q%m%p%q%t%v%w%y%}&W&[&e&p&r&x'T'f'j'n(b(l)o)v*c+T+X+^+j+m+n,Z,e,n,z-X-`-e-f.o.t/R/r0T0U0V0X0]0`0b0r1S1e1o1x2^3p3s4U4i4k4l4u4|5g6s7O7^7i8c9O9R9z:a:o;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[T#}d$OQ$QdR(d$O%SfOPSTUVno!R!W!c!g!j!s!}#T#X#[#_#`#a#b#c#d#e#f#g#h#i#p#t$o%Q%m%p%q%t%v%w%y%}&W&e&p&r&x'T'f'j'n(l)o)v*c+T+X+^+n,Z,e,n,z-X-`.o.t/R/r0T0U0V0X0]0`0b1S1e1o1x3s4U4i4k4l4|5g6s7O7^7i9R9z:a:o!m=Y#k#|&[(b+j+m-f0r2^3p4u8c9O;V;Y;];_;`;a;b;c;d;e;f;g;h;i;j;n;{;|<O<Y<Z<b<c=[#ahOPTVn!R!W!c!s!}#[#|$o%m%p%q%t%v%w%y%}&W&e'n(b)v*c+T+X+^+n,Z,z-f.o/r0T0U0V0X0]0`0b1o2^3s4U4i4k4l5g6s7O7^!^$^e#W$g$h$l(q(s({)b)c-U.R.q2f3O8S;^;s;v;y<Q<T<W<]<`<f=X=d=e=f#b'e#U#r#s$X$[&f(h(t)R)u)w)y*h*k,[,y,{.S.U/f/i/q/s1n1p2p2x3V3X4T4V5c5h5{6U6z7P7x8p9^9q;r;u;x<P<S<V<[<_<e=g=i=m=n=oQ)l$jQ-q(mg2[;l;m;t;w;z<R<U<X<^<a<gx$Ye#W$g$h$l(q(s({)b)c-U.R.q2f3O8S=X=d=e=fQ(}$ZS)X$])[Q)m$kQ.a)Y#b<r#U#r#s$X$[&f(h(t)R)u)w)y*h*k,[,y,{.S.U/f/i/q/s1n1p2p2x3V3X4T4V5c5h5{6U6z7P7x8p9^9q;r;u;x<P<S<V<[<_<e=g=i=m=n=od<s;^;s;v;y<Q<T<W<]<`<ff<t;l;m;t;w;z<R<U<X<^<a<gQ<x=]Q<y=^Q<z=_Q<{=`Q<|=aR<}=b!^$^e#W$g$h$l(q(s({)b)c-U.R.q2f3O8S;^;s;v;y<Q<T<W<]<`<f=X=d=e=f#b'e#U#r#s$X$[&f(h(t)R)u)w)y*h*k,[,y,{.S.U/f/i/q/s1n1p2p2x3V3X4T4V5c5h5{6U6z7P7x8p9^9q;r;u;x<P<S<V<[<_<e=g=i=m=n=og2[;l;m;t;w;z<R<U<X<^<a<gljOTn!R!s$o%t%v%w%y+X+^0]0`Q)Q$[Q+g&QQ+h&SR2o.S%W$_e#U#W#r#s$X$[$g$h$l&f(h(q(s(t({)R)b)c)u)w)y*h*k,[,y,{-U.R.S.U.q/f/i/q/s1n1p2f2p2x3O3V3X4T4V5c5h5{6U6z7P7x8S8p9^9q;^;l;m;r;s;t;u;v;w;x;y;z<P<Q<R<S<T<U<V<W<X<[<]<^<_<`<a<e<f<g=X=d=e=f=g=i=m=n=oQ*j%`Q/h*lQ3l/gR6g3mT)Z$])[S)Z$])[T3x/o3yQ._)WQ2|.gQ=c3sR=h6sQ)z$wQ.`)XQ.}){Q/v*uQ4Y/wQ7R4ZQ8e6kQ8t7SQ9j8fQ9s8uQ:U9kQ:g:VQ:v:hR;P:wp(q$V'g)n.Q.i.j1u2m3S5u6W9a<q=R=S=T!p<P'c(S(w)P,X-R-m-x.V.v.y/e/g1^1l1t2n2r3k3m4R5f5i5j5|6Q6Y6[6}7z8W8[8r:R=U=W=j=k=l[<Q:e:t:};R;S;U]<R2Z5p7|9_9`:pr(s$V'g)n-v.Q.i.j1u2m3S5u6W9a<q=R=S=T!r<S'c(S(w)P,X-R-m-x.V.v.y/e/g1^1l1r1t2n2r3k3m4R5f5i5j5|6Q6Y6[6}7z8W8[8r:R=U=W=j=k=l^<T:e:t:{:};R;S;U_<U2Z5p7|7}9_9`:ppiOTn}!R!s$o%k%t%v%w%y+X+^0]0`Q%h|R+T%qpiOTn}!R!s$o%k%t%v%w%y+X+^0]0`R%h|Q*n%aR/d*gqiOTn}!R!s$o%k%t%v%w%y+X+^0]0`Q/p*sS4S/t/uW6y4P4Q4R4WU8o6{6|6}U9o8n8q8rQ:Y9pR:j:ZQ%o}R*}%kR4a/}R8w7US%Pt%UR/Y*WQ%t!OR+X%uR+_%zT0^+^0`R+c%{Q+b%{R0g+cQnOQ!sTT$rn!sQ(j$UR-n(jQ!eRR&m!eQ!hSU&s!h&t,fQ&t!iR,f&uQ+s&]R0t+sQ-V'gR1v-VQ-Y'iS1y-Y1zR1z-ZQ,O&cR1W,OrZOTn}!R!s$o%k%m%t%v%w%y+X+^0]0`S!vV$mY#QZ!v+y,p3tS+y&c,OQ,p'WT3t/o3yS!nS%WU&z!n&{,gQ&{!oR,g&vQ+v&`R0v+vQ'X!yQ,j'PW,t'X,j1b5^Q1b,kR5^1cQ(]#zR-g(]Q$OdR(c$OQ#q_U(R#q,b;kQ,b;XR;k(`Q-{(xW2i-{2j5y8VU2j-|-}.OS5y2k2lR8V5z$m(o$V'c'g(S(w)P)i)j)n,X-P-Q-R-m-v-w-x.Q.V.i.j.v.y/e/g1^1l1r1s1t1u2Z2m2n2r3S3k3m4R5f5i5j5n5o5p5u5|6Q6W6Y6[6}7z7|7}8O8W8[8r9_9`9a:R:e:p:r:s:t:{:|:};R;S;U<q=R=S=T=U=W=j=k=lQ.T)PU2q.T2s5}Q2s.VR5}2rQ)[$]R.c)[Q)e$aR.l)eQ3W.vR6Z3WQ*e%ZR/c*eQ3o/jS6i3o8dR8d6jQ*p%bR/m*pQ3y/oR6q3yQ/|*zS4_/|7VR7V4aQ/T*SW3a/T3c6a8`Q3c/WQ6a3bR8`6bQ*X%PR/Z*XQ0`+^R4o0`WmOTn!sQ%x!RQ)q$oQ+W%tQ+Y%vQ+Z%wQ+]%yQ0Z+XS0^+^0`R4n0]Q$qkQ%|!VQ&P!XQ&R!YQ&T!ZQ*`%VQ*f%[Q*|%oQ+e&OQ.b)ZS0P*}+QQ0h+dQ0i+gQ0j+hU1R+{3u3vQ3f/^Q3j/eQ4X/vQ4c0RQ4m0[Y4{0y1T1U1Z6uQ6e3hQ6f3kQ7Q4YQ7W4b[7h4}5O5S5W5Y8lQ8a6cQ8s7RQ8x7XY9P7g7j7n7p7qQ9g8bQ9i8eQ9r8tW9v9Q9V9X9ZQ:T9jQ:[9sU:]9w9|:OQ:f:US:k:_:cQ:u:gQ:x:mQ;O:vQ;Q:zR;T;PQ$yqQ&h!`U)}$z${$|Q+l&YU,^&i&j&kQ.X)US/P*O*PQ0q+oQ1Q+{S1`,_,`Q2v.]Q3Z/QQ4y0wS4z0y1VQ5]1aQ6R2zS7k5P5SS9T7l7qQ9y9UQ:`9{R:n:bS$We=XR)f$bU$ae$b=XR.k)dQ$VeS'c#U)yQ'g#WS(S#r#sQ(w$XQ)P$[Q)i$gQ)j$hQ)n$lQ,X&fQ-P;rQ-Q;uQ-R;xQ-m(hQ-v(qQ-w(sQ-x(tQ.Q({Q.V)RQ.i)bQ.j)cf.v)u,y/q1n4T5c6z7x8p9^9qQ.y)wQ/e*hQ/g*kQ1^,[Q1l,{Q1r<PQ1s<SQ1t<VQ1u-US2Z;l;mQ2m.RQ2n.SQ2r.UQ3S.qQ3k/fQ3m/iQ4R/sQ5f1pQ5i<[Q5j<_Q5n;tQ5o;wQ5p;zQ5u2fQ5|2pQ6Q2xQ6W3OQ6Y3VQ6[3XQ6}4VQ7z5hQ7|<XQ7}<RQ8O<UQ8W5{Q8[6UQ8r7PQ9_<^Q9`<aQ9a8SQ:R<eQ:e;^Q:p<gQ:r;sQ:s;vQ:t;yQ:{<QQ:|<TQ:}<WQ;R<]Q;S<`Q;U<fQ<q=XQ=R=dQ=S=eQ=T=fQ=U=gQ=W=iQ=j=mQ=k=nR=l=olkOTn!R!s$o%t%v%w%y+X+^0]0`Q!^PS!uV!}Q&O!WQ&l!cQ'p#[Q(a#|S+Q%m%pQ+U%qQ+d%}Q+i&WQ,W&eQ-]'nQ-k(bQ.x)vQ/a*cQ0W+TU0p+n3s6sQ1],ZQ1k,zQ2a-fQ3Q.oQ4Q/rQ4e0TQ4f0UQ4h0VQ4j0XQ4q0bQ5e1oQ5s2^Q6|4UQ7]4iQ7_4kQ7`4lQ7y5gQ8q7OR8z7^#U_OPTVn!R!W!s!}#[$o%m%p%q%t%v%w%y%}&W&e'n)v*c+T+X+^+n,Z,z.o/r0T0U0V0X0]0`0b1o3s4U4i4k4l5g6s7O7^Q!iSQ!tUQ$soS&o!g&rQ&u!jQ'b#TQ'i#XQ'q#_Q'r#`Q's#aQ't#bQ'u#cQ'v#dQ'w#eQ'x#fQ'y#gQ'z#hQ'{#iQ'}#kQ(Q#pQ(U#tW(`#|(b-f2^Q*Y%QS+p&[0rS,c&p,eQ,h&xQ,m'TQ-T'fQ-Z'jQ-_;VQ-a;YQ-p(lQ.r)oQ0l+jQ0o+mQ1d,nQ1w-XQ1|;]Q1};_Q2O;`Q2P;aQ2Q;bQ2R;cQ2S;dQ2T;eQ2U;fQ2V;gQ2W;hQ2X;iQ2Y-`Q2];nQ2b;jQ3T.tQ3[/RQ4x;{Q5Y1SQ5_1eQ5k1xQ5l;|Q5q<OQ5r<YQ6j3pQ7d4uQ7g4|Q7{<ZQ8P<bQ8Q<cQ9Q7iQ9h8cQ9u9OQ9w9RQ:_9zQ:m:aQ:z:oQ;X!cR<w=[R!kSR&^!]S&Y!]+rS+o&Z&bS+{&c,OQ0w+xW0y+y,S,T,UU1V+|,Q,RY1Z,V3t3{3|3}S3u/o3yU5P0z0{0|S5S0}1OW5W1P6n6o6xU7l5Q5R5TS7p5U8gQ7q5VU9U7m7o7rQ9Z7sS9{9W9YR:b9}R'h#WR'k#XQ#OXR0x;WT!zV$mS!yV$mU%Zvw+VU'P!v!x!{S,k'Q'RQ,r'WQ/b*dQ1c,lU1f,p,q,sS5`1g1hR7u5a`!mS!g!j%W&p&y*a,it!wVvw!v!x!{$m'Q'R'W*d,l,p,q,s1g1h5aQ0Y+VQ0m+kQ4s0eQ7c4tT<n&[*bT!pS%WS!oS%WS&q!g&yS&v!j*aS+q&[*bT,d&p,iT&a!]%XQ#zbR(f$PT([#z(]R2`-eT(z$X(|R)S$[Q.w)uQ1j,yQ4P/qQ5d1nQ6{4TQ7v5cQ8n6zQ9]7xQ9p8pQ:Q9^R:Z9qllOTn!R!s$o%t%v%w%y+X+^0]0`Q%n}R*|%kV%[vw+VR/k*mR*{%iQ%TtR*_%UR*T%OT%r!O%uT%s!O%uT0_+^0`",
+     nodeNames: "⚠ extends ArithOp ArithOp InterpolationStart LineComment BlockComment Script ExportDeclaration export Star as VariableName String from ; default FunctionDeclaration async function VariableDefinition > TypeParamList TypeDefinition ThisType this LiteralType ArithOp Number BooleanLiteral TemplateType InterpolationEnd Interpolation NullType null VoidType void TypeofType typeof MemberExpression . ?. PropertyName [ TemplateString Interpolation super RegExp ] ArrayExpression Spread , } { ObjectExpression Property async get set PropertyDefinition Block : NewExpression new TypeArgList CompareOp < ) ( ArgList UnaryExpression await yield delete LogicOp BitOp ParenthesizedExpression ClassExpression class extends ClassBody MethodDeclaration Decorator @ MemberExpression PrivatePropertyName CallExpression Privacy static abstract override PrivatePropertyDefinition PropertyDeclaration readonly accessor Optional TypeAnnotation Equals StaticBlock FunctionExpression ArrowFunction ParamList ParamList ArrayPattern ObjectPattern PatternProperty Privacy readonly Arrow MemberExpression BinaryExpression ArithOp ArithOp ArithOp ArithOp BitOp CompareOp instanceof satisfies in const CompareOp BitOp BitOp BitOp LogicOp LogicOp ConditionalExpression LogicOp LogicOp AssignmentExpression UpdateOp PostfixExpression CallExpression TaggedTemplateExpression DynamicImport import ImportMeta JSXElement JSXSelfCloseEndTag JSXStartTag JSXSelfClosingTag JSXIdentifier JSXBuiltin JSXIdentifier JSXNamespacedName JSXMemberExpression JSXSpreadAttribute JSXAttribute JSXAttributeValue JSXEscape JSXEndTag JSXOpenTag JSXFragmentTag JSXText JSXEscape JSXStartCloseTag JSXCloseTag PrefixCast ArrowFunction TypeParamList SequenceExpression KeyofType keyof UniqueType unique ImportType InferredType infer TypeName ParenthesizedType FunctionSignature ParamList NewSignature IndexedType TupleType Label ArrayType ReadonlyType ObjectType MethodType PropertyType IndexSignature PropertyDefinition CallSignature TypePredicate is NewSignature new UnionType LogicOp IntersectionType LogicOp ConditionalType ParameterizedType ClassDeclaration abstract implements type VariableDeclaration let var TypeAliasDeclaration InterfaceDeclaration interface EnumDeclaration enum EnumBody NamespaceDeclaration namespace module AmbientDeclaration declare GlobalDeclaration global ClassDeclaration ClassBody MethodDeclaration AmbientFunctionDeclaration ExportGroup VariableName VariableName ImportDeclaration ImportGroup ForStatement for ForSpec ForInSpec ForOfSpec of WhileStatement while WithStatement with DoStatement do IfStatement if else SwitchStatement switch SwitchBody CaseLabel case DefaultLabel TryStatement try CatchClause catch FinallyClause finally ReturnStatement return ThrowStatement throw BreakStatement break ContinueStatement continue DebuggerStatement debugger LabeledStatement ExpressionStatement SingleExpression",
+     maxTerm: 345,
      context: trackNewline,
      nodeProps: [
-       ["closedBy", 3,"InterpolationEnd",43,"]",53,"}",68,")",139,"JSXSelfCloseEndTag JSXEndTag",155,"JSXEndTag"],
-       ["group", -26,7,14,16,60,194,198,201,202,204,207,210,221,223,229,231,233,235,238,244,250,252,254,256,258,260,261,"Statement",-30,11,12,25,28,29,34,44,46,47,49,54,62,70,76,77,98,99,108,109,126,129,131,132,133,134,136,137,157,158,160,"Expression",-23,24,26,30,33,35,37,161,163,165,166,168,169,170,172,173,174,176,177,178,188,190,192,193,"Type",-3,80,91,97,"ClassItem"],
-       ["openedBy", 31,"InterpolationStart",48,"[",52,"{",67,"(",138,"JSXStartTag",150,"JSXStartTag JSXStartCloseTag"]
+       ["closedBy", 4,"InterpolationEnd",43,"]",53,"}",68,")",140,"JSXSelfCloseEndTag JSXEndTag",156,"JSXEndTag"],
+       ["group", -26,8,15,17,60,195,199,202,203,205,208,211,222,224,230,232,234,236,239,245,251,253,255,257,259,261,262,"Statement",-30,12,13,25,28,29,34,44,46,47,49,54,62,70,76,77,99,100,109,110,127,130,132,133,134,135,137,138,158,159,161,"Expression",-23,24,26,30,33,35,37,162,164,166,167,169,170,171,173,174,175,177,178,179,189,191,193,194,"Type",-3,81,92,98,"ClassItem"],
+       ["openedBy", 31,"InterpolationStart",48,"[",52,"{",67,"(",139,"JSXStartTag",151,"JSXStartTag JSXStartCloseTag"]
      ],
      propSources: [jsHighlight],
-     skippedNodes: [0,4,5],
+     skippedNodes: [0,5,6],
      repeatNodeCount: 29,
-     tokenData: "#2k~R!bOX%ZXY%uYZ'kZ[%u[]%Z]^'k^p%Zpq%uqr(Rrs)mst7]tu9guv<avw=bwx>lxyJcyzJyz{Ka{|Lm|}MW}!OLm!O!PMn!P!Q!$v!Q!R!Er!R![!G_![!]!Nc!]!^!N{!^!_# c!_!`#!`!`!a##d!a!b#%s!b!c#'h!c!}9g!}#O#(O#O#P%Z#P#Q#(f#Q#R#(|#R#S9g#S#T#)g#T#o#)}#o#p#,w#p#q#,|#q#r#-j#r#s#.S#s$f%Z$f$g%u$g#BY9g#BY#BZ#.j#BZ$IS9g$IS$I_#.j$I_$I|9g$I|$I}#1X$I}$JO#1X$JO$JT9g$JT$JU#.j$JU$KV9g$KV$KW#.j$KW&FU9g&FU&FV#.j&FV;'S9g;'S;=`<Z<%l?HT9g?HT?HU#.j?HUO9g`%`T$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z`%rP;=`<%l%Z7Z%|i$_`'g6yOX%ZXY%uYZ%ZZ[%u[p%Zpq%uq!^%Z!_#o%Z#p$f%Z$f$g%u$g#BY%Z#BY#BZ%u#BZ$IS%Z$IS$I_%u$I_$JT%Z$JT$JU%u$JU$KV%Z$KV$KW%u$KW&FU%Z&FU&FV%u&FV;'S%Z;'S;=`%o<%l?HT%Z?HT?HU%u?HUO%Z7Z'rT$_`'h6yO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,m(YU$_`!l,]O!^%Z!_!`(l!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j(sU#l,Y$_`O!^%Z!_!`)V!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j)^T#l,Y$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z*m)t]$_`[*TOY)mYZ*mZr)mrs,js!^)m!^!_-S!_#O)m#O#P1q#P#o)m#o#p-S#p;'S)m;'S;=`7V<%lO)mh*rX$_`Or*mrs+_s!^*m!^!_+u!_#o*m#o#p+u#p;'S*m;'S;=`,d<%lO*mh+fT$YW$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%ZW+xTOr+urs,Xs;'S+u;'S;=`,^<%lO+uW,^O$YWW,aP;=`<%l+uh,gP;=`<%l*m*m,sT$YW$_`[*TO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z*]-XX[*TOY-SYZ+uZr-Srs-ts#O-S#O#P-{#P;'S-S;'S;=`1k<%lO-S*]-{O$YW[*T*].OUOr-Srs.bs;'S-S;'S;=`0y;=`<%l/R<%lO-S*].iW$YW[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s<%lO/R*T/WW[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s<%lO/R*T/uO[*T*T/xRO;'S/R;'S;=`0R;=`O/R*T0WX[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l/R<%lO/R*T0vP;=`<%l/R*]1OX[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l-S<%lO/R*]1nP;=`<%l-S*m1vY$_`Or)mrs2fs!^)m!^!_-S!_#o)m#o#p-S#p;'S)m;'S;=`6e;=`<%l/R<%lO)m*m2o]$YW$_`[*TOY3hYZ%ZZr3hrs4hs!^3h!^!_/R!_#O3h#O#P5O#P#o3h#o#p/R#p;'S3h;'S;=`6_<%lO3h*e3o]$_`[*TOY3hYZ%ZZr3hrs4hs!^3h!^!_/R!_#O3h#O#P5O#P#o3h#o#p/R#p;'S3h;'S;=`6_<%lO3h*e4oT$_`[*TO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e5TW$_`O!^3h!^!_/R!_#o3h#o#p/R#p;'S3h;'S;=`5m;=`<%l/R<%lO3h*e5rX[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l3h<%lO/R*e6bP;=`<%l3h*m6jX[*TOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l)m<%lO/R*m7YP;=`<%l)m&}7b]$_`Ot%Ztu8Zu!^%Z!_!c%Z!c!}8Z!}#R%Z#R#S8Z#S#T%Z#T#o8Z#p$g%Z$g;'S8Z;'S;=`9a<%lO8Z&}8b_$_`'}&mOt%Ztu8Zu!Q%Z!Q![8Z![!^%Z!_!c%Z!c!}8Z!}#R%Z#R#S8Z#S#T%Z#T#o8Z#p$g%Z$g;'S8Z;'S;=`9a<%lO8Z&}9dP;=`<%l8Z7Z9ra$_`'s&l'j1T$RWOt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$g%Z$g;'S9g;'S;=`<Z<%lO9gh;Oa$_`$RWOt%Ztu:wu}%Z}!O:w!O!Q%Z!Q![:w![!^%Z!_!c%Z!c!}:w!}#R%Z#R#S:w#S#T%Z#T#o:w#p$g%Z$g;'S:w;'S;=`<T<%lO:wh<WP;=`<%l:w7Z<^P;=`<%l9g,j<hU$_`#d,YO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j=RT$_`#v,YO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z.n=iW(W.^$_`Ov%Zvw>Rw!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j>YU$_`#p,YO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z*m>s]$_`[*TOY>lYZ?lZw>lwx,jx!^>l!^!_@|!_#O>l#O#PE_#P#o>l#o#p@|#p;'S>l;'S;=`J]<%lO>lh?qX$_`Ow?lwx+_x!^?l!^!_@^!_#o?l#o#p@^#p;'S?l;'S;=`@v<%lO?lW@aTOw@^wx,Xx;'S@^;'S;=`@p<%lO@^W@sP;=`<%l@^h@yP;=`<%l?l*]ARX[*TOY@|YZ@^Zw@|wx-tx#O@|#O#PAn#P;'S@|;'S;=`EX<%lO@|*]AqUOw@|wxBTx;'S@|;'S;=`Dg;=`<%lBt<%lO@|*]B[W$YW[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da<%lOBt*TByW[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da<%lOBt*TCfRO;'SBt;'S;=`Co;=`OBt*TCtX[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%lBt<%lOBt*TDdP;=`<%lBt*]DlX[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%l@|<%lOBt*]E[P;=`<%l@|*mEdY$_`Ow>lwxFSx!^>l!^!_@|!_#o>l#o#p@|#p;'S>l;'S;=`Ik;=`<%lBt<%lO>l*mF]]$YW$_`[*TOYGUYZ%ZZwGUwx4hx!^GU!^!_Bt!_#OGU#O#PHU#P#oGU#o#pBt#p;'SGU;'S;=`Ie<%lOGU*eG]]$_`[*TOYGUYZ%ZZwGUwx4hx!^GU!^!_Bt!_#OGU#O#PHU#P#oGU#o#pBt#p;'SGU;'S;=`Ie<%lOGU*eHZW$_`O!^GU!^!_Bt!_#oGU#o#pBt#p;'SGU;'S;=`Hs;=`<%lBt<%lOGU*eHxX[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%lGU<%lOBt*eIhP;=`<%lGU*mIpX[*TOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%l>l<%lOBt*mJ`P;=`<%l>l5oJjT!f5_$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$ZKQT!e#y$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z2yKjW$_`'k'_#e,YOz%Zz{LS{!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,jLZU$_`#b,YO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z0TLtU$_`k/sO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z1gM_T!T1V$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7ZMuX$_`x4QO!O%Z!O!PNb!P!Q%Z!Q![! d![!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$XNgV$_`O!O%Z!O!PN|!P!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$X! TT!S#w$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e! k]$_`l*TO!Q%Z!Q![! d![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S! d#S#X%Z#X#Y!!d#Y#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!!i]$_`O{%Z{|!#b|}%Z}!O!#b!O!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!#gX$_`O!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!$ZX$_`l*TO!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z!$}b$_`#c,YOY!&VYZ%ZZz!&Vz{!-n{!P!&V!P!Q!BV!Q!^!&V!^!_!(f!_!`!Ch!`!a!Dm!a!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&Va!&^^$_`!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&Va!'aa$_`!PPO!^%Z!_#Z%Z#Z#[!'Y#[#]%Z#]#^!'Y#^#a%Z#a#b!'Y#b#g%Z#g#h!'Y#h#i%Z#i#j!'Y#j#m%Z#m#n!'Y#n#o%Z#p;'S%Z;'S;=`%o<%lO%ZP!(kX!PPOY!(fZ!P!(f!P!Q!)W!Q!}!(f!}#O!)o#O#P!*n#P;'S!(f;'S;=`!*}<%lO!(fP!)]U!PP#Z#[!)W#]#^!)W#a#b!)W#g#h!)W#i#j!)W#m#n!)WP!)rVOY!)oZ#O!)o#O#P!*X#P#Q!(f#Q;'S!)o;'S;=`!*h<%lO!)oP!*[SOY!)oZ;'S!)o;'S;=`!*h<%lO!)oP!*kP;=`<%l!)oP!*qSOY!(fZ;'S!(f;'S;=`!*}<%lO!(fP!+QP;=`<%l!(fa!+Y[$_`OY!+TYZ%ZZ!^!+T!^!_!)o!_#O!+T#O#P!,O#P#Q!&V#Q#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+Ta!,TX$_`OY!+TYZ%ZZ!^!+T!^!_!)o!_#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+Ta!,sP;=`<%l!+Ta!,{X$_`OY!&VYZ%ZZ!^!&V!^!_!(f!_#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&Va!-kP;=`<%l!&V7Z!-u`$_`!PPOY!-nYZ!.wZz!-nz{!2U{!P!-n!P!Q!@m!Q!^!-n!^!_!4m!_!}!-n!}#O!;l#O#P!?o#P#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!.|X$_`Oz!.wz{!/i{!^!.w!^!_!0w!_#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!/nZ$_`Oz!.wz{!/i{!P!.w!P!Q!0a!Q!^!.w!^!_!0w!_#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!0hT$_`T6yO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z6y!0zTOz!0wz{!1Z{;'S!0w;'S;=`!1x<%lO!0w6y!1^VOz!0wz{!1Z{!P!0w!P!Q!1s!Q;'S!0w;'S;=`!1x<%lO!0w6y!1xOT6y6y!1{P;=`<%l!0w7Z!2RP;=`<%l!.w7Z!2]`$_`!PPOY!-nYZ!.wZz!-nz{!2U{!P!-n!P!Q!3_!Q!^!-n!^!_!4m!_!}!-n!}#O!;l#O#P!?o#P#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!3ha$_`T6y!PPO!^%Z!_#Z%Z#Z#[!'Y#[#]%Z#]#^!'Y#^#a%Z#a#b!'Y#b#g%Z#g#h!'Y#h#i%Z#i#j!'Y#j#m%Z#m#n!'Y#n#o%Z#p;'S%Z;'S;=`%o<%lO%Z6y!4r[!PPOY!4mYZ!0wZz!4mz{!5h{!P!4m!P!Q!:b!Q!}!4m!}#O!6|#O#P!9r#P;'S!4m;'S;=`!:[<%lO!4m6y!5m[!PPOY!4mYZ!0wZz!4mz{!5h{!P!4m!P!Q!6c!Q!}!4m!}#O!6|#O#P!9r#P;'S!4m;'S;=`!:[<%lO!4m6y!6jUT6y!PP#Z#[!)W#]#^!)W#a#b!)W#g#h!)W#i#j!)W#m#n!)W6y!7PYOY!6|YZ!0wZz!6|z{!7o{#O!6|#O#P!9S#P#Q!4m#Q;'S!6|;'S;=`!9l<%lO!6|6y!7r[OY!6|YZ!0wZz!6|z{!7o{!P!6|!P!Q!8h!Q#O!6|#O#P!9S#P#Q!4m#Q;'S!6|;'S;=`!9l<%lO!6|6y!8mVT6yOY!)oZ#O!)o#O#P!*X#P#Q!(f#Q;'S!)o;'S;=`!*h<%lO!)o6y!9VVOY!6|YZ!0wZz!6|z{!7o{;'S!6|;'S;=`!9l<%lO!6|6y!9oP;=`<%l!6|6y!9uVOY!4mYZ!0wZz!4mz{!5h{;'S!4m;'S;=`!:[<%lO!4m6y!:_P;=`<%l!4m6y!:ga!PPOz!0wz{!1Z{#Z!0w#Z#[!:b#[#]!0w#]#^!:b#^#a!0w#a#b!:b#b#g!0w#g#h!:b#h#i!0w#i#j!:b#j#m!0w#m#n!:b#n;'S!0w;'S;=`!1x<%lO!0w7Z!;q^$_`OY!;lYZ!.wZz!;lz{!<m{!^!;l!^!_!6|!_#O!;l#O#P!>q#P#Q!-n#Q#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!<r`$_`OY!;lYZ!.wZz!;lz{!<m{!P!;l!P!Q!=t!Q!^!;l!^!_!6|!_#O!;l#O#P!>q#P#Q!-n#Q#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!={[$_`T6yOY!+TYZ%ZZ!^!+T!^!_!)o!_#O!+T#O#P!,O#P#Q!&V#Q#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+T7Z!>vZ$_`OY!;lYZ!.wZz!;lz{!<m{!^!;l!^!_!6|!_#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!?lP;=`<%l!;l7Z!?tZ$_`OY!-nYZ!.wZz!-nz{!2U{!^!-n!^!_!4m!_#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!@jP;=`<%l!-n7Z!@te$_`!PPOz!.wz{!/i{!^!.w!^!_!0w!_#Z!.w#Z#[!@m#[#]!.w#]#^!@m#^#a!.w#a#b!@m#b#g!.w#g#h!@m#h#i!.w#i#j!@m#j#m!.w#m#n!@m#n#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!B^X$_`S6yOY!BVYZ%ZZ!^!BV!^!_!By!_#o!BV#o#p!By#p;'S!BV;'S;=`!Cb<%lO!BV6y!COSS6yOY!ByZ;'S!By;'S;=`!C[<%lO!By6y!C_P;=`<%l!By7Z!CeP;=`<%l!BV,k!Cq^$_`#v,Y!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&Vi!Dv^$OW$_`!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&V*e!Eyf$_`l*TO!O%Z!O!P! d!P!Q%Z!Q![!G_![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S!G_#S#U%Z#U#V!IR#V#X%Z#X#Y!!d#Y#b%Z#b#c!Hk#c#d!Js#d#l%Z#l#m!L_#m#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!Gfa$_`l*TO!O%Z!O!P! d!P!Q%Z!Q![!G_![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S!G_#S#X%Z#X#Y!!d#Y#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!HrT$_`l*TO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!IWY$_`O!Q%Z!Q!R!Iv!R!S!Iv!S!^%Z!_#R%Z#R#S!Iv#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!I}[$_`l*TO!Q%Z!Q!R!Iv!R!S!Iv!S!^%Z!_#R%Z#R#S!Iv#S#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!JxX$_`O!Q%Z!Q!Y!Ke!Y!^%Z!_#R%Z#R#S!Ke#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!KlZ$_`l*TO!Q%Z!Q!Y!Ke!Y!^%Z!_#R%Z#R#S!Ke#S#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!Ld]$_`O!Q%Z!Q![!M]![!^%Z!_!c%Z!c!i!M]!i#R%Z#R#S!M]#S#T%Z#T#Z!M]#Z#o%Z#p;'S%Z;'S;=`%o<%lO%Z*e!Md_$_`l*TO!Q%Z!Q![!M]![!^%Z!_!c%Z!c!i!M]!i#R%Z#R#S!M]#S#T%Z#T#Z!M]#Z#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z.y!NlT!__$_`#t.YO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Zg# ST^V$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z# nR'n$h!c3W$Pi([P!P!Q# w!^!_# |!_!`#!Z`# |O$a`,Y#!RP#f,Y!_!`#!U,Y#!ZO#v,Y,Y#!`O#g,Y.y#!gV#S.i$_`O!^%Z!_!`(l!`!a#!|!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z,k##TT#_,Z$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z.y##oVd#T#g,Y$[Y$_`O!^%Z!_!`#$U!`!a#$l!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j#$]T#g,Y$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j#$sV#f,Y$_`O!^%Z!_!`<z!`!a#%Y!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j#%aU#f,Y$_`O!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z2y#%zX(O,]$_`O!O%Z!O!P#&g!P!^%Z!_!a%Z!a!b#&}!b#o%Z#p;'S%Z;'S;=`%o<%lO%Z2w#&nTy2g$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j#'UU$_`#q,YO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z'R#'oT!t&q$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7R#(VT{6q$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$Z#(mT!Q#y$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,j#)TU#n,Y$_`O!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z0R#)nT$_`'r/qO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z#*Ya$_`'s&l'j1T$TWOt%Ztu#)}u}%Z}!O#+_!O!Q%Z!Q![#)}![!^%Z!_!c%Z!c!}#)}!}#R%Z#R#S#)}#S#T%Z#T#o#)}#p$g%Z$g;'S#)};'S;=`#,q<%lO#)}h#+fa$_`$TWOt%Ztu#+_u}%Z}!O#+_!O!Q%Z!Q![#+_![!^%Z!_!c%Z!c!}#+_!}#R%Z#R#S#+_#S#T%Z#T#o#+_#p$g%Z$g;'S#+_;'S;=`#,k<%lO#+_h#,nP;=`<%l#+_7Z#,tP;=`<%l#)}~#,|O!V~.n#-TV(V.^$_`O!^%Z!_!`<z!`#o%Z#p#q#&}#q;'S%Z;'S;=`%o<%lO%Z,m#-sT!U,XoS$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Za#.ZT!mP$_`O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z#.wt$_`'g6y's&l'j1T$RWOX%ZXY%uYZ%ZZ[%u[p%Zpq%uqt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$f%Z$f$g%u$g#BY9g#BY#BZ#.j#BZ$IS9g$IS$I_#.j$I_$JT9g$JT$JU#.j$JU$KV9g$KV$KW#.j$KW&FU9g&FU&FV#.j&FV;'S9g;'S;=`<Z<%l?HT9g?HT?HU#.j?HUO9g7Z#1fa$_`'h6y's&l'j1T$RWOt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$g%Z$g;'S9g;'S;=`<Z<%lO9g",
-     tokenizers: [noSemicolon, incdecToken, template, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, insertSemicolon],
-     topRules: {"Script":[0,6],"SingleExpression":[1,262],"SingleClassItem":[2,263]},
-     dialects: {jsx: 12734, ts: 12736},
-     dynamicPrecedences: {"158":1,"186":1},
+     tokenData: "#2k~R!bOX%ZXY%uYZ'kZ[%u[]%Z]^'k^p%Zpq%uqr(Rrs)mst7]tu9guv<avw=bwx>lxyJcyzJyz{Ka{|Lm|}MW}!OLm!O!PMn!P!Q!$v!Q!R!Er!R![!G_![!]!Nc!]!^!N{!^!_# c!_!`#!`!`!a##d!a!b#%s!b!c#'h!c!}9g!}#O#(O#O#P%Z#P#Q#(f#Q#R#(|#R#S9g#S#T#)g#T#o#)}#o#p#,w#p#q#,|#q#r#-j#r#s#.S#s$f%Z$f$g%u$g#BY9g#BY#BZ#.j#BZ$IS9g$IS$I_#.j$I_$I|9g$I|$I}#1X$I}$JO#1X$JO$JT9g$JT$JU#.j$JU$KV9g$KV$KW#.j$KW&FU9g&FU&FV#.j&FV;'S9g;'S;=`<Z<%l?HT9g?HT?HU#.j?HUO9gW%`T$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%ZW%rP;=`<%l%Z7Z%|i$`W'g7ROX%ZXY%uYZ%ZZ[%u[p%Zpq%uq!^%Z!_#o%Z#p$f%Z$f$g%u$g#BY%Z#BY#BZ%u#BZ$IS%Z$IS$I_%u$I_$JT%Z$JT$JU%u$JU$KV%Z$KV$KW%u$KW&FU%Z&FU&FV%u&FV;'S%Z;'S;=`%o<%l?HT%Z?HT?HU%u?HUO%Z7Z'rT$`W'h7RO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&y(YU$`W!l&qO!^%Z!_!`(l!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t(sU#m&l$`WO!^%Z!_!`)V!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t)^T#m&l$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z1i)t]$`W]&ZOY)mYZ*mZr)mrs,js!^)m!^!_-S!_#O)m#O#P1q#P#o)m#o#p-S#p;'S)m;'S;=`7V<%lO)m,^*rX$`WOr*mrs+_s!^*m!^!_+u!_#o*m#o#p+u#p;'S*m;'S;=`,d<%lO*m,^+fT$Z,U$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,U+xTOr+urs,Xs;'S+u;'S;=`,^<%lO+u,U,^O$Z,U,U,aP;=`<%l+u,^,gP;=`<%l*m1i,sT$Z,U$`W]&ZO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z1a-XX]&ZOY-SYZ+uZr-Srs-ts#O-S#O#P-{#P;'S-S;'S;=`1k<%lO-S1a-{O$Z,U]&Z1a.OUOr-Srs.bs;'S-S;'S;=`0y;=`<%l/R<%lO-S1a.iW$Z,U]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s<%lO/R&Z/WW]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s<%lO/R&Z/uO]&Z&Z/xRO;'S/R;'S;=`0R;=`O/R&Z0WX]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l/R<%lO/R&Z0vP;=`<%l/R1a1OX]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l-S<%lO/R1a1nP;=`<%l-S1i1vY$`WOr)mrs2fs!^)m!^!_-S!_#o)m#o#p-S#p;'S)m;'S;=`6e;=`<%l/R<%lO)m1i2o]$Z,U$`W]&ZOY3hYZ%ZZr3hrs4hs!^3h!^!_/R!_#O3h#O#P5O#P#o3h#o#p/R#p;'S3h;'S;=`6_<%lO3h&c3o]$`W]&ZOY3hYZ%ZZr3hrs4hs!^3h!^!_/R!_#O3h#O#P5O#P#o3h#o#p/R#p;'S3h;'S;=`6_<%lO3h&c4oT$`W]&ZO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c5TW$`WO!^3h!^!_/R!_#o3h#o#p/R#p;'S3h;'S;=`5m;=`<%l/R<%lO3h&c5rX]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l3h<%lO/R&c6bP;=`<%l3h1i6jX]&ZOY/RZr/Rrs/ps#O/R#O#P/u#P;'S/R;'S;=`0s;=`<%l)m<%lO/R1i7YP;=`<%l)m#]7b]$`WOt%Ztu8Zu!^%Z!_!c%Z!c!}8Z!}#R%Z#R#S8Z#S#T%Z#T#o8Z#p$g%Z$g;'S8Z;'S;=`9a<%lO8Z#]8b_$`W'|#TOt%Ztu8Zu!Q%Z!Q![8Z![!^%Z!_!c%Z!c!}8Z!}#R%Z#R#S8Z#S#T%Z#T#o8Z#p$g%Z$g;'S8Z;'S;=`9a<%lO8Z#]9dP;=`<%l8Z,T9ra$`W's#S'j)s$SSOt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$g%Z$g;'S9g;'S;=`<Z<%lO9g[;Oa$`W$SSOt%Ztu:wu}%Z}!O:w!O!Q%Z!Q![:w![!^%Z!_!c%Z!c!}:w!}#R%Z#R#S:w#S#T%Z#T#o:w#p$g%Z$g;'S:w;'S;=`<T<%lO:w[<WP;=`<%l:w,T<^P;=`<%l9g&t<hU$`W#e&lO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t=RT$`W#w&lO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z(h=iW(V(`$`WOv%Zvw>Rw!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t>YU$`W#q&lO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z1i>s]$`W]&ZOY>lYZ?lZw>lwx,jx!^>l!^!_@|!_#O>l#O#PE_#P#o>l#o#p@|#p;'S>l;'S;=`J]<%lO>l,^?qX$`WOw?lwx+_x!^?l!^!_@^!_#o?l#o#p@^#p;'S?l;'S;=`@v<%lO?l,U@aTOw@^wx,Xx;'S@^;'S;=`@p<%lO@^,U@sP;=`<%l@^,^@yP;=`<%l?l1aARX]&ZOY@|YZ@^Zw@|wx-tx#O@|#O#PAn#P;'S@|;'S;=`EX<%lO@|1aAqUOw@|wxBTx;'S@|;'S;=`Dg;=`<%lBt<%lO@|1aB[W$Z,U]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da<%lOBt&ZByW]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da<%lOBt&ZCfRO;'SBt;'S;=`Co;=`OBt&ZCtX]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%lBt<%lOBt&ZDdP;=`<%lBt1aDlX]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%l@|<%lOBt1aE[P;=`<%l@|1iEdY$`WOw>lwxFSx!^>l!^!_@|!_#o>l#o#p@|#p;'S>l;'S;=`Ik;=`<%lBt<%lO>l1iF]]$Z,U$`W]&ZOYGUYZ%ZZwGUwx4hx!^GU!^!_Bt!_#OGU#O#PHU#P#oGU#o#pBt#p;'SGU;'S;=`Ie<%lOGU&cG]]$`W]&ZOYGUYZ%ZZwGUwx4hx!^GU!^!_Bt!_#OGU#O#PHU#P#oGU#o#pBt#p;'SGU;'S;=`Ie<%lOGU&cHZW$`WO!^GU!^!_Bt!_#oGU#o#pBt#p;'SGU;'S;=`Hs;=`<%lBt<%lOGU&cHxX]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%lGU<%lOBt&cIhP;=`<%lGU1iIpX]&ZOYBtZwBtwx/px#OBt#O#PCc#P;'SBt;'S;=`Da;=`<%l>l<%lOBt1iJ`P;=`<%l>l,TJjT!f+{$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$PKQT!e#w$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z)ZKjW$`W'k#e#f&lOz%Zz{LS{!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z&tLZU$`W#c&lO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z*qLtU$`Wk*iO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z,TM_T!T+{$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,TMuX$`Wx(dO!O%Z!O!PNb!P!Q%Z!Q![! d![!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$oNgV$`WO!O%Z!O!PN|!P!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$o! TT!S$g$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c! k]$`Wl&ZO!Q%Z!Q![! d![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S! d#S#X%Z#X#Y!!d#Y#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!!i]$`WO{%Z{|!#b|}%Z}!O!#b!O!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!#gX$`WO!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!$ZX$`Wl&ZO!Q%Z!Q![!$S![!^%Z!_#R%Z#R#S!$S#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z!$}b$`W#d&lOY!&VYZ%ZZz!&Vz{!-n{!P!&V!P!Q!BV!Q!^!&V!^!_!(f!_!`!Ch!`!a!Dm!a!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&VX!&^^$`W!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&VX!'aa$`W!PPO!^%Z!_#Z%Z#Z#[!'Y#[#]%Z#]#^!'Y#^#a%Z#a#b!'Y#b#g%Z#g#h!'Y#h#i%Z#i#j!'Y#j#m%Z#m#n!'Y#n#o%Z#p;'S%Z;'S;=`%o<%lO%ZP!(kX!PPOY!(fZ!P!(f!P!Q!)W!Q!}!(f!}#O!)o#O#P!*n#P;'S!(f;'S;=`!*}<%lO!(fP!)]U!PP#Z#[!)W#]#^!)W#a#b!)W#g#h!)W#i#j!)W#m#n!)WP!)rVOY!)oZ#O!)o#O#P!*X#P#Q!(f#Q;'S!)o;'S;=`!*h<%lO!)oP!*[SOY!)oZ;'S!)o;'S;=`!*h<%lO!)oP!*kP;=`<%l!)oP!*qSOY!(fZ;'S!(f;'S;=`!*}<%lO!(fP!+QP;=`<%l!(fX!+Y[$`WOY!+TYZ%ZZ!^!+T!^!_!)o!_#O!+T#O#P!,O#P#Q!&V#Q#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+TX!,TX$`WOY!+TYZ%ZZ!^!+T!^!_!)o!_#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+TX!,sP;=`<%l!+TX!,{X$`WOY!&VYZ%ZZ!^!&V!^!_!(f!_#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&VX!-kP;=`<%l!&V7Z!-u`$`W!PPOY!-nYZ!.wZz!-nz{!2U{!P!-n!P!Q!@m!Q!^!-n!^!_!4m!_!}!-n!}#O!;l#O#P!?o#P#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!.|X$`WOz!.wz{!/i{!^!.w!^!_!0w!_#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!/nZ$`WOz!.wz{!/i{!P!.w!P!Q!0a!Q!^!.w!^!_!0w!_#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!0hT$`WU7RO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7R!0zTOz!0wz{!1Z{;'S!0w;'S;=`!1x<%lO!0w7R!1^VOz!0wz{!1Z{!P!0w!P!Q!1s!Q;'S!0w;'S;=`!1x<%lO!0w7R!1xOU7R7R!1{P;=`<%l!0w7Z!2RP;=`<%l!.w7Z!2]`$`W!PPOY!-nYZ!.wZz!-nz{!2U{!P!-n!P!Q!3_!Q!^!-n!^!_!4m!_!}!-n!}#O!;l#O#P!?o#P#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!3ha$`WU7R!PPO!^%Z!_#Z%Z#Z#[!'Y#[#]%Z#]#^!'Y#^#a%Z#a#b!'Y#b#g%Z#g#h!'Y#h#i%Z#i#j!'Y#j#m%Z#m#n!'Y#n#o%Z#p;'S%Z;'S;=`%o<%lO%Z7R!4r[!PPOY!4mYZ!0wZz!4mz{!5h{!P!4m!P!Q!:b!Q!}!4m!}#O!6|#O#P!9r#P;'S!4m;'S;=`!:[<%lO!4m7R!5m[!PPOY!4mYZ!0wZz!4mz{!5h{!P!4m!P!Q!6c!Q!}!4m!}#O!6|#O#P!9r#P;'S!4m;'S;=`!:[<%lO!4m7R!6jUU7R!PP#Z#[!)W#]#^!)W#a#b!)W#g#h!)W#i#j!)W#m#n!)W7R!7PYOY!6|YZ!0wZz!6|z{!7o{#O!6|#O#P!9S#P#Q!4m#Q;'S!6|;'S;=`!9l<%lO!6|7R!7r[OY!6|YZ!0wZz!6|z{!7o{!P!6|!P!Q!8h!Q#O!6|#O#P!9S#P#Q!4m#Q;'S!6|;'S;=`!9l<%lO!6|7R!8mVU7ROY!)oZ#O!)o#O#P!*X#P#Q!(f#Q;'S!)o;'S;=`!*h<%lO!)o7R!9VVOY!6|YZ!0wZz!6|z{!7o{;'S!6|;'S;=`!9l<%lO!6|7R!9oP;=`<%l!6|7R!9uVOY!4mYZ!0wZz!4mz{!5h{;'S!4m;'S;=`!:[<%lO!4m7R!:_P;=`<%l!4m7R!:ga!PPOz!0wz{!1Z{#Z!0w#Z#[!:b#[#]!0w#]#^!:b#^#a!0w#a#b!:b#b#g!0w#g#h!:b#h#i!0w#i#j!:b#j#m!0w#m#n!:b#n;'S!0w;'S;=`!1x<%lO!0w7Z!;q^$`WOY!;lYZ!.wZz!;lz{!<m{!^!;l!^!_!6|!_#O!;l#O#P!>q#P#Q!-n#Q#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!<r`$`WOY!;lYZ!.wZz!;lz{!<m{!P!;l!P!Q!=t!Q!^!;l!^!_!6|!_#O!;l#O#P!>q#P#Q!-n#Q#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!={[$`WU7ROY!+TYZ%ZZ!^!+T!^!_!)o!_#O!+T#O#P!,O#P#Q!&V#Q#o!+T#o#p!)o#p;'S!+T;'S;=`!,p<%lO!+T7Z!>vZ$`WOY!;lYZ!.wZz!;lz{!<m{!^!;l!^!_!6|!_#o!;l#o#p!6|#p;'S!;l;'S;=`!?i<%lO!;l7Z!?lP;=`<%l!;l7Z!?tZ$`WOY!-nYZ!.wZz!-nz{!2U{!^!-n!^!_!4m!_#o!-n#o#p!4m#p;'S!-n;'S;=`!@g<%lO!-n7Z!@jP;=`<%l!-n7Z!@te$`W!PPOz!.wz{!/i{!^!.w!^!_!0w!_#Z!.w#Z#[!@m#[#]!.w#]#^!@m#^#a!.w#a#b!@m#b#g!.w#g#h!@m#h#i!.w#i#j!@m#j#m!.w#m#n!@m#n#o!.w#o#p!0w#p;'S!.w;'S;=`!2O<%lO!.w7Z!B^X$`WT7ROY!BVYZ%ZZ!^!BV!^!_!By!_#o!BV#o#p!By#p;'S!BV;'S;=`!Cb<%lO!BV7R!COST7ROY!ByZ;'S!By;'S;=`!C[<%lO!By7R!C_P;=`<%l!By7Z!CeP;=`<%l!BV&u!Cq^$`W#w&l!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&V]!Dv^$PS$`W!PPOY!&VYZ%ZZ!P!&V!P!Q!'Y!Q!^!&V!^!_!(f!_!}!&V!}#O!+T#O#P!,v#P#o!&V#o#p!(f#p;'S!&V;'S;=`!-h<%lO!&V&c!Eyf$`Wl&ZO!O%Z!O!P! d!P!Q%Z!Q![!G_![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S!G_#S#U%Z#U#V!IR#V#X%Z#X#Y!!d#Y#b%Z#b#c!Hk#c#d!Js#d#l%Z#l#m!L_#m#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!Gfa$`Wl&ZO!O%Z!O!P! d!P!Q%Z!Q![!G_![!^%Z!_!g%Z!g!h!!d!h#R%Z#R#S!G_#S#X%Z#X#Y!!d#Y#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!HrT$`Wl&ZO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!IWY$`WO!Q%Z!Q!R!Iv!R!S!Iv!S!^%Z!_#R%Z#R#S!Iv#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!I}[$`Wl&ZO!Q%Z!Q!R!Iv!R!S!Iv!S!^%Z!_#R%Z#R#S!Iv#S#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!JxX$`WO!Q%Z!Q!Y!Ke!Y!^%Z!_#R%Z#R#S!Ke#S#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!KlZ$`Wl&ZO!Q%Z!Q!Y!Ke!Y!^%Z!_#R%Z#R#S!Ke#S#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!Ld]$`WO!Q%Z!Q![!M]![!^%Z!_!c%Z!c!i!M]!i#R%Z#R#S!M]#S#T%Z#T#Z!M]#Z#o%Z#p;'S%Z;'S;=`%o<%lO%Z&c!Md_$`Wl&ZO!Q%Z!Q![!M]![!^%Z!_!c%Z!c!i!M]!i#R%Z#R#S!M]#S#T%Z#T#Z!M]#Z#b%Z#b#c!Hk#c#o%Z#p;'S%Z;'S;=`%o<%lO%Z(m!NlT!_V$`W#u(^O!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z!P# ST_w$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z6i# nR'n$Y!c(O$Q,_(ZP!P!Q# w!^!_# |!_!`#!ZW# |O$bW&l#!RP#g&l!_!`#!U&l#!ZO#w&l&l#!`O#h&l(m#!gV#T(e$`WO!^%Z!_!`(l!`!a#!|!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z&u##TT#`&m$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z(m##oVe!s#h&l$]S$`WO!^%Z!_!`#$U!`!a#$l!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t#$]T#h&l$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t#$sV#g&l$`WO!^%Z!_!`<z!`!a#%Y!a#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t#%aU#g&l$`WO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z(m#%zX'}&q$`WO!O%Z!O!P#&g!P!^%Z!_!a%Z!a!b#&}!b#o%Z#p;'S%Z;'S;=`%o<%lO%Z(i#&nTy(a$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t#'UU$`W#r&lO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z#_#'oT!u#V$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,P#(VT{+w$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z$P#(mT!Q#w$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z&t#)TU#o&l$`WO!^%Z!_!`<z!`#o%Z#p;'S%Z;'S;=`%o<%lO%Z){#)nT$`W'r)sO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z,T#*Ya$`W's#S'j)s$USOt%Ztu#)}u}%Z}!O#+_!O!Q%Z!Q![#)}![!^%Z!_!c%Z!c!}#)}!}#R%Z#R#S#)}#S#T%Z#T#o#)}#p$g%Z$g;'S#)};'S;=`#,q<%lO#)}[#+fa$`W$USOt%Ztu#+_u}%Z}!O#+_!O!Q%Z!Q![#+_![!^%Z!_!c%Z!c!}#+_!}#R%Z#R#S#+_#S#T%Z#T#o#+_#p$g%Z$g;'S#+_;'S;=`#,k<%lO#+_[#,nP;=`<%l#+_,T#,tP;=`<%l#)}~#,|O!V~(h#-TV(U(`$`WO!^%Z!_!`<z!`#o%Z#p#q#&}#q;'S%Z;'S;=`%o<%lO%Z(}#-sT!U(soQ$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%ZX#.ZT!mP$`WO!^%Z!_#o%Z#p;'S%Z;'S;=`%o<%lO%Z7Z#.wt$`W'g7R's#S'j)s$SSOX%ZXY%uYZ%ZZ[%u[p%Zpq%uqt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$f%Z$f$g%u$g#BY9g#BY#BZ#.j#BZ$IS9g$IS$I_#.j$I_$JT9g$JT$JU#.j$JU$KV9g$KV$KW#.j$KW&FU9g&FU&FV#.j&FV;'S9g;'S;=`<Z<%l?HT9g?HT?HU#.j?HUO9g7Z#1fa$`W'h7R's#S'j)s$SSOt%Ztu9gu}%Z}!O:w!O!Q%Z!Q![9g![!^%Z!_!c%Z!c!}9g!}#R%Z#R#S9g#S#T%Z#T#o9g#p$g%Z$g;'S9g;'S;=`<Z<%lO9g",
+     tokenizers: [tsExtends, noSemicolon, incdecToken, template, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, insertSemicolon],
+     topRules: {"Script":[0,7],"SingleExpression":[1,263]},
+     dialects: {jsx: 13404, ts: 13406},
+     dynamicPrecedences: {"159":1,"187":1},
      specialized: [{term: 302, get: value => spec_identifier[value] || -1},{term: 311, get: value => spec_word[value] || -1},{term: 65, get: value => spec_LessThan[value] || -1}],
-     tokenPrec: 12759
+     tokenPrec: 13429
    });
 
    /**
@@ -24144,22 +24019,11 @@
            config.jsx ? autoCloseTags : [],
        ]);
    }
-   function findOpenTag(node) {
-       for (;;) {
-           if (node.name == "JSXOpenTag" || node.name == "JSXSelfClosingTag" || node.name == "JSXFragmentTag")
-               return node;
-           if (!node.parent)
-               return null;
-           node = node.parent;
-       }
-   }
    function elementName(doc, tree, max = doc.length) {
-       for (let ch = tree === null || tree === void 0 ? void 0 : tree.firstChild; ch; ch = ch.nextSibling) {
-           if (ch.name == "JSXIdentifier" || ch.name == "JSXBuiltin" || ch.name == "JSXNamespacedName" ||
-               ch.name == "JSXMemberExpression")
-               return doc.sliceString(ch.from, Math.min(ch.to, max));
-       }
-       return "";
+       if (!tree)
+           return "";
+       let name = tree.getChild("JSXIdentifier");
+       return name ? doc.sliceString(name.from, Math.min(name.to, max)) : "";
    }
    const android = typeof navigator == "object" && /*@__PURE__*//Android\b/.test(navigator.userAgent);
    /**
@@ -24173,27 +24037,23 @@
            return false;
        let { state } = view;
        let changes = state.changeByRange(range => {
-           var _a, _b;
+           var _a, _b, _c;
            let { head } = range, around = syntaxTree(state).resolveInner(head, -1), name;
            if (around.name == "JSXStartTag")
                around = around.parent;
            if (text == ">" && around.name == "JSXFragmentTag") {
                return { range: EditorSelection.cursor(head + 1), changes: { from: head, insert: `><>` } };
            }
+           else if (text == ">" && around.name == "JSXIdentifier") {
+               if (((_b = (_a = around.parent) === null || _a === void 0 ? void 0 : _a.lastChild) === null || _b === void 0 ? void 0 : _b.name) != "JSXEndTag" && (name = elementName(state.doc, around.parent, head)))
+                   return { range: EditorSelection.cursor(head + 1), changes: { from: head, insert: `></${name}>` } };
+           }
            else if (text == "/" && around.name == "JSXFragmentTag") {
                let empty = around.parent, base = empty === null || empty === void 0 ? void 0 : empty.parent;
-               if (empty.from == head - 1 && ((_a = base.lastChild) === null || _a === void 0 ? void 0 : _a.name) != "JSXEndTag" &&
-                   (name = elementName(state.doc, base === null || base === void 0 ? void 0 : base.firstChild, head))) {
+               if (empty.from == head - 1 && ((_c = base.lastChild) === null || _c === void 0 ? void 0 : _c.name) != "JSXEndTag" && (name = elementName(state.doc, base === null || base === void 0 ? void 0 : base.firstChild, head))) {
                    let insert = `/${name}>`;
                    return { range: EditorSelection.cursor(head + insert.length), changes: { from: head, insert } };
                }
-           }
-           else if (text == ">") {
-               let openTag = findOpenTag(around);
-               if (openTag && ((_b = openTag.lastChild) === null || _b === void 0 ? void 0 : _b.name) != "JSXEndTag" &&
-                   state.sliceDoc(head, head + 2) != "</" &&
-                   (name = elementName(state.doc, openTag, head)))
-                   return { range: EditorSelection.cursor(head + 1), changes: { from: head, insert: `></${name}>` } };
            }
            return { range };
        });
@@ -24459,20 +24319,6 @@
        return range.head;
      }
 
-     function updateSelectionForSurrogateCharacters(cm, curStart, curEnd) {
-       // start and character position when no selection 
-       // is the same in visual mode, and differs in 1 character in normal mode
-       if (curStart.line === curEnd.line && curStart.ch >= curEnd.ch - 1) {
-         var text = cm.getLine(curStart.line);
-         var charCode = text.charCodeAt(curStart.ch);
-         if (0xD800 <= charCode && charCode <= 0xD8FF) {
-           curEnd.ch += 1;
-         }
-       }
-
-       return {start: curStart, end: curEnd};
-     }
-
      var defaultKeymap = [
        // Key to key mapping. This goes first to make it possible to override
        // existing mappings.
@@ -24631,7 +24477,6 @@
        { keys: '<C-r>', type: 'action', action: 'redo' },
        { keys: 'm<character>', type: 'action', action: 'setMark' },
        { keys: '"<character>', type: 'action', action: 'setRegister' },
-       { keys: '<C-r><character>', type: 'action', action: 'insertRegister', context: 'insert', isEdit: true },
        { keys: 'zz', type: 'action', action: 'scrollToCursor', actionArgs: { position: 'center' }},
        { keys: 'z.', type: 'action', action: 'scrollToCursor', actionArgs: { position: 'center' }, motion: 'moveToFirstNonWhiteSpaceCharacter' },
        { keys: 'zt', type: 'action', action: 'scrollToCursor', actionArgs: { position: 'top' }},
@@ -25308,52 +25153,41 @@
 
            function handleKeyInsertMode() {
              if (handleEsc()) { return true; }
-             vim.inputState.keyBuffer.push(key);
-             var keys = vim.inputState.keyBuffer.join("");
+             var keys = vim.inputState.keyBuffer = vim.inputState.keyBuffer + key;
              var keysAreChars = key.length == 1;
              var match = commandDispatcher.matchCommand(keys, defaultKeymap, vim.inputState, 'insert');
-             var changeQueue = vim.inputState.changeQueue;
-
+             // Need to check all key substrings in insert mode.
+             while (keys.length > 1 && match.type != 'full') {
+               var keys = vim.inputState.keyBuffer = keys.slice(1);
+               var thisMatch = commandDispatcher.matchCommand(keys, defaultKeymap, vim.inputState, 'insert');
+               if (thisMatch.type != 'none') { match = thisMatch; }
+             }
              if (match.type == 'none') { clearInputState(cm); return false; }
              else if (match.type == 'partial') {
                if (lastInsertModeKeyTimer) { window.clearTimeout(lastInsertModeKeyTimer); }
-               lastInsertModeKeyTimer = keysAreChars && window.setTimeout(
-                 function() { if (vim.insertMode && vim.inputState.keyBuffer.length) { clearInputState(cm); } },
+               lastInsertModeKeyTimer = window.setTimeout(
+                 function() { if (vim.insertMode && vim.inputState.keyBuffer) { clearInputState(cm); } },
                  getOption('insertModeEscKeysTimeout'));
-               if (keysAreChars) {
-                 var selections = cm.listSelections();
-                 if (!changeQueue || changeQueue.removed.length != selections.length)
-                   changeQueue = vim.inputState.changeQueue = new ChangeQueue;
-                 changeQueue.inserted += key;
-                 for (var i = 0; i < selections.length; i++) {
-                   var from = cursorMin(selections[i].anchor, selections[i].head);
-                   var to = cursorMax(selections[i].anchor, selections[i].head);
-                   var text = cm.getRange(from, cm.state.overwrite ? offsetCursor(to, 0, 1) : to);
-                   changeQueue.removed[i] = (changeQueue.removed[i] || "") + text;
-                 }
-               }
                return !keysAreChars;
              }
 
              if (lastInsertModeKeyTimer) { window.clearTimeout(lastInsertModeKeyTimer); }
-             if (match.command && changeQueue) {
+             if (keysAreChars) {
                var selections = cm.listSelections();
                for (var i = 0; i < selections.length; i++) {
                  var here = selections[i].head;
-                 cm.replaceRange(changeQueue.removed[i] || "", 
-                   offsetCursor(here, 0, -changeQueue.inserted.length), here, '+input');
+                 cm.replaceRange('', offsetCursor(here, 0, -(keys.length - 1)), here, '+input');
                }
                vimGlobalState.macroModeState.lastInsertModeChanges.changes.pop();
              }
-             if (!match.command) clearInputState(cm);
+             clearInputState(cm);
              return match.command;
            }
 
            function handleKeyNonInsertMode() {
              if (handleMacroRecording() || handleEsc()) { return true; }
 
-             vim.inputState.keyBuffer.push(key);
-             var keys = vim.inputState.keyBuffer.join("");
+             var keys = vim.inputState.keyBuffer = vim.inputState.keyBuffer + key;
              if (/^[1-9]\d*$/.test(keys)) { return true; }
 
              var keysMatcher = /^(\d*)(.*)$/.exec(keys);
@@ -25370,7 +25204,7 @@
              else if (match.type == 'partial') { return true; }
              else if (match.type == 'clear') { clearInputState(cm); return true; }
 
-             vim.inputState.keyBuffer.length = 0;
+             vim.inputState.keyBuffer = '';
              keysMatcher = /^(\d*)(.*)$/.exec(keys);
              if (keysMatcher[1] && keysMatcher[1] != '0') {
                vim.inputState.pushRepeatDigit(keysMatcher[1]);
@@ -25439,7 +25273,6 @@
          this.motionArgs = null;
          this.keyBuffer = []; // For matching multi-key commands.
          this.registerName = null; // Defaults to the unnamed register.
-         this.changeQueue = null; // For restoring text used by insert mode keybindings
        }
        InputState.prototype.pushRepeatDigit = function(n) {
          if (!this.operator) {
@@ -25465,11 +25298,6 @@
        function clearInputState(cm, reason) {
          cm.state.vim.inputState = new InputState();
          CodeMirror.signal(cm, 'vim-command-done', reason);
-       }
-
-       function ChangeQueue() {
-         this.removed = [];
-         this.inserted = "";
        }
 
        /*
@@ -26037,7 +25865,7 @@
              }
              if (vim.visualMode) {
                if (!(vim.visualBlock && newHead.ch === Infinity)) {
-                 newHead = clipCursorToContent(cm, newHead, oldHead);
+                 newHead = clipCursorToContent(cm, newHead);
                }
                if (newAnchor) {
                  newAnchor = clipCursorToContent(cm, newAnchor);
@@ -26053,7 +25881,7 @@
                    cursorIsBefore(newAnchor, newHead) ? newHead
                        : newAnchor);
              } else if (!operator) {
-               newHead = clipCursorToContent(cm, newHead, oldHead);
+               newHead = clipCursorToContent(cm, newHead);
                cm.setCursor(newHead.line, newHead.ch);
              }
            }
@@ -26104,10 +25932,9 @@
                mode = vim.visualBlock ? 'block' :
                       linewise ? 'line' :
                       'char';
-               var newPositions = updateSelectionForSurrogateCharacters(cm, curStart, curEnd);
                cmSel = makeCmSelection(cm, {
-                 anchor: newPositions.start,
-                 head: newPositions.end
+                 anchor: curStart,
+                 head: curEnd
                }, mode);
                if (linewise) {
                  var ranges = cmSel.ranges;
@@ -26139,10 +25966,9 @@
                }
                mode = 'char';
                var exclusive = !motionArgs.inclusive || linewise;
-               var newPositions = updateSelectionForSurrogateCharacters(cm, curStart, curEnd);
                cmSel = makeCmSelection(cm, {
-                 anchor: newPositions.start,
-                 head: newPositions.end
+                 anchor: curStart,
+                 head: curEnd
                }, mode, exclusive);
              }
              cm.setSelections(cmSel.ranges, cmSel.primary);
@@ -26931,11 +26757,9 @@
            } else if (insertAt == 'bol') {
              head = new Pos(head.line, 0);
            } else if (insertAt == 'charAfter') {
-             var newPosition = updateSelectionForSurrogateCharacters(cm, head, offsetCursor(head, 0, 1));
-             head = newPosition.end;
+             head = offsetCursor(head, 0, 1);
            } else if (insertAt == 'firstNonBlank') {
-             var newPosition = updateSelectionForSurrogateCharacters(cm, head, motions.moveToFirstNonWhiteSpaceCharacter(cm, head));
-             head = newPosition.end;
+             head = motions.moveToFirstNonWhiteSpaceCharacter(cm, head);
            } else if (insertAt == 'startOfSelectedArea') {
              if (!vim.visualMode)
                  return;
@@ -27008,10 +26832,9 @@
              vim.visualBlock = !!actionArgs.blockwise;
              head = clipCursorToContent(
                  cm, new Pos(anchor.line, anchor.ch + repeat - 1));
-             var newPosition = updateSelectionForSurrogateCharacters(cm, anchor, head);
              vim.sel = {
-               anchor: newPosition.start,
-               head: newPosition.end
+               anchor: anchor,
+               head: head
              };
              CodeMirror.signal(cm, "vim-mode-change", {mode: "visual", subMode: vim.visualLine ? "linewise" : vim.visualBlock ? "blockwise" : ""});
              updateCmSelection(cm);
@@ -27077,22 +26900,15 @@
            var finalCh = 0;
            for (var i = curStart.line; i < curEnd.line; i++) {
              finalCh = lineLength(cm, curStart.line);
-             var text = '';
-             var nextStartCh = 0;
-             if (!actionArgs.keepSpaces) {
-               var nextLine = cm.getLine(curStart.line + 1);
-               nextStartCh = nextLine.search(/\S/);
-               if (nextStartCh == -1) {
-                 nextStartCh = nextLine.length;
-               } else {
-                 text = " ";
-               }
-             }
-             cm.replaceRange(text, 
-               new Pos(curStart.line, finalCh),
-               new Pos(curStart.line + 1, nextStartCh));
+             var tmp = new Pos(curStart.line + 1,
+                           lineLength(cm, curStart.line + 1));
+             var text = cm.getRange(curStart, tmp);
+             text = actionArgs.keepSpaces
+               ? text.replace(/\n\r?/g, '')
+               : text.replace(/\n\s*/g, ' ');
+             cm.replaceRange(text, curStart, tmp);
            }
-           var curFinalPos = clipCursorToContent(cm, new Pos(curStart.line, finalCh));
+           var curFinalPos = new Pos(curStart.line, finalCh);
            if (vim.visualMode) {
              exitVisualMode(cm, false);
            }
@@ -27279,7 +27095,7 @@
          undo: function(cm, actionArgs) {
            cm.operation(function() {
              repeatFn(cm, CodeMirror.commands.undo, actionArgs.repeat)();
-             cm.setCursor(clipCursorToContent(cm, cm.getCursor('start')));
+             cm.setCursor(cm.getCursor('anchor'));
            });
          },
          redo: function(cm, actionArgs) {
@@ -27287,14 +27103,6 @@
          },
          setRegister: function(_cm, actionArgs, vim) {
            vim.inputState.registerName = actionArgs.selectedCharacter;
-         },
-         insertRegister: function(cm, actionArgs, vim) {
-           var registerName = actionArgs.selectedCharacter;
-           var register = vimGlobalState.registerController.getRegister(registerName);
-           var text = register && register.toString();
-           if (text) {
-             cm.replaceSelection(text);
-           }
          },
          setMark: function(cm, actionArgs, vim) {
            var markName = actionArgs.selectedCharacter;
@@ -27317,25 +27125,18 @@
              }
              curEnd = new Pos(curStart.line, replaceTo);
            }
-
-           var newPositions = updateSelectionForSurrogateCharacters(cm, curStart, curEnd);
-           curStart = newPositions.start;
-           curEnd = newPositions.end;
            if (replaceWith=='\n') {
              if (!vim.visualMode) cm.replaceRange('', curStart, curEnd);
              // special case, where vim help says to replace by just one line-break
              (CodeMirror.commands.newlineAndIndentContinueComment || CodeMirror.commands.newlineAndIndent)(cm);
            } else {
              var replaceWithStr = cm.getRange(curStart, curEnd);
-             // replace all surrogate characters with selected character
-             replaceWithStr = replaceWithStr.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, replaceWith);
              //replace all characters in range by selected, but keep linebreaks
              replaceWithStr = replaceWithStr.replace(/[^\n]/g, replaceWith);
              if (vim.visualBlock) {
                // Tabs are split in visua block before replacing
                var spaces = new Array(cm.getOption("tabSize")+1).join(' ');
                replaceWithStr = cm.getSelection();
-               replaceWithStr = replaceWithStr.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, replaceWith);
                replaceWithStr = replaceWithStr.replace(/\t/g, spaces).replace(/[^\n]/g, replaceWith).split('\n');
                cm.replaceSelections(replaceWithStr);
              } else {
@@ -27413,26 +27214,14 @@
 
        /**
         * Clips cursor to ensure that line is within the buffer's range
-        * and is not inside surrogate pair
         * If includeLineBreak is true, then allow cur.ch == lineLength.
         */
-       function clipCursorToContent(cm, cur, oldCur) {
+       function clipCursorToContent(cm, cur) {
          var vim = cm.state.vim;
          var includeLineBreak = vim.insertMode || vim.visualMode;
          var line = Math.min(Math.max(cm.firstLine(), cur.line), cm.lastLine() );
-         var text = cm.getLine(line);
-         var maxCh = text.length - 1 + Number(!!includeLineBreak);
+         var maxCh = lineLength(cm, line) - 1 + !!includeLineBreak;
          var ch = Math.min(Math.max(0, cur.ch), maxCh);
-         // prevent cursor from entering surrogate pair
-         var charCode = text.charCodeAt(ch);
-         if (0xDC00 <= charCode && charCode <= 0xDFFF) {
-           var direction = 1;
-           if (oldCur && oldCur.line == line && oldCur.ch > ch) {
-             direction = -1;
-           }
-           ch +=direction;
-           if (ch > maxCh) ch -=2;
-         }
          return new Pos(line, ch);
        }
        function copyArgs(args) {
@@ -30109,7 +29898,8 @@
          'Backspace': 'goCharLeft',
          fallthrough: ['vim-insert'],
          attach: attachVimMap,
-         detach: detachVimMap
+         detach: detachVimMap,
+         call: cmKey
        };
 
        function executeMacroRegister(cm, vim, macroModeState, registerName) {
@@ -30423,13 +30213,10 @@
            isHandled = vimApi.handleKey(cm, key, origin);
          } else {
            var old = cloneVimState(vim);
-           var changeQueueList = vim.inputState.changeQueueList || [];
 
            cm.operation(function() {
              cm.curOp.isVimOp = true;
-             var index = 0;
              cm.forEachSelection(function() {
-               cm.state.vim.inputState.changeQueue = changeQueueList[index];
                var head = cm.getCursor("head");
                var anchor = cm.getCursor("anchor");
                var headOffset = !cursorIsBefore(head, anchor) ? -1 : 0;
@@ -30441,16 +30228,12 @@
 
                isHandled = vimApi.handleKey(cm, key, origin);
                if (cm.virtualSelection) {
-                 changeQueueList[index] = cm.state.vim.inputState.changeQueue;
                  cm.state.vim = cloneVimState(old);
                }
-               index++;
              });
              if (cm.curOp.cursorActivity && !isHandled)
                cm.curOp.cursorActivity = false;
              cm.state.vim = vim;
-             vim.inputState.changeQueueList = changeQueueList;
-             vim.inputState.changeQueue = null;
            }, true);
          }
          // some commands may bring visualMode and selection out of sync
@@ -30532,8 +30315,7 @@
        ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
        Enter: 'CR', ' ': 'Space'
    };
-   var ignoredKeys = { Shift: 1, Alt: 1, Command: 1, Control: 1,
-       CapsLock: 1, AltGraph: 1, Dead: 1 };
+   var ignoredKeys = { Shift: 1, Alt: 1, Command: 1, Control: 1, CapsLock: 1, AltGraph: 1 };
    let wordChar;
    try {
        wordChar = /*@__PURE__*/new RegExp("[\\w\\p{Alphabetic}\\p{Number}_]", "u");
@@ -31278,12 +31060,6 @@
        if (e.metaKey) {
            name += 'M-';
        }
-       // on mac many characters are entered as option- combos
-       // (e.g. on swiss keyboard { is option-8)
-       // so we ignore lonely A- modifier for keypress event on mac
-       if (e.type == "keypress" && e.altKey && !e.metaKey && !e.ctrlKey) {
-           name = name.slice(2);
-       }
        if ((name || key.length > 1) && e.shiftKey) {
            name += 'S-';
        }
@@ -31651,13 +31427,7 @@
                hCoeff = 0.5;
        }
        if (fatCursor) {
-           let letter = head < view.state.doc.length && view.state.sliceDoc(head, head + 1);
-           if (letter && (/[\uDC00-\uDFFF]/.test(letter) && head > 1)) {
-               // step back if cursor is on the second half of a surrogate pair
-               head--;
-               letter = view.state.sliceDoc(head, head + 1);
-           }
-           let pos = view.coordsAtPos(head, 1);
+           let pos = view.coordsAtPos(head, cursor.assoc || 1);
            if (!pos)
                return null;
            let base = getBase(view);
@@ -31668,17 +31438,12 @@
                domAtPos = { node: domAtPos.node.childNodes[domAtPos.offset], offset: 0 };
            }
            if (!(node instanceof HTMLElement)) {
-               if (!node.parentNode)
-                   return null;
                node = node.parentNode;
            }
            let style = getComputedStyle(node);
+           let letter = head < view.state.doc.length && view.state.sliceDoc(head, head + 1);
            if (!letter || letter == "\n" || letter == "\r")
                letter = "\xa0";
-           else if ((/[\uD800-\uDBFF]/.test(letter) && head < view.state.doc.length - 1)) {
-               // include the second half of a surrogate pair in cursor
-               letter += view.state.sliceDoc(head + 1, head + 2);
-           }
            let h = (pos.bottom - pos.top);
            return new Piece(pos.left - base.left, pos.top - base.top + h * (1 - hCoeff), h * hCoeff, style.fontFamily, style.fontSize, style.fontWeight, style.color, primary ? "cm-fat-cursor cm-cursor-primary" : "cm-fat-cursor cm-cursor-secondary", letter, hCoeff != 1);
        }
@@ -31711,7 +31476,6 @@
            this.status = "";
            this.query = null;
            this.decorations = Decoration.none;
-           this.lastKeydown = '';
            this.view = view;
            const cm = (this.cm = new CodeMirror(view));
            Vim.enterVimMode(this.cm);
@@ -31827,57 +31591,49 @@
            }
            return (this.decorations = builder.finish());
        }
-       handleKey(e, view) {
-           const key = CodeMirror.vimKey(e);
-           const cm = this.cm;
-           if (!key)
-               return;
-           let vim = cm.state.vim;
-           if (!vim)
-               return;
-           // clear search highlight
-           if (key == "<Esc>" &&
-               !vim.insertMode &&
-               !vim.visualMode &&
-               this.query /* && !cm.inMultiSelectMode*/) {
-               const searchState = vim.searchState_;
-               if (searchState) {
-                   cm.removeOverlay(searchState.getOverlay());
-                   searchState.setOverlay(null);
-               }
-           }
-           vim.status = (vim.status || "") + key;
-           let result = Vim.multiSelectHandleKey(cm, key, "user");
-           vim = cm.state.vim; // the object can change if there is an exception in handleKey
-           // insert mode
-           if (!result && vim.insertMode && cm.state.overwrite) {
-               if (e.key && e.key.length == 1 && !/\n/.test(e.key)) {
-                   result = true;
-                   cm.overWriteSelection(e.key);
-               }
-               else if (e.key == "Backspace") {
-                   result = true;
-                   CodeMirror.commands.cursorCharLeft(cm);
-               }
-           }
-           if (result) {
-               CodeMirror.signal(this.cm, 'vim-keypress', key);
-               e.preventDefault();
-               e.stopPropagation();
-               this.blockCursor.scheduleRedraw();
-           }
-           this.updateStatus();
-           return !!result;
-       }
    }, {
        eventHandlers: {
-           keypress: function (e, view) {
-               if (this.lastKeydown == "Dead" || (e.altKey && !e.ctrlKey && !e.cmdKey))
-                   this.handleKey(e, view);
-           },
            keydown: function (e, view) {
-               this.lastKeydown = e.key;
-               this.handleKey(e, view);
+               const key = CodeMirror.vimKey(e);
+               const cm = this.cm;
+               if (!key)
+                   return;
+               let vim = cm.state.vim;
+               if (!vim)
+                   return;
+               // clear search highlight
+               if (key == "<Esc>" &&
+                   !vim.insertMode &&
+                   !vim.visualMode &&
+                   this.query /* && !cm.inMultiSelectMode*/) {
+                   const searchState = vim.searchState_;
+                   if (searchState) {
+                       cm.removeOverlay(searchState.getOverlay());
+                       searchState.setOverlay(null);
+                   }
+               }
+               vim.status = (vim.status || "") + key;
+               let result = Vim.multiSelectHandleKey(cm, key, "user");
+               vim = cm.state.vim; // the object can change if there is an exception in handleKey
+               // insert mode
+               if (!result && vim.insertMode && cm.state.overwrite) {
+                   if (e.key && e.key.length == 1 && !/\n/.test(e.key)) {
+                       result = true;
+                       cm.overWriteSelection(e.key);
+                   }
+                   else if (e.key == "Backspace") {
+                       result = true;
+                       CodeMirror.commands.cursorCharLeft(cm);
+                   }
+               }
+               if (result) {
+                   CodeMirror.signal(this.cm, 'vim-keypress', key);
+                   e.preventDefault();
+                   e.stopPropagation();
+                   this.blockCursor.scheduleRedraw();
+               }
+               this.updateStatus();
+               return !!result;
            },
        },
        decorations: (v) => v.decorations,
@@ -31925,17 +31681,19610 @@
        return view.cm || null;
    }
 
+   function commonjsRequire(path) {
+   	throw new Error('Could not dynamically require "' + path + '". Please configure the dynamicRequireTargets or/and ignoreDynamicRequires option of @rollup/plugin-commonjs appropriately for this require call to work.');
+   }
+
+   var gpuBrowserExports = {};
+   var gpuBrowser = {
+     get exports(){ return gpuBrowserExports; },
+     set exports(v){ gpuBrowserExports = v; },
+   };
+
+   /**
+    * gpu.js
+    * http://gpu.rocks/
+    *
+    * GPU Accelerated JavaScript
+    *
+    * @version 2.16.0
+    * @date Wed Nov 16 2022 15:48:37 GMT-0500 (Eastern Standard Time)
+    *
+    * @license MIT
+    * The MIT License
+    *
+    * Copyright (c) 2022 gpu.js Team
+    */
+
+   (function (module, exports) {
+   	(function(f){{module.exports=f();}})(function(){return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof commonjsRequire&&commonjsRequire;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t);}return n[i].exports}for(var u="function"==typeof commonjsRequire&&commonjsRequire,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+   	(function (global, factory) {
+   	  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
+   	  (global = global || self, factory(global.acorn = {}));
+   	}(this, function (exports) {
+
+   	  var reservedWords = {
+   	    3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
+   	    5: "class enum extends super const export import",
+   	    6: "enum",
+   	    strict: "implements interface let package private protected public static yield",
+   	    strictBind: "eval arguments"
+   	  };
+
+
+   	  var ecma5AndLessKeywords = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
+
+   	  var keywords = {
+   	    5: ecma5AndLessKeywords,
+   	    "5module": ecma5AndLessKeywords + " export import",
+   	    6: ecma5AndLessKeywords + " const class extends export import super"
+   	  };
+
+   	  var keywordRelationalOperator = /^in(stanceof)?$/;
+
+
+   	  var nonASCIIidentifierStartChars = "\xaa\xb5\xba\xc0-\xd6\xd8-\xf6\xf8-\u02c1\u02c6-\u02d1\u02e0-\u02e4\u02ec\u02ee\u0370-\u0374\u0376\u0377\u037a-\u037d\u037f\u0386\u0388-\u038a\u038c\u038e-\u03a1\u03a3-\u03f5\u03f7-\u0481\u048a-\u052f\u0531-\u0556\u0559\u0560-\u0588\u05d0-\u05ea\u05ef-\u05f2\u0620-\u064a\u066e\u066f\u0671-\u06d3\u06d5\u06e5\u06e6\u06ee\u06ef\u06fa-\u06fc\u06ff\u0710\u0712-\u072f\u074d-\u07a5\u07b1\u07ca-\u07ea\u07f4\u07f5\u07fa\u0800-\u0815\u081a\u0824\u0828\u0840-\u0858\u0860-\u086a\u08a0-\u08b4\u08b6-\u08bd\u0904-\u0939\u093d\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098c\u098f\u0990\u0993-\u09a8\u09aa-\u09b0\u09b2\u09b6-\u09b9\u09bd\u09ce\u09dc\u09dd\u09df-\u09e1\u09f0\u09f1\u09fc\u0a05-\u0a0a\u0a0f\u0a10\u0a13-\u0a28\u0a2a-\u0a30\u0a32\u0a33\u0a35\u0a36\u0a38\u0a39\u0a59-\u0a5c\u0a5e\u0a72-\u0a74\u0a85-\u0a8d\u0a8f-\u0a91\u0a93-\u0aa8\u0aaa-\u0ab0\u0ab2\u0ab3\u0ab5-\u0ab9\u0abd\u0ad0\u0ae0\u0ae1\u0af9\u0b05-\u0b0c\u0b0f\u0b10\u0b13-\u0b28\u0b2a-\u0b30\u0b32\u0b33\u0b35-\u0b39\u0b3d\u0b5c\u0b5d\u0b5f-\u0b61\u0b71\u0b83\u0b85-\u0b8a\u0b8e-\u0b90\u0b92-\u0b95\u0b99\u0b9a\u0b9c\u0b9e\u0b9f\u0ba3\u0ba4\u0ba8-\u0baa\u0bae-\u0bb9\u0bd0\u0c05-\u0c0c\u0c0e-\u0c10\u0c12-\u0c28\u0c2a-\u0c39\u0c3d\u0c58-\u0c5a\u0c60\u0c61\u0c80\u0c85-\u0c8c\u0c8e-\u0c90\u0c92-\u0ca8\u0caa-\u0cb3\u0cb5-\u0cb9\u0cbd\u0cde\u0ce0\u0ce1\u0cf1\u0cf2\u0d05-\u0d0c\u0d0e-\u0d10\u0d12-\u0d3a\u0d3d\u0d4e\u0d54-\u0d56\u0d5f-\u0d61\u0d7a-\u0d7f\u0d85-\u0d96\u0d9a-\u0db1\u0db3-\u0dbb\u0dbd\u0dc0-\u0dc6\u0e01-\u0e30\u0e32\u0e33\u0e40-\u0e46\u0e81\u0e82\u0e84\u0e86-\u0e8a\u0e8c-\u0ea3\u0ea5\u0ea7-\u0eb0\u0eb2\u0eb3\u0ebd\u0ec0-\u0ec4\u0ec6\u0edc-\u0edf\u0f00\u0f40-\u0f47\u0f49-\u0f6c\u0f88-\u0f8c\u1000-\u102a\u103f\u1050-\u1055\u105a-\u105d\u1061\u1065\u1066\u106e-\u1070\u1075-\u1081\u108e\u10a0-\u10c5\u10c7\u10cd\u10d0-\u10fa\u10fc-\u1248\u124a-\u124d\u1250-\u1256\u1258\u125a-\u125d\u1260-\u1288\u128a-\u128d\u1290-\u12b0\u12b2-\u12b5\u12b8-\u12be\u12c0\u12c2-\u12c5\u12c8-\u12d6\u12d8-\u1310\u1312-\u1315\u1318-\u135a\u1380-\u138f\u13a0-\u13f5\u13f8-\u13fd\u1401-\u166c\u166f-\u167f\u1681-\u169a\u16a0-\u16ea\u16ee-\u16f8\u1700-\u170c\u170e-\u1711\u1720-\u1731\u1740-\u1751\u1760-\u176c\u176e-\u1770\u1780-\u17b3\u17d7\u17dc\u1820-\u1878\u1880-\u18a8\u18aa\u18b0-\u18f5\u1900-\u191e\u1950-\u196d\u1970-\u1974\u1980-\u19ab\u19b0-\u19c9\u1a00-\u1a16\u1a20-\u1a54\u1aa7\u1b05-\u1b33\u1b45-\u1b4b\u1b83-\u1ba0\u1bae\u1baf\u1bba-\u1be5\u1c00-\u1c23\u1c4d-\u1c4f\u1c5a-\u1c7d\u1c80-\u1c88\u1c90-\u1cba\u1cbd-\u1cbf\u1ce9-\u1cec\u1cee-\u1cf3\u1cf5\u1cf6\u1cfa\u1d00-\u1dbf\u1e00-\u1f15\u1f18-\u1f1d\u1f20-\u1f45\u1f48-\u1f4d\u1f50-\u1f57\u1f59\u1f5b\u1f5d\u1f5f-\u1f7d\u1f80-\u1fb4\u1fb6-\u1fbc\u1fbe\u1fc2-\u1fc4\u1fc6-\u1fcc\u1fd0-\u1fd3\u1fd6-\u1fdb\u1fe0-\u1fec\u1ff2-\u1ff4\u1ff6-\u1ffc\u2071\u207f\u2090-\u209c\u2102\u2107\u210a-\u2113\u2115\u2118-\u211d\u2124\u2126\u2128\u212a-\u2139\u213c-\u213f\u2145-\u2149\u214e\u2160-\u2188\u2c00-\u2c2e\u2c30-\u2c5e\u2c60-\u2ce4\u2ceb-\u2cee\u2cf2\u2cf3\u2d00-\u2d25\u2d27\u2d2d\u2d30-\u2d67\u2d6f\u2d80-\u2d96\u2da0-\u2da6\u2da8-\u2dae\u2db0-\u2db6\u2db8-\u2dbe\u2dc0-\u2dc6\u2dc8-\u2dce\u2dd0-\u2dd6\u2dd8-\u2dde\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303c\u3041-\u3096\u309b-\u309f\u30a1-\u30fa\u30fc-\u30ff\u3105-\u312f\u3131-\u318e\u31a0-\u31ba\u31f0-\u31ff\u3400-\u4db5\u4e00-\u9fef\ua000-\ua48c\ua4d0-\ua4fd\ua500-\ua60c\ua610-\ua61f\ua62a\ua62b\ua640-\ua66e\ua67f-\ua69d\ua6a0-\ua6ef\ua717-\ua71f\ua722-\ua788\ua78b-\ua7bf\ua7c2-\ua7c6\ua7f7-\ua801\ua803-\ua805\ua807-\ua80a\ua80c-\ua822\ua840-\ua873\ua882-\ua8b3\ua8f2-\ua8f7\ua8fb\ua8fd\ua8fe\ua90a-\ua925\ua930-\ua946\ua960-\ua97c\ua984-\ua9b2\ua9cf\ua9e0-\ua9e4\ua9e6-\ua9ef\ua9fa-\ua9fe\uaa00-\uaa28\uaa40-\uaa42\uaa44-\uaa4b\uaa60-\uaa76\uaa7a\uaa7e-\uaaaf\uaab1\uaab5\uaab6\uaab9-\uaabd\uaac0\uaac2\uaadb-\uaadd\uaae0-\uaaea\uaaf2-\uaaf4\uab01-\uab06\uab09-\uab0e\uab11-\uab16\uab20-\uab26\uab28-\uab2e\uab30-\uab5a\uab5c-\uab67\uab70-\uabe2\uac00-\ud7a3\ud7b0-\ud7c6\ud7cb-\ud7fb\uf900-\ufa6d\ufa70-\ufad9\ufb00-\ufb06\ufb13-\ufb17\ufb1d\ufb1f-\ufb28\ufb2a-\ufb36\ufb38-\ufb3c\ufb3e\ufb40\ufb41\ufb43\ufb44\ufb46-\ufbb1\ufbd3-\ufd3d\ufd50-\ufd8f\ufd92-\ufdc7\ufdf0-\ufdfb\ufe70-\ufe74\ufe76-\ufefc\uff21-\uff3a\uff41-\uff5a\uff66-\uffbe\uffc2-\uffc7\uffca-\uffcf\uffd2-\uffd7\uffda-\uffdc";
+   	  var nonASCIIidentifierChars = "\u200c\u200d\xb7\u0300-\u036f\u0387\u0483-\u0487\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7\u0610-\u061a\u064b-\u0669\u0670\u06d6-\u06dc\u06df-\u06e4\u06e7\u06e8\u06ea-\u06ed\u06f0-\u06f9\u0711\u0730-\u074a\u07a6-\u07b0\u07c0-\u07c9\u07eb-\u07f3\u07fd\u0816-\u0819\u081b-\u0823\u0825-\u0827\u0829-\u082d\u0859-\u085b\u08d3-\u08e1\u08e3-\u0903\u093a-\u093c\u093e-\u094f\u0951-\u0957\u0962\u0963\u0966-\u096f\u0981-\u0983\u09bc\u09be-\u09c4\u09c7\u09c8\u09cb-\u09cd\u09d7\u09e2\u09e3\u09e6-\u09ef\u09fe\u0a01-\u0a03\u0a3c\u0a3e-\u0a42\u0a47\u0a48\u0a4b-\u0a4d\u0a51\u0a66-\u0a71\u0a75\u0a81-\u0a83\u0abc\u0abe-\u0ac5\u0ac7-\u0ac9\u0acb-\u0acd\u0ae2\u0ae3\u0ae6-\u0aef\u0afa-\u0aff\u0b01-\u0b03\u0b3c\u0b3e-\u0b44\u0b47\u0b48\u0b4b-\u0b4d\u0b56\u0b57\u0b62\u0b63\u0b66-\u0b6f\u0b82\u0bbe-\u0bc2\u0bc6-\u0bc8\u0bca-\u0bcd\u0bd7\u0be6-\u0bef\u0c00-\u0c04\u0c3e-\u0c44\u0c46-\u0c48\u0c4a-\u0c4d\u0c55\u0c56\u0c62\u0c63\u0c66-\u0c6f\u0c81-\u0c83\u0cbc\u0cbe-\u0cc4\u0cc6-\u0cc8\u0cca-\u0ccd\u0cd5\u0cd6\u0ce2\u0ce3\u0ce6-\u0cef\u0d00-\u0d03\u0d3b\u0d3c\u0d3e-\u0d44\u0d46-\u0d48\u0d4a-\u0d4d\u0d57\u0d62\u0d63\u0d66-\u0d6f\u0d82\u0d83\u0dca\u0dcf-\u0dd4\u0dd6\u0dd8-\u0ddf\u0de6-\u0def\u0df2\u0df3\u0e31\u0e34-\u0e3a\u0e47-\u0e4e\u0e50-\u0e59\u0eb1\u0eb4-\u0ebc\u0ec8-\u0ecd\u0ed0-\u0ed9\u0f18\u0f19\u0f20-\u0f29\u0f35\u0f37\u0f39\u0f3e\u0f3f\u0f71-\u0f84\u0f86\u0f87\u0f8d-\u0f97\u0f99-\u0fbc\u0fc6\u102b-\u103e\u1040-\u1049\u1056-\u1059\u105e-\u1060\u1062-\u1064\u1067-\u106d\u1071-\u1074\u1082-\u108d\u108f-\u109d\u135d-\u135f\u1369-\u1371\u1712-\u1714\u1732-\u1734\u1752\u1753\u1772\u1773\u17b4-\u17d3\u17dd\u17e0-\u17e9\u180b-\u180d\u1810-\u1819\u18a9\u1920-\u192b\u1930-\u193b\u1946-\u194f\u19d0-\u19da\u1a17-\u1a1b\u1a55-\u1a5e\u1a60-\u1a7c\u1a7f-\u1a89\u1a90-\u1a99\u1ab0-\u1abd\u1b00-\u1b04\u1b34-\u1b44\u1b50-\u1b59\u1b6b-\u1b73\u1b80-\u1b82\u1ba1-\u1bad\u1bb0-\u1bb9\u1be6-\u1bf3\u1c24-\u1c37\u1c40-\u1c49\u1c50-\u1c59\u1cd0-\u1cd2\u1cd4-\u1ce8\u1ced\u1cf4\u1cf7-\u1cf9\u1dc0-\u1df9\u1dfb-\u1dff\u203f\u2040\u2054\u20d0-\u20dc\u20e1\u20e5-\u20f0\u2cef-\u2cf1\u2d7f\u2de0-\u2dff\u302a-\u302f\u3099\u309a\ua620-\ua629\ua66f\ua674-\ua67d\ua69e\ua69f\ua6f0\ua6f1\ua802\ua806\ua80b\ua823-\ua827\ua880\ua881\ua8b4-\ua8c5\ua8d0-\ua8d9\ua8e0-\ua8f1\ua8ff-\ua909\ua926-\ua92d\ua947-\ua953\ua980-\ua983\ua9b3-\ua9c0\ua9d0-\ua9d9\ua9e5\ua9f0-\ua9f9\uaa29-\uaa36\uaa43\uaa4c\uaa4d\uaa50-\uaa59\uaa7b-\uaa7d\uaab0\uaab2-\uaab4\uaab7\uaab8\uaabe\uaabf\uaac1\uaaeb-\uaaef\uaaf5\uaaf6\uabe3-\uabea\uabec\uabed\uabf0-\uabf9\ufb1e\ufe00-\ufe0f\ufe20-\ufe2f\ufe33\ufe34\ufe4d-\ufe4f\uff10-\uff19\uff3f";
+
+   	  var nonASCIIidentifierStart = new RegExp("[" + nonASCIIidentifierStartChars + "]");
+   	  var nonASCIIidentifier = new RegExp("[" + nonASCIIidentifierStartChars + nonASCIIidentifierChars + "]");
+
+   	  nonASCIIidentifierStartChars = nonASCIIidentifierChars = null;
+
+
+   	  var astralIdentifierStartCodes = [0,11,2,25,2,18,2,1,2,14,3,13,35,122,70,52,268,28,4,48,48,31,14,29,6,37,11,29,3,35,5,7,2,4,43,157,19,35,5,35,5,39,9,51,157,310,10,21,11,7,153,5,3,0,2,43,2,1,4,0,3,22,11,22,10,30,66,18,2,1,11,21,11,25,71,55,7,1,65,0,16,3,2,2,2,28,43,28,4,28,36,7,2,27,28,53,11,21,11,18,14,17,111,72,56,50,14,50,14,35,477,28,11,0,9,21,155,22,13,52,76,44,33,24,27,35,30,0,12,34,4,0,13,47,15,3,22,0,2,0,36,17,2,24,85,6,2,0,2,3,2,14,2,9,8,46,39,7,3,1,3,21,2,6,2,1,2,4,4,0,19,0,13,4,159,52,19,3,21,0,33,47,21,1,2,0,185,46,42,3,37,47,21,0,60,42,14,0,72,26,230,43,117,63,32,0,161,7,3,38,17,0,2,0,29,0,11,39,8,0,22,0,12,45,20,0,35,56,264,8,2,36,18,0,50,29,113,6,2,1,2,37,22,0,26,5,2,1,2,31,15,0,328,18,270,921,103,110,18,195,2749,1070,4050,582,8634,568,8,30,114,29,19,47,17,3,32,20,6,18,689,63,129,74,6,0,67,12,65,1,2,0,29,6135,9,754,9486,286,50,2,18,3,9,395,2309,106,6,12,4,8,8,9,5991,84,2,70,2,1,3,0,3,1,3,3,2,11,2,0,2,6,2,64,2,3,3,7,2,6,2,27,2,3,2,4,2,0,4,6,2,339,3,24,2,24,2,30,2,24,2,30,2,24,2,30,2,24,2,30,2,24,2,7,2357,44,11,6,17,0,370,43,1301,196,60,67,8,0,1205,3,2,26,2,1,2,0,3,0,2,9,2,3,2,0,2,0,7,0,5,0,2,0,2,0,2,2,2,1,2,0,3,0,2,0,2,0,2,0,2,0,2,1,2,0,3,3,2,6,2,3,2,3,2,0,2,9,2,16,6,2,2,4,2,16,4421,42710,42,4148,12,221,3,5761,15,7472,3104,541];
+
+   	  var astralIdentifierCodes = [509,0,227,0,150,4,294,9,1368,2,2,1,6,3,41,2,5,0,166,1,574,3,9,9,525,10,176,2,54,14,32,9,16,3,46,10,54,9,7,2,37,13,2,9,6,1,45,0,13,2,49,13,9,3,4,9,83,11,7,0,161,11,6,9,7,3,56,1,2,6,3,1,3,2,10,0,11,1,3,6,4,4,193,17,10,9,5,0,82,19,13,9,214,6,3,8,28,1,83,16,16,9,82,12,9,9,84,14,5,9,243,14,166,9,232,6,3,6,4,0,29,9,41,6,2,3,9,0,10,10,47,15,406,7,2,7,17,9,57,21,2,13,123,5,4,0,2,1,2,6,2,0,9,9,49,4,2,1,2,4,9,9,330,3,19306,9,135,4,60,6,26,9,1014,0,2,54,8,3,19723,1,5319,4,4,5,9,7,3,6,31,3,149,2,1418,49,513,54,5,49,9,0,15,0,23,4,2,14,1361,6,2,16,3,6,2,1,2,4,262,6,10,9,419,13,1495,6,110,6,6,9,792487,239];
+
+   	  function isInAstralSet(code, set) {
+   	    var pos = 0x10000;
+   	    for (var i = 0; i < set.length; i += 2) {
+   	      pos += set[i];
+   	      if (pos > code) { return false }
+   	      pos += set[i + 1];
+   	      if (pos >= code) { return true }
+   	    }
+   	  }
+
+
+   	  function isIdentifierStart(code, astral) {
+   	    if (code < 65) { return code === 36 }
+   	    if (code < 91) { return true }
+   	    if (code < 97) { return code === 95 }
+   	    if (code < 123) { return true }
+   	    if (code <= 0xffff) { return code >= 0xaa && nonASCIIidentifierStart.test(String.fromCharCode(code)) }
+   	    if (astral === false) { return false }
+   	    return isInAstralSet(code, astralIdentifierStartCodes)
+   	  }
+
+
+   	  function isIdentifierChar(code, astral) {
+   	    if (code < 48) { return code === 36 }
+   	    if (code < 58) { return true }
+   	    if (code < 65) { return false }
+   	    if (code < 91) { return true }
+   	    if (code < 97) { return code === 95 }
+   	    if (code < 123) { return true }
+   	    if (code <= 0xffff) { return code >= 0xaa && nonASCIIidentifier.test(String.fromCharCode(code)) }
+   	    if (astral === false) { return false }
+   	    return isInAstralSet(code, astralIdentifierStartCodes) || isInAstralSet(code, astralIdentifierCodes)
+   	  }
+
+
+
+
+
+   	  var TokenType = function TokenType(label, conf) {
+   	    if ( conf === void 0 ) conf = {};
+
+   	    this.label = label;
+   	    this.keyword = conf.keyword;
+   	    this.beforeExpr = !!conf.beforeExpr;
+   	    this.startsExpr = !!conf.startsExpr;
+   	    this.isLoop = !!conf.isLoop;
+   	    this.isAssign = !!conf.isAssign;
+   	    this.prefix = !!conf.prefix;
+   	    this.postfix = !!conf.postfix;
+   	    this.binop = conf.binop || null;
+   	    this.updateContext = null;
+   	  };
+
+   	  function binop(name, prec) {
+   	    return new TokenType(name, {beforeExpr: true, binop: prec})
+   	  }
+   	  var beforeExpr = {beforeExpr: true}, startsExpr = {startsExpr: true};
+
+
+   	  var keywords$1 = {};
+
+   	  function kw(name, options) {
+   	    if ( options === void 0 ) options = {};
+
+   	    options.keyword = name;
+   	    return keywords$1[name] = new TokenType(name, options)
+   	  }
+
+   	  var types = {
+   	    num: new TokenType("num", startsExpr),
+   	    regexp: new TokenType("regexp", startsExpr),
+   	    string: new TokenType("string", startsExpr),
+   	    name: new TokenType("name", startsExpr),
+   	    eof: new TokenType("eof"),
+
+   	    bracketL: new TokenType("[", {beforeExpr: true, startsExpr: true}),
+   	    bracketR: new TokenType("]"),
+   	    braceL: new TokenType("{", {beforeExpr: true, startsExpr: true}),
+   	    braceR: new TokenType("}"),
+   	    parenL: new TokenType("(", {beforeExpr: true, startsExpr: true}),
+   	    parenR: new TokenType(")"),
+   	    comma: new TokenType(",", beforeExpr),
+   	    semi: new TokenType(";", beforeExpr),
+   	    colon: new TokenType(":", beforeExpr),
+   	    dot: new TokenType("."),
+   	    question: new TokenType("?", beforeExpr),
+   	    arrow: new TokenType("=>", beforeExpr),
+   	    template: new TokenType("template"),
+   	    invalidTemplate: new TokenType("invalidTemplate"),
+   	    ellipsis: new TokenType("...", beforeExpr),
+   	    backQuote: new TokenType("`", startsExpr),
+   	    dollarBraceL: new TokenType("${", {beforeExpr: true, startsExpr: true}),
+
+
+   	    eq: new TokenType("=", {beforeExpr: true, isAssign: true}),
+   	    assign: new TokenType("_=", {beforeExpr: true, isAssign: true}),
+   	    incDec: new TokenType("++/--", {prefix: true, postfix: true, startsExpr: true}),
+   	    prefix: new TokenType("!/~", {beforeExpr: true, prefix: true, startsExpr: true}),
+   	    logicalOR: binop("||", 1),
+   	    logicalAND: binop("&&", 2),
+   	    bitwiseOR: binop("|", 3),
+   	    bitwiseXOR: binop("^", 4),
+   	    bitwiseAND: binop("&", 5),
+   	    equality: binop("==/!=/===/!==", 6),
+   	    relational: binop("</>/<=/>=", 7),
+   	    bitShift: binop("<</>>/>>>", 8),
+   	    plusMin: new TokenType("+/-", {beforeExpr: true, binop: 9, prefix: true, startsExpr: true}),
+   	    modulo: binop("%", 10),
+   	    star: binop("*", 10),
+   	    slash: binop("/", 10),
+   	    starstar: new TokenType("**", {beforeExpr: true}),
+
+   	    _break: kw("break"),
+   	    _case: kw("case", beforeExpr),
+   	    _catch: kw("catch"),
+   	    _continue: kw("continue"),
+   	    _debugger: kw("debugger"),
+   	    _default: kw("default", beforeExpr),
+   	    _do: kw("do", {isLoop: true, beforeExpr: true}),
+   	    _else: kw("else", beforeExpr),
+   	    _finally: kw("finally"),
+   	    _for: kw("for", {isLoop: true}),
+   	    _function: kw("function", startsExpr),
+   	    _if: kw("if"),
+   	    _return: kw("return", beforeExpr),
+   	    _switch: kw("switch"),
+   	    _throw: kw("throw", beforeExpr),
+   	    _try: kw("try"),
+   	    _var: kw("var"),
+   	    _const: kw("const"),
+   	    _while: kw("while", {isLoop: true}),
+   	    _with: kw("with"),
+   	    _new: kw("new", {beforeExpr: true, startsExpr: true}),
+   	    _this: kw("this", startsExpr),
+   	    _super: kw("super", startsExpr),
+   	    _class: kw("class", startsExpr),
+   	    _extends: kw("extends", beforeExpr),
+   	    _export: kw("export"),
+   	    _import: kw("import", startsExpr),
+   	    _null: kw("null", startsExpr),
+   	    _true: kw("true", startsExpr),
+   	    _false: kw("false", startsExpr),
+   	    _in: kw("in", {beforeExpr: true, binop: 7}),
+   	    _instanceof: kw("instanceof", {beforeExpr: true, binop: 7}),
+   	    _typeof: kw("typeof", {beforeExpr: true, prefix: true, startsExpr: true}),
+   	    _void: kw("void", {beforeExpr: true, prefix: true, startsExpr: true}),
+   	    _delete: kw("delete", {beforeExpr: true, prefix: true, startsExpr: true})
+   	  };
+
+
+   	  var lineBreak = /\r\n?|\n|\u2028|\u2029/;
+   	  var lineBreakG = new RegExp(lineBreak.source, "g");
+
+   	  function isNewLine(code, ecma2019String) {
+   	    return code === 10 || code === 13 || (!ecma2019String && (code === 0x2028 || code === 0x2029))
+   	  }
+
+   	  var nonASCIIwhitespace = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
+
+   	  var skipWhiteSpace = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+
+   	  var ref = Object.prototype;
+   	  var hasOwnProperty = ref.hasOwnProperty;
+   	  var toString = ref.toString;
+
+
+   	  function has(obj, propName) {
+   	    return hasOwnProperty.call(obj, propName)
+   	  }
+
+   	  var isArray = Array.isArray || (function (obj) { return (
+   	    toString.call(obj) === "[object Array]"
+   	  ); });
+
+   	  function wordsRegexp(words) {
+   	    return new RegExp("^(?:" + words.replace(/ /g, "|") + ")$")
+   	  }
+
+
+   	  var Position = function Position(line, col) {
+   	    this.line = line;
+   	    this.column = col;
+   	  };
+
+   	  Position.prototype.offset = function offset (n) {
+   	    return new Position(this.line, this.column + n)
+   	  };
+
+   	  var SourceLocation = function SourceLocation(p, start, end) {
+   	    this.start = start;
+   	    this.end = end;
+   	    if (p.sourceFile !== null) { this.source = p.sourceFile; }
+   	  };
+
+
+   	  function getLineInfo(input, offset) {
+   	    for (var line = 1, cur = 0;;) {
+   	      lineBreakG.lastIndex = cur;
+   	      var match = lineBreakG.exec(input);
+   	      if (match && match.index < offset) {
+   	        ++line;
+   	        cur = match.index + match[0].length;
+   	      } else {
+   	        return new Position(line, offset - cur)
+   	      }
+   	    }
+   	  }
+
+
+   	  var defaultOptions = {
+   	    ecmaVersion: 10,
+   	    sourceType: "script",
+   	    onInsertedSemicolon: null,
+   	    onTrailingComma: null,
+   	    allowReserved: null,
+   	    allowReturnOutsideFunction: false,
+   	    allowImportExportEverywhere: false,
+   	    allowAwaitOutsideFunction: false,
+   	    allowHashBang: false,
+   	    locations: false,
+   	    onToken: null,
+   	    onComment: null,
+   	    ranges: false,
+   	    program: null,
+   	    sourceFile: null,
+   	    directSourceFile: null,
+   	    preserveParens: false
+   	  };
+
+
+   	  function getOptions(opts) {
+   	    var options = {};
+
+   	    for (var opt in defaultOptions)
+   	      { options[opt] = opts && has(opts, opt) ? opts[opt] : defaultOptions[opt]; }
+
+   	    if (options.ecmaVersion >= 2015)
+   	      { options.ecmaVersion -= 2009; }
+
+   	    if (options.allowReserved == null)
+   	      { options.allowReserved = options.ecmaVersion < 5; }
+
+   	    if (isArray(options.onToken)) {
+   	      var tokens = options.onToken;
+   	      options.onToken = function (token) { return tokens.push(token); };
+   	    }
+   	    if (isArray(options.onComment))
+   	      { options.onComment = pushComment(options, options.onComment); }
+
+   	    return options
+   	  }
+
+   	  function pushComment(options, array) {
+   	    return function(block, text, start, end, startLoc, endLoc) {
+   	      var comment = {
+   	        type: block ? "Block" : "Line",
+   	        value: text,
+   	        start: start,
+   	        end: end
+   	      };
+   	      if (options.locations)
+   	        { comment.loc = new SourceLocation(this, startLoc, endLoc); }
+   	      if (options.ranges)
+   	        { comment.range = [start, end]; }
+   	      array.push(comment);
+   	    }
+   	  }
+
+   	  var
+   	      SCOPE_TOP = 1,
+   	      SCOPE_FUNCTION = 2,
+   	      SCOPE_VAR = SCOPE_TOP | SCOPE_FUNCTION,
+   	      SCOPE_ASYNC = 4,
+   	      SCOPE_GENERATOR = 8,
+   	      SCOPE_ARROW = 16,
+   	      SCOPE_SIMPLE_CATCH = 32,
+   	      SCOPE_SUPER = 64,
+   	      SCOPE_DIRECT_SUPER = 128;
+
+   	  function functionFlags(async, generator) {
+   	    return SCOPE_FUNCTION | (async ? SCOPE_ASYNC : 0) | (generator ? SCOPE_GENERATOR : 0)
+   	  }
+
+   	  var
+   	      BIND_NONE = 0, 
+   	      BIND_VAR = 1, 
+   	      BIND_LEXICAL = 2, 
+   	      BIND_FUNCTION = 3, 
+   	      BIND_SIMPLE_CATCH = 4, 
+   	      BIND_OUTSIDE = 5; 
+
+   	  var Parser = function Parser(options, input, startPos) {
+   	    this.options = options = getOptions(options);
+   	    this.sourceFile = options.sourceFile;
+   	    this.keywords = wordsRegexp(keywords[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
+   	    var reserved = "";
+   	    if (options.allowReserved !== true) {
+   	      for (var v = options.ecmaVersion;; v--)
+   	        { if (reserved = reservedWords[v]) { break } }
+   	      if (options.sourceType === "module") { reserved += " await"; }
+   	    }
+   	    this.reservedWords = wordsRegexp(reserved);
+   	    var reservedStrict = (reserved ? reserved + " " : "") + reservedWords.strict;
+   	    this.reservedWordsStrict = wordsRegexp(reservedStrict);
+   	    this.reservedWordsStrictBind = wordsRegexp(reservedStrict + " " + reservedWords.strictBind);
+   	    this.input = String(input);
+
+   	    this.containsEsc = false;
+
+
+   	    if (startPos) {
+   	      this.pos = startPos;
+   	      this.lineStart = this.input.lastIndexOf("\n", startPos - 1) + 1;
+   	      this.curLine = this.input.slice(0, this.lineStart).split(lineBreak).length;
+   	    } else {
+   	      this.pos = this.lineStart = 0;
+   	      this.curLine = 1;
+   	    }
+
+   	    this.type = types.eof;
+   	    this.value = null;
+   	    this.start = this.end = this.pos;
+   	    this.startLoc = this.endLoc = this.curPosition();
+
+   	    this.lastTokEndLoc = this.lastTokStartLoc = null;
+   	    this.lastTokStart = this.lastTokEnd = this.pos;
+
+   	    this.context = this.initialContext();
+   	    this.exprAllowed = true;
+
+   	    this.inModule = options.sourceType === "module";
+   	    this.strict = this.inModule || this.strictDirective(this.pos);
+
+   	    this.potentialArrowAt = -1;
+
+   	    this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
+   	    this.labels = [];
+   	    this.undefinedExports = {};
+
+   	    if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!")
+   	      { this.skipLineComment(2); }
+
+   	    this.scopeStack = [];
+   	    this.enterScope(SCOPE_TOP);
+
+   	    this.regexpState = null;
+   	  };
+
+   	  var prototypeAccessors = { inFunction: { configurable: true },inGenerator: { configurable: true },inAsync: { configurable: true },allowSuper: { configurable: true },allowDirectSuper: { configurable: true },treatFunctionsAsVar: { configurable: true } };
+
+   	  Parser.prototype.parse = function parse () {
+   	    var node = this.options.program || this.startNode();
+   	    this.nextToken();
+   	    return this.parseTopLevel(node)
+   	  };
+
+   	  prototypeAccessors.inFunction.get = function () { return (this.currentVarScope().flags & SCOPE_FUNCTION) > 0 };
+   	  prototypeAccessors.inGenerator.get = function () { return (this.currentVarScope().flags & SCOPE_GENERATOR) > 0 };
+   	  prototypeAccessors.inAsync.get = function () { return (this.currentVarScope().flags & SCOPE_ASYNC) > 0 };
+   	  prototypeAccessors.allowSuper.get = function () { return (this.currentThisScope().flags & SCOPE_SUPER) > 0 };
+   	  prototypeAccessors.allowDirectSuper.get = function () { return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER) > 0 };
+   	  prototypeAccessors.treatFunctionsAsVar.get = function () { return this.treatFunctionsAsVarInScope(this.currentScope()) };
+
+   	  Parser.prototype.inNonArrowFunction = function inNonArrowFunction () { return (this.currentThisScope().flags & SCOPE_FUNCTION) > 0 };
+
+   	  Parser.extend = function extend () {
+   	      var plugins = [], len = arguments.length;
+   	      while ( len-- ) plugins[ len ] = arguments[ len ];
+
+   	    var cls = this;
+   	    for (var i = 0; i < plugins.length; i++) { cls = plugins[i](cls); }
+   	    return cls
+   	  };
+
+   	  Parser.parse = function parse (input, options) {
+   	    return new this(options, input).parse()
+   	  };
+
+   	  Parser.parseExpressionAt = function parseExpressionAt (input, pos, options) {
+   	    var parser = new this(options, input, pos);
+   	    parser.nextToken();
+   	    return parser.parseExpression()
+   	  };
+
+   	  Parser.tokenizer = function tokenizer (input, options) {
+   	    return new this(options, input)
+   	  };
+
+   	  Object.defineProperties( Parser.prototype, prototypeAccessors );
+
+   	  var pp = Parser.prototype;
+
+
+   	  var literal = /^(?:'((?:\\.|[^'])*?)'|"((?:\\.|[^"])*?)")/;
+   	  pp.strictDirective = function(start) {
+   	    for (;;) {
+   	      skipWhiteSpace.lastIndex = start;
+   	      start += skipWhiteSpace.exec(this.input)[0].length;
+   	      var match = literal.exec(this.input.slice(start));
+   	      if (!match) { return false }
+   	      if ((match[1] || match[2]) === "use strict") { return true }
+   	      start += match[0].length;
+
+   	      skipWhiteSpace.lastIndex = start;
+   	      start += skipWhiteSpace.exec(this.input)[0].length;
+   	      if (this.input[start] === ";")
+   	        { start++; }
+   	    }
+   	  };
+
+
+   	  pp.eat = function(type) {
+   	    if (this.type === type) {
+   	      this.next();
+   	      return true
+   	    } else {
+   	      return false
+   	    }
+   	  };
+
+
+   	  pp.isContextual = function(name) {
+   	    return this.type === types.name && this.value === name && !this.containsEsc
+   	  };
+
+
+   	  pp.eatContextual = function(name) {
+   	    if (!this.isContextual(name)) { return false }
+   	    this.next();
+   	    return true
+   	  };
+
+
+   	  pp.expectContextual = function(name) {
+   	    if (!this.eatContextual(name)) { this.unexpected(); }
+   	  };
+
+
+   	  pp.canInsertSemicolon = function() {
+   	    return this.type === types.eof ||
+   	      this.type === types.braceR ||
+   	      lineBreak.test(this.input.slice(this.lastTokEnd, this.start))
+   	  };
+
+   	  pp.insertSemicolon = function() {
+   	    if (this.canInsertSemicolon()) {
+   	      if (this.options.onInsertedSemicolon)
+   	        { this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc); }
+   	      return true
+   	    }
+   	  };
+
+
+   	  pp.semicolon = function() {
+   	    if (!this.eat(types.semi) && !this.insertSemicolon()) { this.unexpected(); }
+   	  };
+
+   	  pp.afterTrailingComma = function(tokType, notNext) {
+   	    if (this.type === tokType) {
+   	      if (this.options.onTrailingComma)
+   	        { this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc); }
+   	      if (!notNext)
+   	        { this.next(); }
+   	      return true
+   	    }
+   	  };
+
+
+   	  pp.expect = function(type) {
+   	    this.eat(type) || this.unexpected();
+   	  };
+
+
+   	  pp.unexpected = function(pos) {
+   	    this.raise(pos != null ? pos : this.start, "Unexpected token");
+   	  };
+
+   	  function DestructuringErrors() {
+   	    this.shorthandAssign =
+   	    this.trailingComma =
+   	    this.parenthesizedAssign =
+   	    this.parenthesizedBind =
+   	    this.doubleProto =
+   	      -1;
+   	  }
+
+   	  pp.checkPatternErrors = function(refDestructuringErrors, isAssign) {
+   	    if (!refDestructuringErrors) { return }
+   	    if (refDestructuringErrors.trailingComma > -1)
+   	      { this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element"); }
+   	    var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
+   	    if (parens > -1) { this.raiseRecoverable(parens, "Parenthesized pattern"); }
+   	  };
+
+   	  pp.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
+   	    if (!refDestructuringErrors) { return false }
+   	    var shorthandAssign = refDestructuringErrors.shorthandAssign;
+   	    var doubleProto = refDestructuringErrors.doubleProto;
+   	    if (!andThrow) { return shorthandAssign >= 0 || doubleProto >= 0 }
+   	    if (shorthandAssign >= 0)
+   	      { this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns"); }
+   	    if (doubleProto >= 0)
+   	      { this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property"); }
+   	  };
+
+   	  pp.checkYieldAwaitInDefaultParams = function() {
+   	    if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos))
+   	      { this.raise(this.yieldPos, "Yield expression cannot be a default value"); }
+   	    if (this.awaitPos)
+   	      { this.raise(this.awaitPos, "Await expression cannot be a default value"); }
+   	  };
+
+   	  pp.isSimpleAssignTarget = function(expr) {
+   	    if (expr.type === "ParenthesizedExpression")
+   	      { return this.isSimpleAssignTarget(expr.expression) }
+   	    return expr.type === "Identifier" || expr.type === "MemberExpression"
+   	  };
+
+   	  var pp$1 = Parser.prototype;
+
+
+
+   	  pp$1.parseTopLevel = function(node) {
+   	    var exports = {};
+   	    if (!node.body) { node.body = []; }
+   	    while (this.type !== types.eof) {
+   	      var stmt = this.parseStatement(null, true, exports);
+   	      node.body.push(stmt);
+   	    }
+   	    if (this.inModule)
+   	      { for (var i = 0, list = Object.keys(this.undefinedExports); i < list.length; i += 1)
+   	        {
+   	          var name = list[i];
+
+   	          this.raiseRecoverable(this.undefinedExports[name].start, ("Export '" + name + "' is not defined"));
+   	        } }
+   	    this.adaptDirectivePrologue(node.body);
+   	    this.next();
+   	    node.sourceType = this.options.sourceType;
+   	    return this.finishNode(node, "Program")
+   	  };
+
+   	  var loopLabel = {kind: "loop"}, switchLabel = {kind: "switch"};
+
+   	  pp$1.isLet = function(context) {
+   	    if (this.options.ecmaVersion < 6 || !this.isContextual("let")) { return false }
+   	    skipWhiteSpace.lastIndex = this.pos;
+   	    var skip = skipWhiteSpace.exec(this.input);
+   	    var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+   	    if (nextCh === 91) { return true } 
+   	    if (context) { return false }
+
+   	    if (nextCh === 123) { return true } 
+   	    if (isIdentifierStart(nextCh, true)) {
+   	      var pos = next + 1;
+   	      while (isIdentifierChar(this.input.charCodeAt(pos), true)) { ++pos; }
+   	      var ident = this.input.slice(next, pos);
+   	      if (!keywordRelationalOperator.test(ident)) { return true }
+   	    }
+   	    return false
+   	  };
+
+   	  pp$1.isAsyncFunction = function() {
+   	    if (this.options.ecmaVersion < 8 || !this.isContextual("async"))
+   	      { return false }
+
+   	    skipWhiteSpace.lastIndex = this.pos;
+   	    var skip = skipWhiteSpace.exec(this.input);
+   	    var next = this.pos + skip[0].length;
+   	    return !lineBreak.test(this.input.slice(this.pos, next)) &&
+   	      this.input.slice(next, next + 8) === "function" &&
+   	      (next + 8 === this.input.length || !isIdentifierChar(this.input.charAt(next + 8)))
+   	  };
+
+
+   	  pp$1.parseStatement = function(context, topLevel, exports) {
+   	    var starttype = this.type, node = this.startNode(), kind;
+
+   	    if (this.isLet(context)) {
+   	      starttype = types._var;
+   	      kind = "let";
+   	    }
+
+
+   	    switch (starttype) {
+   	    case types._break: case types._continue: return this.parseBreakContinueStatement(node, starttype.keyword)
+   	    case types._debugger: return this.parseDebuggerStatement(node)
+   	    case types._do: return this.parseDoStatement(node)
+   	    case types._for: return this.parseForStatement(node)
+   	    case types._function:
+   	      if ((context && (this.strict || context !== "if" && context !== "label")) && this.options.ecmaVersion >= 6) { this.unexpected(); }
+   	      return this.parseFunctionStatement(node, false, !context)
+   	    case types._class:
+   	      if (context) { this.unexpected(); }
+   	      return this.parseClass(node, true)
+   	    case types._if: return this.parseIfStatement(node)
+   	    case types._return: return this.parseReturnStatement(node)
+   	    case types._switch: return this.parseSwitchStatement(node)
+   	    case types._throw: return this.parseThrowStatement(node)
+   	    case types._try: return this.parseTryStatement(node)
+   	    case types._const: case types._var:
+   	      kind = kind || this.value;
+   	      if (context && kind !== "var") { this.unexpected(); }
+   	      return this.parseVarStatement(node, kind)
+   	    case types._while: return this.parseWhileStatement(node)
+   	    case types._with: return this.parseWithStatement(node)
+   	    case types.braceL: return this.parseBlock(true, node)
+   	    case types.semi: return this.parseEmptyStatement(node)
+   	    case types._export:
+   	    case types._import:
+   	      if (this.options.ecmaVersion > 10 && starttype === types._import) {
+   	        skipWhiteSpace.lastIndex = this.pos;
+   	        var skip = skipWhiteSpace.exec(this.input);
+   	        var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+   	        if (nextCh === 40) 
+   	          { return this.parseExpressionStatement(node, this.parseExpression()) }
+   	      }
+
+   	      if (!this.options.allowImportExportEverywhere) {
+   	        if (!topLevel)
+   	          { this.raise(this.start, "'import' and 'export' may only appear at the top level"); }
+   	        if (!this.inModule)
+   	          { this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'"); }
+   	      }
+   	      return starttype === types._import ? this.parseImport(node) : this.parseExport(node, exports)
+
+   	    default:
+   	      if (this.isAsyncFunction()) {
+   	        if (context) { this.unexpected(); }
+   	        this.next();
+   	        return this.parseFunctionStatement(node, true, !context)
+   	      }
+
+   	      var maybeName = this.value, expr = this.parseExpression();
+   	      if (starttype === types.name && expr.type === "Identifier" && this.eat(types.colon))
+   	        { return this.parseLabeledStatement(node, maybeName, expr, context) }
+   	      else { return this.parseExpressionStatement(node, expr) }
+   	    }
+   	  };
+
+   	  pp$1.parseBreakContinueStatement = function(node, keyword) {
+   	    var isBreak = keyword === "break";
+   	    this.next();
+   	    if (this.eat(types.semi) || this.insertSemicolon()) { node.label = null; }
+   	    else if (this.type !== types.name) { this.unexpected(); }
+   	    else {
+   	      node.label = this.parseIdent();
+   	      this.semicolon();
+   	    }
+
+   	    var i = 0;
+   	    for (; i < this.labels.length; ++i) {
+   	      var lab = this.labels[i];
+   	      if (node.label == null || lab.name === node.label.name) {
+   	        if (lab.kind != null && (isBreak || lab.kind === "loop")) { break }
+   	        if (node.label && isBreak) { break }
+   	      }
+   	    }
+   	    if (i === this.labels.length) { this.raise(node.start, "Unsyntactic " + keyword); }
+   	    return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement")
+   	  };
+
+   	  pp$1.parseDebuggerStatement = function(node) {
+   	    this.next();
+   	    this.semicolon();
+   	    return this.finishNode(node, "DebuggerStatement")
+   	  };
+
+   	  pp$1.parseDoStatement = function(node) {
+   	    this.next();
+   	    this.labels.push(loopLabel);
+   	    node.body = this.parseStatement("do");
+   	    this.labels.pop();
+   	    this.expect(types._while);
+   	    node.test = this.parseParenExpression();
+   	    if (this.options.ecmaVersion >= 6)
+   	      { this.eat(types.semi); }
+   	    else
+   	      { this.semicolon(); }
+   	    return this.finishNode(node, "DoWhileStatement")
+   	  };
+
+
+   	  pp$1.parseForStatement = function(node) {
+   	    this.next();
+   	    var awaitAt = (this.options.ecmaVersion >= 9 && (this.inAsync || (!this.inFunction && this.options.allowAwaitOutsideFunction)) && this.eatContextual("await")) ? this.lastTokStart : -1;
+   	    this.labels.push(loopLabel);
+   	    this.enterScope(0);
+   	    this.expect(types.parenL);
+   	    if (this.type === types.semi) {
+   	      if (awaitAt > -1) { this.unexpected(awaitAt); }
+   	      return this.parseFor(node, null)
+   	    }
+   	    var isLet = this.isLet();
+   	    if (this.type === types._var || this.type === types._const || isLet) {
+   	      var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
+   	      this.next();
+   	      this.parseVar(init$1, true, kind);
+   	      this.finishNode(init$1, "VariableDeclaration");
+   	      if ((this.type === types._in || (this.options.ecmaVersion >= 6 && this.isContextual("of"))) && init$1.declarations.length === 1) {
+   	        if (this.options.ecmaVersion >= 9) {
+   	          if (this.type === types._in) {
+   	            if (awaitAt > -1) { this.unexpected(awaitAt); }
+   	          } else { node.await = awaitAt > -1; }
+   	        }
+   	        return this.parseForIn(node, init$1)
+   	      }
+   	      if (awaitAt > -1) { this.unexpected(awaitAt); }
+   	      return this.parseFor(node, init$1)
+   	    }
+   	    var refDestructuringErrors = new DestructuringErrors;
+   	    var init = this.parseExpression(true, refDestructuringErrors);
+   	    if (this.type === types._in || (this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+   	      if (this.options.ecmaVersion >= 9) {
+   	        if (this.type === types._in) {
+   	          if (awaitAt > -1) { this.unexpected(awaitAt); }
+   	        } else { node.await = awaitAt > -1; }
+   	      }
+   	      this.toAssignable(init, false, refDestructuringErrors);
+   	      this.checkLVal(init);
+   	      return this.parseForIn(node, init)
+   	    } else {
+   	      this.checkExpressionErrors(refDestructuringErrors, true);
+   	    }
+   	    if (awaitAt > -1) { this.unexpected(awaitAt); }
+   	    return this.parseFor(node, init)
+   	  };
+
+   	  pp$1.parseFunctionStatement = function(node, isAsync, declarationPosition) {
+   	    this.next();
+   	    return this.parseFunction(node, FUNC_STATEMENT | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT), false, isAsync)
+   	  };
+
+   	  pp$1.parseIfStatement = function(node) {
+   	    this.next();
+   	    node.test = this.parseParenExpression();
+   	    node.consequent = this.parseStatement("if");
+   	    node.alternate = this.eat(types._else) ? this.parseStatement("if") : null;
+   	    return this.finishNode(node, "IfStatement")
+   	  };
+
+   	  pp$1.parseReturnStatement = function(node) {
+   	    if (!this.inFunction && !this.options.allowReturnOutsideFunction)
+   	      { this.raise(this.start, "'return' outside of function"); }
+   	    this.next();
+
+
+   	    if (this.eat(types.semi) || this.insertSemicolon()) { node.argument = null; }
+   	    else { node.argument = this.parseExpression(); this.semicolon(); }
+   	    return this.finishNode(node, "ReturnStatement")
+   	  };
+
+   	  pp$1.parseSwitchStatement = function(node) {
+   	    this.next();
+   	    node.discriminant = this.parseParenExpression();
+   	    node.cases = [];
+   	    this.expect(types.braceL);
+   	    this.labels.push(switchLabel);
+   	    this.enterScope(0);
+
+
+   	    var cur;
+   	    for (var sawDefault = false; this.type !== types.braceR;) {
+   	      if (this.type === types._case || this.type === types._default) {
+   	        var isCase = this.type === types._case;
+   	        if (cur) { this.finishNode(cur, "SwitchCase"); }
+   	        node.cases.push(cur = this.startNode());
+   	        cur.consequent = [];
+   	        this.next();
+   	        if (isCase) {
+   	          cur.test = this.parseExpression();
+   	        } else {
+   	          if (sawDefault) { this.raiseRecoverable(this.lastTokStart, "Multiple default clauses"); }
+   	          sawDefault = true;
+   	          cur.test = null;
+   	        }
+   	        this.expect(types.colon);
+   	      } else {
+   	        if (!cur) { this.unexpected(); }
+   	        cur.consequent.push(this.parseStatement(null));
+   	      }
+   	    }
+   	    this.exitScope();
+   	    if (cur) { this.finishNode(cur, "SwitchCase"); }
+   	    this.next(); 
+   	    this.labels.pop();
+   	    return this.finishNode(node, "SwitchStatement")
+   	  };
+
+   	  pp$1.parseThrowStatement = function(node) {
+   	    this.next();
+   	    if (lineBreak.test(this.input.slice(this.lastTokEnd, this.start)))
+   	      { this.raise(this.lastTokEnd, "Illegal newline after throw"); }
+   	    node.argument = this.parseExpression();
+   	    this.semicolon();
+   	    return this.finishNode(node, "ThrowStatement")
+   	  };
+
+
+   	  var empty = [];
+
+   	  pp$1.parseTryStatement = function(node) {
+   	    this.next();
+   	    node.block = this.parseBlock();
+   	    node.handler = null;
+   	    if (this.type === types._catch) {
+   	      var clause = this.startNode();
+   	      this.next();
+   	      if (this.eat(types.parenL)) {
+   	        clause.param = this.parseBindingAtom();
+   	        var simple = clause.param.type === "Identifier";
+   	        this.enterScope(simple ? SCOPE_SIMPLE_CATCH : 0);
+   	        this.checkLVal(clause.param, simple ? BIND_SIMPLE_CATCH : BIND_LEXICAL);
+   	        this.expect(types.parenR);
+   	      } else {
+   	        if (this.options.ecmaVersion < 10) { this.unexpected(); }
+   	        clause.param = null;
+   	        this.enterScope(0);
+   	      }
+   	      clause.body = this.parseBlock(false);
+   	      this.exitScope();
+   	      node.handler = this.finishNode(clause, "CatchClause");
+   	    }
+   	    node.finalizer = this.eat(types._finally) ? this.parseBlock() : null;
+   	    if (!node.handler && !node.finalizer)
+   	      { this.raise(node.start, "Missing catch or finally clause"); }
+   	    return this.finishNode(node, "TryStatement")
+   	  };
+
+   	  pp$1.parseVarStatement = function(node, kind) {
+   	    this.next();
+   	    this.parseVar(node, false, kind);
+   	    this.semicolon();
+   	    return this.finishNode(node, "VariableDeclaration")
+   	  };
+
+   	  pp$1.parseWhileStatement = function(node) {
+   	    this.next();
+   	    node.test = this.parseParenExpression();
+   	    this.labels.push(loopLabel);
+   	    node.body = this.parseStatement("while");
+   	    this.labels.pop();
+   	    return this.finishNode(node, "WhileStatement")
+   	  };
+
+   	  pp$1.parseWithStatement = function(node) {
+   	    if (this.strict) { this.raise(this.start, "'with' in strict mode"); }
+   	    this.next();
+   	    node.object = this.parseParenExpression();
+   	    node.body = this.parseStatement("with");
+   	    return this.finishNode(node, "WithStatement")
+   	  };
+
+   	  pp$1.parseEmptyStatement = function(node) {
+   	    this.next();
+   	    return this.finishNode(node, "EmptyStatement")
+   	  };
+
+   	  pp$1.parseLabeledStatement = function(node, maybeName, expr, context) {
+   	    for (var i$1 = 0, list = this.labels; i$1 < list.length; i$1 += 1)
+   	      {
+   	      var label = list[i$1];
+
+   	      if (label.name === maybeName)
+   	        { this.raise(expr.start, "Label '" + maybeName + "' is already declared");
+   	    } }
+   	    var kind = this.type.isLoop ? "loop" : this.type === types._switch ? "switch" : null;
+   	    for (var i = this.labels.length - 1; i >= 0; i--) {
+   	      var label$1 = this.labels[i];
+   	      if (label$1.statementStart === node.start) {
+   	        label$1.statementStart = this.start;
+   	        label$1.kind = kind;
+   	      } else { break }
+   	    }
+   	    this.labels.push({name: maybeName, kind: kind, statementStart: this.start});
+   	    node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
+   	    this.labels.pop();
+   	    node.label = expr;
+   	    return this.finishNode(node, "LabeledStatement")
+   	  };
+
+   	  pp$1.parseExpressionStatement = function(node, expr) {
+   	    node.expression = expr;
+   	    this.semicolon();
+   	    return this.finishNode(node, "ExpressionStatement")
+   	  };
+
+
+   	  pp$1.parseBlock = function(createNewLexicalScope, node) {
+   	    if ( createNewLexicalScope === void 0 ) createNewLexicalScope = true;
+   	    if ( node === void 0 ) node = this.startNode();
+
+   	    node.body = [];
+   	    this.expect(types.braceL);
+   	    if (createNewLexicalScope) { this.enterScope(0); }
+   	    while (!this.eat(types.braceR)) {
+   	      var stmt = this.parseStatement(null);
+   	      node.body.push(stmt);
+   	    }
+   	    if (createNewLexicalScope) { this.exitScope(); }
+   	    return this.finishNode(node, "BlockStatement")
+   	  };
+
+
+   	  pp$1.parseFor = function(node, init) {
+   	    node.init = init;
+   	    this.expect(types.semi);
+   	    node.test = this.type === types.semi ? null : this.parseExpression();
+   	    this.expect(types.semi);
+   	    node.update = this.type === types.parenR ? null : this.parseExpression();
+   	    this.expect(types.parenR);
+   	    node.body = this.parseStatement("for");
+   	    this.exitScope();
+   	    this.labels.pop();
+   	    return this.finishNode(node, "ForStatement")
+   	  };
+
+
+   	  pp$1.parseForIn = function(node, init) {
+   	    var isForIn = this.type === types._in;
+   	    this.next();
+
+   	    if (
+   	      init.type === "VariableDeclaration" &&
+   	      init.declarations[0].init != null &&
+   	      (
+   	        !isForIn ||
+   	        this.options.ecmaVersion < 8 ||
+   	        this.strict ||
+   	        init.kind !== "var" ||
+   	        init.declarations[0].id.type !== "Identifier"
+   	      )
+   	    ) {
+   	      this.raise(
+   	        init.start,
+   	        ((isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer")
+   	      );
+   	    } else if (init.type === "AssignmentPattern") {
+   	      this.raise(init.start, "Invalid left-hand side in for-loop");
+   	    }
+   	    node.left = init;
+   	    node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
+   	    this.expect(types.parenR);
+   	    node.body = this.parseStatement("for");
+   	    this.exitScope();
+   	    this.labels.pop();
+   	    return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement")
+   	  };
+
+
+   	  pp$1.parseVar = function(node, isFor, kind) {
+   	    node.declarations = [];
+   	    node.kind = kind;
+   	    for (;;) {
+   	      var decl = this.startNode();
+   	      this.parseVarId(decl, kind);
+   	      if (this.eat(types.eq)) {
+   	        decl.init = this.parseMaybeAssign(isFor);
+   	      } else if (kind === "const" && !(this.type === types._in || (this.options.ecmaVersion >= 6 && this.isContextual("of")))) {
+   	        this.unexpected();
+   	      } else if (decl.id.type !== "Identifier" && !(isFor && (this.type === types._in || this.isContextual("of")))) {
+   	        this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
+   	      } else {
+   	        decl.init = null;
+   	      }
+   	      node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
+   	      if (!this.eat(types.comma)) { break }
+   	    }
+   	    return node
+   	  };
+
+   	  pp$1.parseVarId = function(decl, kind) {
+   	    decl.id = this.parseBindingAtom();
+   	    this.checkLVal(decl.id, kind === "var" ? BIND_VAR : BIND_LEXICAL, false);
+   	  };
+
+   	  var FUNC_STATEMENT = 1, FUNC_HANGING_STATEMENT = 2, FUNC_NULLABLE_ID = 4;
+
+
+   	  pp$1.parseFunction = function(node, statement, allowExpressionBody, isAsync) {
+   	    this.initFunction(node);
+   	    if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
+   	      if (this.type === types.star && (statement & FUNC_HANGING_STATEMENT))
+   	        { this.unexpected(); }
+   	      node.generator = this.eat(types.star);
+   	    }
+   	    if (this.options.ecmaVersion >= 8)
+   	      { node.async = !!isAsync; }
+
+   	    if (statement & FUNC_STATEMENT) {
+   	      node.id = (statement & FUNC_NULLABLE_ID) && this.type !== types.name ? null : this.parseIdent();
+   	      if (node.id && !(statement & FUNC_HANGING_STATEMENT))
+   	        { this.checkLVal(node.id, (this.strict || node.generator || node.async) ? this.treatFunctionsAsVar ? BIND_VAR : BIND_LEXICAL : BIND_FUNCTION); }
+   	    }
+
+   	    var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+   	    this.yieldPos = 0;
+   	    this.awaitPos = 0;
+   	    this.awaitIdentPos = 0;
+   	    this.enterScope(functionFlags(node.async, node.generator));
+
+   	    if (!(statement & FUNC_STATEMENT))
+   	      { node.id = this.type === types.name ? this.parseIdent() : null; }
+
+   	    this.parseFunctionParams(node);
+   	    this.parseFunctionBody(node, allowExpressionBody, false);
+
+   	    this.yieldPos = oldYieldPos;
+   	    this.awaitPos = oldAwaitPos;
+   	    this.awaitIdentPos = oldAwaitIdentPos;
+   	    return this.finishNode(node, (statement & FUNC_STATEMENT) ? "FunctionDeclaration" : "FunctionExpression")
+   	  };
+
+   	  pp$1.parseFunctionParams = function(node) {
+   	    this.expect(types.parenL);
+   	    node.params = this.parseBindingList(types.parenR, false, this.options.ecmaVersion >= 8);
+   	    this.checkYieldAwaitInDefaultParams();
+   	  };
+
+
+   	  pp$1.parseClass = function(node, isStatement) {
+   	    this.next();
+
+   	    var oldStrict = this.strict;
+   	    this.strict = true;
+
+   	    this.parseClassId(node, isStatement);
+   	    this.parseClassSuper(node);
+   	    var classBody = this.startNode();
+   	    var hadConstructor = false;
+   	    classBody.body = [];
+   	    this.expect(types.braceL);
+   	    while (!this.eat(types.braceR)) {
+   	      var element = this.parseClassElement(node.superClass !== null);
+   	      if (element) {
+   	        classBody.body.push(element);
+   	        if (element.type === "MethodDefinition" && element.kind === "constructor") {
+   	          if (hadConstructor) { this.raise(element.start, "Duplicate constructor in the same class"); }
+   	          hadConstructor = true;
+   	        }
+   	      }
+   	    }
+   	    node.body = this.finishNode(classBody, "ClassBody");
+   	    this.strict = oldStrict;
+   	    return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression")
+   	  };
+
+   	  pp$1.parseClassElement = function(constructorAllowsSuper) {
+   	    var this$1$1 = this;
+
+   	    if (this.eat(types.semi)) { return null }
+
+   	    var method = this.startNode();
+   	    var tryContextual = function (k, noLineBreak) {
+   	      if ( noLineBreak === void 0 ) noLineBreak = false;
+
+   	      var start = this$1$1.start, startLoc = this$1$1.startLoc;
+   	      if (!this$1$1.eatContextual(k)) { return false }
+   	      if (this$1$1.type !== types.parenL && (!noLineBreak || !this$1$1.canInsertSemicolon())) { return true }
+   	      if (method.key) { this$1$1.unexpected(); }
+   	      method.computed = false;
+   	      method.key = this$1$1.startNodeAt(start, startLoc);
+   	      method.key.name = k;
+   	      this$1$1.finishNode(method.key, "Identifier");
+   	      return false
+   	    };
+
+   	    method.kind = "method";
+   	    method.static = tryContextual("static");
+   	    var isGenerator = this.eat(types.star);
+   	    var isAsync = false;
+   	    if (!isGenerator) {
+   	      if (this.options.ecmaVersion >= 8 && tryContextual("async", true)) {
+   	        isAsync = true;
+   	        isGenerator = this.options.ecmaVersion >= 9 && this.eat(types.star);
+   	      } else if (tryContextual("get")) {
+   	        method.kind = "get";
+   	      } else if (tryContextual("set")) {
+   	        method.kind = "set";
+   	      }
+   	    }
+   	    if (!method.key) { this.parsePropertyName(method); }
+   	    var key = method.key;
+   	    var allowsDirectSuper = false;
+   	    if (!method.computed && !method.static && (key.type === "Identifier" && key.name === "constructor" ||
+   	        key.type === "Literal" && key.value === "constructor")) {
+   	      if (method.kind !== "method") { this.raise(key.start, "Constructor can't have get/set modifier"); }
+   	      if (isGenerator) { this.raise(key.start, "Constructor can't be a generator"); }
+   	      if (isAsync) { this.raise(key.start, "Constructor can't be an async method"); }
+   	      method.kind = "constructor";
+   	      allowsDirectSuper = constructorAllowsSuper;
+   	    } else if (method.static && key.type === "Identifier" && key.name === "prototype") {
+   	      this.raise(key.start, "Classes may not have a static property named prototype");
+   	    }
+   	    this.parseClassMethod(method, isGenerator, isAsync, allowsDirectSuper);
+   	    if (method.kind === "get" && method.value.params.length !== 0)
+   	      { this.raiseRecoverable(method.value.start, "getter should have no params"); }
+   	    if (method.kind === "set" && method.value.params.length !== 1)
+   	      { this.raiseRecoverable(method.value.start, "setter should have exactly one param"); }
+   	    if (method.kind === "set" && method.value.params[0].type === "RestElement")
+   	      { this.raiseRecoverable(method.value.params[0].start, "Setter cannot use rest params"); }
+   	    return method
+   	  };
+
+   	  pp$1.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
+   	    method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
+   	    return this.finishNode(method, "MethodDefinition")
+   	  };
+
+   	  pp$1.parseClassId = function(node, isStatement) {
+   	    if (this.type === types.name) {
+   	      node.id = this.parseIdent();
+   	      if (isStatement)
+   	        { this.checkLVal(node.id, BIND_LEXICAL, false); }
+   	    } else {
+   	      if (isStatement === true)
+   	        { this.unexpected(); }
+   	      node.id = null;
+   	    }
+   	  };
+
+   	  pp$1.parseClassSuper = function(node) {
+   	    node.superClass = this.eat(types._extends) ? this.parseExprSubscripts() : null;
+   	  };
+
+
+   	  pp$1.parseExport = function(node, exports) {
+   	    this.next();
+   	    if (this.eat(types.star)) {
+   	      this.expectContextual("from");
+   	      if (this.type !== types.string) { this.unexpected(); }
+   	      node.source = this.parseExprAtom();
+   	      this.semicolon();
+   	      return this.finishNode(node, "ExportAllDeclaration")
+   	    }
+   	    if (this.eat(types._default)) { 
+   	      this.checkExport(exports, "default", this.lastTokStart);
+   	      var isAsync;
+   	      if (this.type === types._function || (isAsync = this.isAsyncFunction())) {
+   	        var fNode = this.startNode();
+   	        this.next();
+   	        if (isAsync) { this.next(); }
+   	        node.declaration = this.parseFunction(fNode, FUNC_STATEMENT | FUNC_NULLABLE_ID, false, isAsync);
+   	      } else if (this.type === types._class) {
+   	        var cNode = this.startNode();
+   	        node.declaration = this.parseClass(cNode, "nullableID");
+   	      } else {
+   	        node.declaration = this.parseMaybeAssign();
+   	        this.semicolon();
+   	      }
+   	      return this.finishNode(node, "ExportDefaultDeclaration")
+   	    }
+   	    if (this.shouldParseExportStatement()) {
+   	      node.declaration = this.parseStatement(null);
+   	      if (node.declaration.type === "VariableDeclaration")
+   	        { this.checkVariableExport(exports, node.declaration.declarations); }
+   	      else
+   	        { this.checkExport(exports, node.declaration.id.name, node.declaration.id.start); }
+   	      node.specifiers = [];
+   	      node.source = null;
+   	    } else { 
+   	      node.declaration = null;
+   	      node.specifiers = this.parseExportSpecifiers(exports);
+   	      if (this.eatContextual("from")) {
+   	        if (this.type !== types.string) { this.unexpected(); }
+   	        node.source = this.parseExprAtom();
+   	      } else {
+   	        for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
+   	          var spec = list[i];
+
+   	          this.checkUnreserved(spec.local);
+   	          this.checkLocalExport(spec.local);
+   	        }
+
+   	        node.source = null;
+   	      }
+   	      this.semicolon();
+   	    }
+   	    return this.finishNode(node, "ExportNamedDeclaration")
+   	  };
+
+   	  pp$1.checkExport = function(exports, name, pos) {
+   	    if (!exports) { return }
+   	    if (has(exports, name))
+   	      { this.raiseRecoverable(pos, "Duplicate export '" + name + "'"); }
+   	    exports[name] = true;
+   	  };
+
+   	  pp$1.checkPatternExport = function(exports, pat) {
+   	    var type = pat.type;
+   	    if (type === "Identifier")
+   	      { this.checkExport(exports, pat.name, pat.start); }
+   	    else if (type === "ObjectPattern")
+   	      { for (var i = 0, list = pat.properties; i < list.length; i += 1)
+   	        {
+   	          var prop = list[i];
+
+   	          this.checkPatternExport(exports, prop);
+   	        } }
+   	    else if (type === "ArrayPattern")
+   	      { for (var i$1 = 0, list$1 = pat.elements; i$1 < list$1.length; i$1 += 1) {
+   	        var elt = list$1[i$1];
+
+   	          if (elt) { this.checkPatternExport(exports, elt); }
+   	      } }
+   	    else if (type === "Property")
+   	      { this.checkPatternExport(exports, pat.value); }
+   	    else if (type === "AssignmentPattern")
+   	      { this.checkPatternExport(exports, pat.left); }
+   	    else if (type === "RestElement")
+   	      { this.checkPatternExport(exports, pat.argument); }
+   	    else if (type === "ParenthesizedExpression")
+   	      { this.checkPatternExport(exports, pat.expression); }
+   	  };
+
+   	  pp$1.checkVariableExport = function(exports, decls) {
+   	    if (!exports) { return }
+   	    for (var i = 0, list = decls; i < list.length; i += 1)
+   	      {
+   	      var decl = list[i];
+
+   	      this.checkPatternExport(exports, decl.id);
+   	    }
+   	  };
+
+   	  pp$1.shouldParseExportStatement = function() {
+   	    return this.type.keyword === "var" ||
+   	      this.type.keyword === "const" ||
+   	      this.type.keyword === "class" ||
+   	      this.type.keyword === "function" ||
+   	      this.isLet() ||
+   	      this.isAsyncFunction()
+   	  };
+
+
+   	  pp$1.parseExportSpecifiers = function(exports) {
+   	    var nodes = [], first = true;
+   	    this.expect(types.braceL);
+   	    while (!this.eat(types.braceR)) {
+   	      if (!first) {
+   	        this.expect(types.comma);
+   	        if (this.afterTrailingComma(types.braceR)) { break }
+   	      } else { first = false; }
+
+   	      var node = this.startNode();
+   	      node.local = this.parseIdent(true);
+   	      node.exported = this.eatContextual("as") ? this.parseIdent(true) : node.local;
+   	      this.checkExport(exports, node.exported.name, node.exported.start);
+   	      nodes.push(this.finishNode(node, "ExportSpecifier"));
+   	    }
+   	    return nodes
+   	  };
+
+
+   	  pp$1.parseImport = function(node) {
+   	    this.next();
+   	    if (this.type === types.string) {
+   	      node.specifiers = empty;
+   	      node.source = this.parseExprAtom();
+   	    } else {
+   	      node.specifiers = this.parseImportSpecifiers();
+   	      this.expectContextual("from");
+   	      node.source = this.type === types.string ? this.parseExprAtom() : this.unexpected();
+   	    }
+   	    this.semicolon();
+   	    return this.finishNode(node, "ImportDeclaration")
+   	  };
+
+
+   	  pp$1.parseImportSpecifiers = function() {
+   	    var nodes = [], first = true;
+   	    if (this.type === types.name) {
+   	      var node = this.startNode();
+   	      node.local = this.parseIdent();
+   	      this.checkLVal(node.local, BIND_LEXICAL);
+   	      nodes.push(this.finishNode(node, "ImportDefaultSpecifier"));
+   	      if (!this.eat(types.comma)) { return nodes }
+   	    }
+   	    if (this.type === types.star) {
+   	      var node$1 = this.startNode();
+   	      this.next();
+   	      this.expectContextual("as");
+   	      node$1.local = this.parseIdent();
+   	      this.checkLVal(node$1.local, BIND_LEXICAL);
+   	      nodes.push(this.finishNode(node$1, "ImportNamespaceSpecifier"));
+   	      return nodes
+   	    }
+   	    this.expect(types.braceL);
+   	    while (!this.eat(types.braceR)) {
+   	      if (!first) {
+   	        this.expect(types.comma);
+   	        if (this.afterTrailingComma(types.braceR)) { break }
+   	      } else { first = false; }
+
+   	      var node$2 = this.startNode();
+   	      node$2.imported = this.parseIdent(true);
+   	      if (this.eatContextual("as")) {
+   	        node$2.local = this.parseIdent();
+   	      } else {
+   	        this.checkUnreserved(node$2.imported);
+   	        node$2.local = node$2.imported;
+   	      }
+   	      this.checkLVal(node$2.local, BIND_LEXICAL);
+   	      nodes.push(this.finishNode(node$2, "ImportSpecifier"));
+   	    }
+   	    return nodes
+   	  };
+
+   	  pp$1.adaptDirectivePrologue = function(statements) {
+   	    for (var i = 0; i < statements.length && this.isDirectiveCandidate(statements[i]); ++i) {
+   	      statements[i].directive = statements[i].expression.raw.slice(1, -1);
+   	    }
+   	  };
+   	  pp$1.isDirectiveCandidate = function(statement) {
+   	    return (
+   	      statement.type === "ExpressionStatement" &&
+   	      statement.expression.type === "Literal" &&
+   	      typeof statement.expression.value === "string" &&
+   	      (this.input[statement.start] === "\"" || this.input[statement.start] === "'")
+   	    )
+   	  };
+
+   	  var pp$2 = Parser.prototype;
+
+
+   	  pp$2.toAssignable = function(node, isBinding, refDestructuringErrors) {
+   	    if (this.options.ecmaVersion >= 6 && node) {
+   	      switch (node.type) {
+   	      case "Identifier":
+   	        if (this.inAsync && node.name === "await")
+   	          { this.raise(node.start, "Cannot use 'await' as identifier inside an async function"); }
+   	        break
+
+   	      case "ObjectPattern":
+   	      case "ArrayPattern":
+   	      case "RestElement":
+   	        break
+
+   	      case "ObjectExpression":
+   	        node.type = "ObjectPattern";
+   	        if (refDestructuringErrors) { this.checkPatternErrors(refDestructuringErrors, true); }
+   	        for (var i = 0, list = node.properties; i < list.length; i += 1) {
+   	          var prop = list[i];
+
+   	        this.toAssignable(prop, isBinding);
+   	          if (
+   	            prop.type === "RestElement" &&
+   	            (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")
+   	          ) {
+   	            this.raise(prop.argument.start, "Unexpected token");
+   	          }
+   	        }
+   	        break
+
+   	      case "Property":
+   	        if (node.kind !== "init") { this.raise(node.key.start, "Object pattern can't contain getter or setter"); }
+   	        this.toAssignable(node.value, isBinding);
+   	        break
+
+   	      case "ArrayExpression":
+   	        node.type = "ArrayPattern";
+   	        if (refDestructuringErrors) { this.checkPatternErrors(refDestructuringErrors, true); }
+   	        this.toAssignableList(node.elements, isBinding);
+   	        break
+
+   	      case "SpreadElement":
+   	        node.type = "RestElement";
+   	        this.toAssignable(node.argument, isBinding);
+   	        if (node.argument.type === "AssignmentPattern")
+   	          { this.raise(node.argument.start, "Rest elements cannot have a default value"); }
+   	        break
+
+   	      case "AssignmentExpression":
+   	        if (node.operator !== "=") { this.raise(node.left.end, "Only '=' operator can be used for specifying default value."); }
+   	        node.type = "AssignmentPattern";
+   	        delete node.operator;
+   	        this.toAssignable(node.left, isBinding);
+
+   	      case "AssignmentPattern":
+   	        break
+
+   	      case "ParenthesizedExpression":
+   	        this.toAssignable(node.expression, isBinding, refDestructuringErrors);
+   	        break
+
+   	      case "MemberExpression":
+   	        if (!isBinding) { break }
+
+   	      default:
+   	        this.raise(node.start, "Assigning to rvalue");
+   	      }
+   	    } else if (refDestructuringErrors) { this.checkPatternErrors(refDestructuringErrors, true); }
+   	    return node
+   	  };
+
+
+   	  pp$2.toAssignableList = function(exprList, isBinding) {
+   	    var end = exprList.length;
+   	    for (var i = 0; i < end; i++) {
+   	      var elt = exprList[i];
+   	      if (elt) { this.toAssignable(elt, isBinding); }
+   	    }
+   	    if (end) {
+   	      var last = exprList[end - 1];
+   	      if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier")
+   	        { this.unexpected(last.argument.start); }
+   	    }
+   	    return exprList
+   	  };
+
+
+   	  pp$2.parseSpread = function(refDestructuringErrors) {
+   	    var node = this.startNode();
+   	    this.next();
+   	    node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+   	    return this.finishNode(node, "SpreadElement")
+   	  };
+
+   	  pp$2.parseRestBinding = function() {
+   	    var node = this.startNode();
+   	    this.next();
+
+   	    if (this.options.ecmaVersion === 6 && this.type !== types.name)
+   	      { this.unexpected(); }
+
+   	    node.argument = this.parseBindingAtom();
+
+   	    return this.finishNode(node, "RestElement")
+   	  };
+
+
+   	  pp$2.parseBindingAtom = function() {
+   	    if (this.options.ecmaVersion >= 6) {
+   	      switch (this.type) {
+   	      case types.bracketL:
+   	        var node = this.startNode();
+   	        this.next();
+   	        node.elements = this.parseBindingList(types.bracketR, true, true);
+   	        return this.finishNode(node, "ArrayPattern")
+
+   	      case types.braceL:
+   	        return this.parseObj(true)
+   	      }
+   	    }
+   	    return this.parseIdent()
+   	  };
+
+   	  pp$2.parseBindingList = function(close, allowEmpty, allowTrailingComma) {
+   	    var elts = [], first = true;
+   	    while (!this.eat(close)) {
+   	      if (first) { first = false; }
+   	      else { this.expect(types.comma); }
+   	      if (allowEmpty && this.type === types.comma) {
+   	        elts.push(null);
+   	      } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+   	        break
+   	      } else if (this.type === types.ellipsis) {
+   	        var rest = this.parseRestBinding();
+   	        this.parseBindingListItem(rest);
+   	        elts.push(rest);
+   	        if (this.type === types.comma) { this.raise(this.start, "Comma is not permitted after the rest element"); }
+   	        this.expect(close);
+   	        break
+   	      } else {
+   	        var elem = this.parseMaybeDefault(this.start, this.startLoc);
+   	        this.parseBindingListItem(elem);
+   	        elts.push(elem);
+   	      }
+   	    }
+   	    return elts
+   	  };
+
+   	  pp$2.parseBindingListItem = function(param) {
+   	    return param
+   	  };
+
+
+   	  pp$2.parseMaybeDefault = function(startPos, startLoc, left) {
+   	    left = left || this.parseBindingAtom();
+   	    if (this.options.ecmaVersion < 6 || !this.eat(types.eq)) { return left }
+   	    var node = this.startNodeAt(startPos, startLoc);
+   	    node.left = left;
+   	    node.right = this.parseMaybeAssign();
+   	    return this.finishNode(node, "AssignmentPattern")
+   	  };
+
+
+   	  pp$2.checkLVal = function(expr, bindingType, checkClashes) {
+   	    if ( bindingType === void 0 ) bindingType = BIND_NONE;
+
+   	    switch (expr.type) {
+   	    case "Identifier":
+   	      if (bindingType === BIND_LEXICAL && expr.name === "let")
+   	        { this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name"); }
+   	      if (this.strict && this.reservedWordsStrictBind.test(expr.name))
+   	        { this.raiseRecoverable(expr.start, (bindingType ? "Binding " : "Assigning to ") + expr.name + " in strict mode"); }
+   	      if (checkClashes) {
+   	        if (has(checkClashes, expr.name))
+   	          { this.raiseRecoverable(expr.start, "Argument name clash"); }
+   	        checkClashes[expr.name] = true;
+   	      }
+   	      if (bindingType !== BIND_NONE && bindingType !== BIND_OUTSIDE) { this.declareName(expr.name, bindingType, expr.start); }
+   	      break
+
+   	    case "MemberExpression":
+   	      if (bindingType) { this.raiseRecoverable(expr.start, "Binding member expression"); }
+   	      break
+
+   	    case "ObjectPattern":
+   	      for (var i = 0, list = expr.properties; i < list.length; i += 1)
+   	        {
+   	      var prop = list[i];
+
+   	      this.checkLVal(prop, bindingType, checkClashes);
+   	    }
+   	      break
+
+   	    case "Property":
+   	      this.checkLVal(expr.value, bindingType, checkClashes);
+   	      break
+
+   	    case "ArrayPattern":
+   	      for (var i$1 = 0, list$1 = expr.elements; i$1 < list$1.length; i$1 += 1) {
+   	        var elem = list$1[i$1];
+
+   	      if (elem) { this.checkLVal(elem, bindingType, checkClashes); }
+   	      }
+   	      break
+
+   	    case "AssignmentPattern":
+   	      this.checkLVal(expr.left, bindingType, checkClashes);
+   	      break
+
+   	    case "RestElement":
+   	      this.checkLVal(expr.argument, bindingType, checkClashes);
+   	      break
+
+   	    case "ParenthesizedExpression":
+   	      this.checkLVal(expr.expression, bindingType, checkClashes);
+   	      break
+
+   	    default:
+   	      this.raise(expr.start, (bindingType ? "Binding" : "Assigning to") + " rvalue");
+   	    }
+   	  };
+
+
+   	  var pp$3 = Parser.prototype;
+
+
+   	  pp$3.checkPropClash = function(prop, propHash, refDestructuringErrors) {
+   	    if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement")
+   	      { return }
+   	    if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand))
+   	      { return }
+   	    var key = prop.key;
+   	    var name;
+   	    switch (key.type) {
+   	    case "Identifier": name = key.name; break
+   	    case "Literal": name = String(key.value); break
+   	    default: return
+   	    }
+   	    var kind = prop.kind;
+   	    if (this.options.ecmaVersion >= 6) {
+   	      if (name === "__proto__" && kind === "init") {
+   	        if (propHash.proto) {
+   	          if (refDestructuringErrors) {
+   	            if (refDestructuringErrors.doubleProto < 0)
+   	              { refDestructuringErrors.doubleProto = key.start; }
+   	          } else { this.raiseRecoverable(key.start, "Redefinition of __proto__ property"); }
+   	        }
+   	        propHash.proto = true;
+   	      }
+   	      return
+   	    }
+   	    name = "$" + name;
+   	    var other = propHash[name];
+   	    if (other) {
+   	      var redefinition;
+   	      if (kind === "init") {
+   	        redefinition = this.strict && other.init || other.get || other.set;
+   	      } else {
+   	        redefinition = other.init || other[kind];
+   	      }
+   	      if (redefinition)
+   	        { this.raiseRecoverable(key.start, "Redefinition of property"); }
+   	    } else {
+   	      other = propHash[name] = {
+   	        init: false,
+   	        get: false,
+   	        set: false
+   	      };
+   	    }
+   	    other[kind] = true;
+   	  };
+
+
+
+
+   	  pp$3.parseExpression = function(noIn, refDestructuringErrors) {
+   	    var startPos = this.start, startLoc = this.startLoc;
+   	    var expr = this.parseMaybeAssign(noIn, refDestructuringErrors);
+   	    if (this.type === types.comma) {
+   	      var node = this.startNodeAt(startPos, startLoc);
+   	      node.expressions = [expr];
+   	      while (this.eat(types.comma)) { node.expressions.push(this.parseMaybeAssign(noIn, refDestructuringErrors)); }
+   	      return this.finishNode(node, "SequenceExpression")
+   	    }
+   	    return expr
+   	  };
+
+
+   	  pp$3.parseMaybeAssign = function(noIn, refDestructuringErrors, afterLeftParse) {
+   	    if (this.isContextual("yield")) {
+   	      if (this.inGenerator) { return this.parseYield(noIn) }
+   	      else { this.exprAllowed = false; }
+   	    }
+
+   	    var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1;
+   	    if (refDestructuringErrors) {
+   	      oldParenAssign = refDestructuringErrors.parenthesizedAssign;
+   	      oldTrailingComma = refDestructuringErrors.trailingComma;
+   	      refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+   	    } else {
+   	      refDestructuringErrors = new DestructuringErrors;
+   	      ownDestructuringErrors = true;
+   	    }
+
+   	    var startPos = this.start, startLoc = this.startLoc;
+   	    if (this.type === types.parenL || this.type === types.name)
+   	      { this.potentialArrowAt = this.start; }
+   	    var left = this.parseMaybeConditional(noIn, refDestructuringErrors);
+   	    if (afterLeftParse) { left = afterLeftParse.call(this, left, startPos, startLoc); }
+   	    if (this.type.isAssign) {
+   	      var node = this.startNodeAt(startPos, startLoc);
+   	      node.operator = this.value;
+   	      node.left = this.type === types.eq ? this.toAssignable(left, false, refDestructuringErrors) : left;
+   	      if (!ownDestructuringErrors) {
+   	        refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.doubleProto = -1;
+   	      }
+   	      if (refDestructuringErrors.shorthandAssign >= node.left.start)
+   	        { refDestructuringErrors.shorthandAssign = -1; } 
+   	      this.checkLVal(left);
+   	      this.next();
+   	      node.right = this.parseMaybeAssign(noIn);
+   	      return this.finishNode(node, "AssignmentExpression")
+   	    } else {
+   	      if (ownDestructuringErrors) { this.checkExpressionErrors(refDestructuringErrors, true); }
+   	    }
+   	    if (oldParenAssign > -1) { refDestructuringErrors.parenthesizedAssign = oldParenAssign; }
+   	    if (oldTrailingComma > -1) { refDestructuringErrors.trailingComma = oldTrailingComma; }
+   	    return left
+   	  };
+
+
+   	  pp$3.parseMaybeConditional = function(noIn, refDestructuringErrors) {
+   	    var startPos = this.start, startLoc = this.startLoc;
+   	    var expr = this.parseExprOps(noIn, refDestructuringErrors);
+   	    if (this.checkExpressionErrors(refDestructuringErrors)) { return expr }
+   	    if (this.eat(types.question)) {
+   	      var node = this.startNodeAt(startPos, startLoc);
+   	      node.test = expr;
+   	      node.consequent = this.parseMaybeAssign();
+   	      this.expect(types.colon);
+   	      node.alternate = this.parseMaybeAssign(noIn);
+   	      return this.finishNode(node, "ConditionalExpression")
+   	    }
+   	    return expr
+   	  };
+
+
+   	  pp$3.parseExprOps = function(noIn, refDestructuringErrors) {
+   	    var startPos = this.start, startLoc = this.startLoc;
+   	    var expr = this.parseMaybeUnary(refDestructuringErrors, false);
+   	    if (this.checkExpressionErrors(refDestructuringErrors)) { return expr }
+   	    return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, noIn)
+   	  };
+
+
+   	  pp$3.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, noIn) {
+   	    var prec = this.type.binop;
+   	    if (prec != null && (!noIn || this.type !== types._in)) {
+   	      if (prec > minPrec) {
+   	        var logical = this.type === types.logicalOR || this.type === types.logicalAND;
+   	        var op = this.value;
+   	        this.next();
+   	        var startPos = this.start, startLoc = this.startLoc;
+   	        var right = this.parseExprOp(this.parseMaybeUnary(null, false), startPos, startLoc, prec, noIn);
+   	        var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical);
+   	        return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, noIn)
+   	      }
+   	    }
+   	    return left
+   	  };
+
+   	  pp$3.buildBinary = function(startPos, startLoc, left, right, op, logical) {
+   	    var node = this.startNodeAt(startPos, startLoc);
+   	    node.left = left;
+   	    node.operator = op;
+   	    node.right = right;
+   	    return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression")
+   	  };
+
+
+   	  pp$3.parseMaybeUnary = function(refDestructuringErrors, sawUnary) {
+   	    var startPos = this.start, startLoc = this.startLoc, expr;
+   	    if (this.isContextual("await") && (this.inAsync || (!this.inFunction && this.options.allowAwaitOutsideFunction))) {
+   	      expr = this.parseAwait();
+   	      sawUnary = true;
+   	    } else if (this.type.prefix) {
+   	      var node = this.startNode(), update = this.type === types.incDec;
+   	      node.operator = this.value;
+   	      node.prefix = true;
+   	      this.next();
+   	      node.argument = this.parseMaybeUnary(null, true);
+   	      this.checkExpressionErrors(refDestructuringErrors, true);
+   	      if (update) { this.checkLVal(node.argument); }
+   	      else if (this.strict && node.operator === "delete" &&
+   	               node.argument.type === "Identifier")
+   	        { this.raiseRecoverable(node.start, "Deleting local variable in strict mode"); }
+   	      else { sawUnary = true; }
+   	      expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
+   	    } else {
+   	      expr = this.parseExprSubscripts(refDestructuringErrors);
+   	      if (this.checkExpressionErrors(refDestructuringErrors)) { return expr }
+   	      while (this.type.postfix && !this.canInsertSemicolon()) {
+   	        var node$1 = this.startNodeAt(startPos, startLoc);
+   	        node$1.operator = this.value;
+   	        node$1.prefix = false;
+   	        node$1.argument = expr;
+   	        this.checkLVal(expr);
+   	        this.next();
+   	        expr = this.finishNode(node$1, "UpdateExpression");
+   	      }
+   	    }
+
+   	    if (!sawUnary && this.eat(types.starstar))
+   	      { return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false), "**", false) }
+   	    else
+   	      { return expr }
+   	  };
+
+
+   	  pp$3.parseExprSubscripts = function(refDestructuringErrors) {
+   	    var startPos = this.start, startLoc = this.startLoc;
+   	    var expr = this.parseExprAtom(refDestructuringErrors);
+   	    if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")")
+   	      { return expr }
+   	    var result = this.parseSubscripts(expr, startPos, startLoc);
+   	    if (refDestructuringErrors && result.type === "MemberExpression") {
+   	      if (refDestructuringErrors.parenthesizedAssign >= result.start) { refDestructuringErrors.parenthesizedAssign = -1; }
+   	      if (refDestructuringErrors.parenthesizedBind >= result.start) { refDestructuringErrors.parenthesizedBind = -1; }
+   	    }
+   	    return result
+   	  };
+
+   	  pp$3.parseSubscripts = function(base, startPos, startLoc, noCalls) {
+   	    var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" &&
+   	        this.lastTokEnd === base.end && !this.canInsertSemicolon() && this.input.slice(base.start, base.end) === "async";
+   	    while (true) {
+   	      var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow);
+   	      if (element === base || element.type === "ArrowFunctionExpression") { return element }
+   	      base = element;
+   	    }
+   	  };
+
+   	  pp$3.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow) {
+   	    var computed = this.eat(types.bracketL);
+   	    if (computed || this.eat(types.dot)) {
+   	      var node = this.startNodeAt(startPos, startLoc);
+   	      node.object = base;
+   	      node.property = computed ? this.parseExpression() : this.parseIdent(this.options.allowReserved !== "never");
+   	      node.computed = !!computed;
+   	      if (computed) { this.expect(types.bracketR); }
+   	      base = this.finishNode(node, "MemberExpression");
+   	    } else if (!noCalls && this.eat(types.parenL)) {
+   	      var refDestructuringErrors = new DestructuringErrors, oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+   	      this.yieldPos = 0;
+   	      this.awaitPos = 0;
+   	      this.awaitIdentPos = 0;
+   	      var exprList = this.parseExprList(types.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
+   	      if (maybeAsyncArrow && !this.canInsertSemicolon() && this.eat(types.arrow)) {
+   	        this.checkPatternErrors(refDestructuringErrors, false);
+   	        this.checkYieldAwaitInDefaultParams();
+   	        if (this.awaitIdentPos > 0)
+   	          { this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function"); }
+   	        this.yieldPos = oldYieldPos;
+   	        this.awaitPos = oldAwaitPos;
+   	        this.awaitIdentPos = oldAwaitIdentPos;
+   	        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true)
+   	      }
+   	      this.checkExpressionErrors(refDestructuringErrors, true);
+   	      this.yieldPos = oldYieldPos || this.yieldPos;
+   	      this.awaitPos = oldAwaitPos || this.awaitPos;
+   	      this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
+   	      var node$1 = this.startNodeAt(startPos, startLoc);
+   	      node$1.callee = base;
+   	      node$1.arguments = exprList;
+   	      base = this.finishNode(node$1, "CallExpression");
+   	    } else if (this.type === types.backQuote) {
+   	      var node$2 = this.startNodeAt(startPos, startLoc);
+   	      node$2.tag = base;
+   	      node$2.quasi = this.parseTemplate({isTagged: true});
+   	      base = this.finishNode(node$2, "TaggedTemplateExpression");
+   	    }
+   	    return base
+   	  };
+
+
+   	  pp$3.parseExprAtom = function(refDestructuringErrors) {
+   	    if (this.type === types.slash) { this.readRegexp(); }
+
+   	    var node, canBeArrow = this.potentialArrowAt === this.start;
+   	    switch (this.type) {
+   	    case types._super:
+   	      if (!this.allowSuper)
+   	        { this.raise(this.start, "'super' keyword outside a method"); }
+   	      node = this.startNode();
+   	      this.next();
+   	      if (this.type === types.parenL && !this.allowDirectSuper)
+   	        { this.raise(node.start, "super() call outside constructor of a subclass"); }
+   	      if (this.type !== types.dot && this.type !== types.bracketL && this.type !== types.parenL)
+   	        { this.unexpected(); }
+   	      return this.finishNode(node, "Super")
+
+   	    case types._this:
+   	      node = this.startNode();
+   	      this.next();
+   	      return this.finishNode(node, "ThisExpression")
+
+   	    case types.name:
+   	      var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
+   	      var id = this.parseIdent(false);
+   	      if (this.options.ecmaVersion >= 8 && !containsEsc && id.name === "async" && !this.canInsertSemicolon() && this.eat(types._function))
+   	        { return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true) }
+   	      if (canBeArrow && !this.canInsertSemicolon()) {
+   	        if (this.eat(types.arrow))
+   	          { return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], false) }
+   	        if (this.options.ecmaVersion >= 8 && id.name === "async" && this.type === types.name && !containsEsc) {
+   	          id = this.parseIdent(false);
+   	          if (this.canInsertSemicolon() || !this.eat(types.arrow))
+   	            { this.unexpected(); }
+   	          return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], true)
+   	        }
+   	      }
+   	      return id
+
+   	    case types.regexp:
+   	      var value = this.value;
+   	      node = this.parseLiteral(value.value);
+   	      node.regex = {pattern: value.pattern, flags: value.flags};
+   	      return node
+
+   	    case types.num: case types.string:
+   	      return this.parseLiteral(this.value)
+
+   	    case types._null: case types._true: case types._false:
+   	      node = this.startNode();
+   	      node.value = this.type === types._null ? null : this.type === types._true;
+   	      node.raw = this.type.keyword;
+   	      this.next();
+   	      return this.finishNode(node, "Literal")
+
+   	    case types.parenL:
+   	      var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow);
+   	      if (refDestructuringErrors) {
+   	        if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr))
+   	          { refDestructuringErrors.parenthesizedAssign = start; }
+   	        if (refDestructuringErrors.parenthesizedBind < 0)
+   	          { refDestructuringErrors.parenthesizedBind = start; }
+   	      }
+   	      return expr
+
+   	    case types.bracketL:
+   	      node = this.startNode();
+   	      this.next();
+   	      node.elements = this.parseExprList(types.bracketR, true, true, refDestructuringErrors);
+   	      return this.finishNode(node, "ArrayExpression")
+
+   	    case types.braceL:
+   	      return this.parseObj(false, refDestructuringErrors)
+
+   	    case types._function:
+   	      node = this.startNode();
+   	      this.next();
+   	      return this.parseFunction(node, 0)
+
+   	    case types._class:
+   	      return this.parseClass(this.startNode(), false)
+
+   	    case types._new:
+   	      return this.parseNew()
+
+   	    case types.backQuote:
+   	      return this.parseTemplate()
+
+   	    case types._import:
+   	      if (this.options.ecmaVersion >= 11) {
+   	        return this.parseExprImport()
+   	      } else {
+   	        return this.unexpected()
+   	      }
+
+   	    default:
+   	      this.unexpected();
+   	    }
+   	  };
+
+   	  pp$3.parseExprImport = function() {
+   	    var node = this.startNode();
+   	    this.next(); 
+   	    switch (this.type) {
+   	    case types.parenL:
+   	      return this.parseDynamicImport(node)
+   	    default:
+   	      this.unexpected();
+   	    }
+   	  };
+
+   	  pp$3.parseDynamicImport = function(node) {
+   	    this.next(); 
+
+   	    node.source = this.parseMaybeAssign();
+
+   	    if (!this.eat(types.parenR)) {
+   	      var errorPos = this.start;
+   	      if (this.eat(types.comma) && this.eat(types.parenR)) {
+   	        this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
+   	      } else {
+   	        this.unexpected(errorPos);
+   	      }
+   	    }
+
+   	    return this.finishNode(node, "ImportExpression")
+   	  };
+
+   	  pp$3.parseLiteral = function(value) {
+   	    var node = this.startNode();
+   	    node.value = value;
+   	    node.raw = this.input.slice(this.start, this.end);
+   	    if (node.raw.charCodeAt(node.raw.length - 1) === 110) { node.bigint = node.raw.slice(0, -1); }
+   	    this.next();
+   	    return this.finishNode(node, "Literal")
+   	  };
+
+   	  pp$3.parseParenExpression = function() {
+   	    this.expect(types.parenL);
+   	    var val = this.parseExpression();
+   	    this.expect(types.parenR);
+   	    return val
+   	  };
+
+   	  pp$3.parseParenAndDistinguishExpression = function(canBeArrow) {
+   	    var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
+   	    if (this.options.ecmaVersion >= 6) {
+   	      this.next();
+
+   	      var innerStartPos = this.start, innerStartLoc = this.startLoc;
+   	      var exprList = [], first = true, lastIsComma = false;
+   	      var refDestructuringErrors = new DestructuringErrors, oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
+   	      this.yieldPos = 0;
+   	      this.awaitPos = 0;
+   	      while (this.type !== types.parenR) {
+   	        first ? first = false : this.expect(types.comma);
+   	        if (allowTrailingComma && this.afterTrailingComma(types.parenR, true)) {
+   	          lastIsComma = true;
+   	          break
+   	        } else if (this.type === types.ellipsis) {
+   	          spreadStart = this.start;
+   	          exprList.push(this.parseParenItem(this.parseRestBinding()));
+   	          if (this.type === types.comma) { this.raise(this.start, "Comma is not permitted after the rest element"); }
+   	          break
+   	        } else {
+   	          exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
+   	        }
+   	      }
+   	      var innerEndPos = this.start, innerEndLoc = this.startLoc;
+   	      this.expect(types.parenR);
+
+   	      if (canBeArrow && !this.canInsertSemicolon() && this.eat(types.arrow)) {
+   	        this.checkPatternErrors(refDestructuringErrors, false);
+   	        this.checkYieldAwaitInDefaultParams();
+   	        this.yieldPos = oldYieldPos;
+   	        this.awaitPos = oldAwaitPos;
+   	        return this.parseParenArrowList(startPos, startLoc, exprList)
+   	      }
+
+   	      if (!exprList.length || lastIsComma) { this.unexpected(this.lastTokStart); }
+   	      if (spreadStart) { this.unexpected(spreadStart); }
+   	      this.checkExpressionErrors(refDestructuringErrors, true);
+   	      this.yieldPos = oldYieldPos || this.yieldPos;
+   	      this.awaitPos = oldAwaitPos || this.awaitPos;
+
+   	      if (exprList.length > 1) {
+   	        val = this.startNodeAt(innerStartPos, innerStartLoc);
+   	        val.expressions = exprList;
+   	        this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
+   	      } else {
+   	        val = exprList[0];
+   	      }
+   	    } else {
+   	      val = this.parseParenExpression();
+   	    }
+
+   	    if (this.options.preserveParens) {
+   	      var par = this.startNodeAt(startPos, startLoc);
+   	      par.expression = val;
+   	      return this.finishNode(par, "ParenthesizedExpression")
+   	    } else {
+   	      return val
+   	    }
+   	  };
+
+   	  pp$3.parseParenItem = function(item) {
+   	    return item
+   	  };
+
+   	  pp$3.parseParenArrowList = function(startPos, startLoc, exprList) {
+   	    return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList)
+   	  };
+
+
+   	  var empty$1 = [];
+
+   	  pp$3.parseNew = function() {
+   	    if (this.containsEsc) { this.raiseRecoverable(this.start, "Escape sequence in keyword new"); }
+   	    var node = this.startNode();
+   	    var meta = this.parseIdent(true);
+   	    if (this.options.ecmaVersion >= 6 && this.eat(types.dot)) {
+   	      node.meta = meta;
+   	      var containsEsc = this.containsEsc;
+   	      node.property = this.parseIdent(true);
+   	      if (node.property.name !== "target" || containsEsc)
+   	        { this.raiseRecoverable(node.property.start, "The only valid meta property for new is new.target"); }
+   	      if (!this.inNonArrowFunction())
+   	        { this.raiseRecoverable(node.start, "new.target can only be used in functions"); }
+   	      return this.finishNode(node, "MetaProperty")
+   	    }
+   	    var startPos = this.start, startLoc = this.startLoc, isImport = this.type === types._import;
+   	    node.callee = this.parseSubscripts(this.parseExprAtom(), startPos, startLoc, true);
+   	    if (isImport && node.callee.type === "ImportExpression") {
+   	      this.raise(startPos, "Cannot use new with import()");
+   	    }
+   	    if (this.eat(types.parenL)) { node.arguments = this.parseExprList(types.parenR, this.options.ecmaVersion >= 8, false); }
+   	    else { node.arguments = empty$1; }
+   	    return this.finishNode(node, "NewExpression")
+   	  };
+
+
+   	  pp$3.parseTemplateElement = function(ref) {
+   	    var isTagged = ref.isTagged;
+
+   	    var elem = this.startNode();
+   	    if (this.type === types.invalidTemplate) {
+   	      if (!isTagged) {
+   	        this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
+   	      }
+   	      elem.value = {
+   	        raw: this.value,
+   	        cooked: null
+   	      };
+   	    } else {
+   	      elem.value = {
+   	        raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, "\n"),
+   	        cooked: this.value
+   	      };
+   	    }
+   	    this.next();
+   	    elem.tail = this.type === types.backQuote;
+   	    return this.finishNode(elem, "TemplateElement")
+   	  };
+
+   	  pp$3.parseTemplate = function(ref) {
+   	    if ( ref === void 0 ) ref = {};
+   	    var isTagged = ref.isTagged; if ( isTagged === void 0 ) isTagged = false;
+
+   	    var node = this.startNode();
+   	    this.next();
+   	    node.expressions = [];
+   	    var curElt = this.parseTemplateElement({isTagged: isTagged});
+   	    node.quasis = [curElt];
+   	    while (!curElt.tail) {
+   	      if (this.type === types.eof) { this.raise(this.pos, "Unterminated template literal"); }
+   	      this.expect(types.dollarBraceL);
+   	      node.expressions.push(this.parseExpression());
+   	      this.expect(types.braceR);
+   	      node.quasis.push(curElt = this.parseTemplateElement({isTagged: isTagged}));
+   	    }
+   	    this.next();
+   	    return this.finishNode(node, "TemplateLiteral")
+   	  };
+
+   	  pp$3.isAsyncProp = function(prop) {
+   	    return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" &&
+   	      (this.type === types.name || this.type === types.num || this.type === types.string || this.type === types.bracketL || this.type.keyword || (this.options.ecmaVersion >= 9 && this.type === types.star)) &&
+   	      !lineBreak.test(this.input.slice(this.lastTokEnd, this.start))
+   	  };
+
+
+   	  pp$3.parseObj = function(isPattern, refDestructuringErrors) {
+   	    var node = this.startNode(), first = true, propHash = {};
+   	    node.properties = [];
+   	    this.next();
+   	    while (!this.eat(types.braceR)) {
+   	      if (!first) {
+   	        this.expect(types.comma);
+   	        if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types.braceR)) { break }
+   	      } else { first = false; }
+
+   	      var prop = this.parseProperty(isPattern, refDestructuringErrors);
+   	      if (!isPattern) { this.checkPropClash(prop, propHash, refDestructuringErrors); }
+   	      node.properties.push(prop);
+   	    }
+   	    return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression")
+   	  };
+
+   	  pp$3.parseProperty = function(isPattern, refDestructuringErrors) {
+   	    var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
+   	    if (this.options.ecmaVersion >= 9 && this.eat(types.ellipsis)) {
+   	      if (isPattern) {
+   	        prop.argument = this.parseIdent(false);
+   	        if (this.type === types.comma) {
+   	          this.raise(this.start, "Comma is not permitted after the rest element");
+   	        }
+   	        return this.finishNode(prop, "RestElement")
+   	      }
+   	      if (this.type === types.parenL && refDestructuringErrors) {
+   	        if (refDestructuringErrors.parenthesizedAssign < 0) {
+   	          refDestructuringErrors.parenthesizedAssign = this.start;
+   	        }
+   	        if (refDestructuringErrors.parenthesizedBind < 0) {
+   	          refDestructuringErrors.parenthesizedBind = this.start;
+   	        }
+   	      }
+   	      prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+   	      if (this.type === types.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
+   	        refDestructuringErrors.trailingComma = this.start;
+   	      }
+   	      return this.finishNode(prop, "SpreadElement")
+   	    }
+   	    if (this.options.ecmaVersion >= 6) {
+   	      prop.method = false;
+   	      prop.shorthand = false;
+   	      if (isPattern || refDestructuringErrors) {
+   	        startPos = this.start;
+   	        startLoc = this.startLoc;
+   	      }
+   	      if (!isPattern)
+   	        { isGenerator = this.eat(types.star); }
+   	    }
+   	    var containsEsc = this.containsEsc;
+   	    this.parsePropertyName(prop);
+   	    if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
+   	      isAsync = true;
+   	      isGenerator = this.options.ecmaVersion >= 9 && this.eat(types.star);
+   	      this.parsePropertyName(prop, refDestructuringErrors);
+   	    } else {
+   	      isAsync = false;
+   	    }
+   	    this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
+   	    return this.finishNode(prop, "Property")
+   	  };
+
+   	  pp$3.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
+   	    if ((isGenerator || isAsync) && this.type === types.colon)
+   	      { this.unexpected(); }
+
+   	    if (this.eat(types.colon)) {
+   	      prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
+   	      prop.kind = "init";
+   	    } else if (this.options.ecmaVersion >= 6 && this.type === types.parenL) {
+   	      if (isPattern) { this.unexpected(); }
+   	      prop.kind = "init";
+   	      prop.method = true;
+   	      prop.value = this.parseMethod(isGenerator, isAsync);
+   	    } else if (!isPattern && !containsEsc &&
+   	               this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" &&
+   	               (prop.key.name === "get" || prop.key.name === "set") &&
+   	               (this.type !== types.comma && this.type !== types.braceR)) {
+   	      if (isGenerator || isAsync) { this.unexpected(); }
+   	      prop.kind = prop.key.name;
+   	      this.parsePropertyName(prop);
+   	      prop.value = this.parseMethod(false);
+   	      var paramCount = prop.kind === "get" ? 0 : 1;
+   	      if (prop.value.params.length !== paramCount) {
+   	        var start = prop.value.start;
+   	        if (prop.kind === "get")
+   	          { this.raiseRecoverable(start, "getter should have no params"); }
+   	        else
+   	          { this.raiseRecoverable(start, "setter should have exactly one param"); }
+   	      } else {
+   	        if (prop.kind === "set" && prop.value.params[0].type === "RestElement")
+   	          { this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params"); }
+   	      }
+   	    } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+   	      if (isGenerator || isAsync) { this.unexpected(); }
+   	      this.checkUnreserved(prop.key);
+   	      if (prop.key.name === "await" && !this.awaitIdentPos)
+   	        { this.awaitIdentPos = startPos; }
+   	      prop.kind = "init";
+   	      if (isPattern) {
+   	        prop.value = this.parseMaybeDefault(startPos, startLoc, prop.key);
+   	      } else if (this.type === types.eq && refDestructuringErrors) {
+   	        if (refDestructuringErrors.shorthandAssign < 0)
+   	          { refDestructuringErrors.shorthandAssign = this.start; }
+   	        prop.value = this.parseMaybeDefault(startPos, startLoc, prop.key);
+   	      } else {
+   	        prop.value = prop.key;
+   	      }
+   	      prop.shorthand = true;
+   	    } else { this.unexpected(); }
+   	  };
+
+   	  pp$3.parsePropertyName = function(prop) {
+   	    if (this.options.ecmaVersion >= 6) {
+   	      if (this.eat(types.bracketL)) {
+   	        prop.computed = true;
+   	        prop.key = this.parseMaybeAssign();
+   	        this.expect(types.bracketR);
+   	        return prop.key
+   	      } else {
+   	        prop.computed = false;
+   	      }
+   	    }
+   	    return prop.key = this.type === types.num || this.type === types.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never")
+   	  };
+
+
+   	  pp$3.initFunction = function(node) {
+   	    node.id = null;
+   	    if (this.options.ecmaVersion >= 6) { node.generator = node.expression = false; }
+   	    if (this.options.ecmaVersion >= 8) { node.async = false; }
+   	  };
+
+
+   	  pp$3.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
+   	    var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+
+   	    this.initFunction(node);
+   	    if (this.options.ecmaVersion >= 6)
+   	      { node.generator = isGenerator; }
+   	    if (this.options.ecmaVersion >= 8)
+   	      { node.async = !!isAsync; }
+
+   	    this.yieldPos = 0;
+   	    this.awaitPos = 0;
+   	    this.awaitIdentPos = 0;
+   	    this.enterScope(functionFlags(isAsync, node.generator) | SCOPE_SUPER | (allowDirectSuper ? SCOPE_DIRECT_SUPER : 0));
+
+   	    this.expect(types.parenL);
+   	    node.params = this.parseBindingList(types.parenR, false, this.options.ecmaVersion >= 8);
+   	    this.checkYieldAwaitInDefaultParams();
+   	    this.parseFunctionBody(node, false, true);
+
+   	    this.yieldPos = oldYieldPos;
+   	    this.awaitPos = oldAwaitPos;
+   	    this.awaitIdentPos = oldAwaitIdentPos;
+   	    return this.finishNode(node, "FunctionExpression")
+   	  };
+
+
+   	  pp$3.parseArrowExpression = function(node, params, isAsync) {
+   	    var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+
+   	    this.enterScope(functionFlags(isAsync, false) | SCOPE_ARROW);
+   	    this.initFunction(node);
+   	    if (this.options.ecmaVersion >= 8) { node.async = !!isAsync; }
+
+   	    this.yieldPos = 0;
+   	    this.awaitPos = 0;
+   	    this.awaitIdentPos = 0;
+
+   	    node.params = this.toAssignableList(params, true);
+   	    this.parseFunctionBody(node, true, false);
+
+   	    this.yieldPos = oldYieldPos;
+   	    this.awaitPos = oldAwaitPos;
+   	    this.awaitIdentPos = oldAwaitIdentPos;
+   	    return this.finishNode(node, "ArrowFunctionExpression")
+   	  };
+
+
+   	  pp$3.parseFunctionBody = function(node, isArrowFunction, isMethod) {
+   	    var isExpression = isArrowFunction && this.type !== types.braceL;
+   	    var oldStrict = this.strict, useStrict = false;
+
+   	    if (isExpression) {
+   	      node.body = this.parseMaybeAssign();
+   	      node.expression = true;
+   	      this.checkParams(node, false);
+   	    } else {
+   	      var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
+   	      if (!oldStrict || nonSimple) {
+   	        useStrict = this.strictDirective(this.end);
+   	        if (useStrict && nonSimple)
+   	          { this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list"); }
+   	      }
+   	      var oldLabels = this.labels;
+   	      this.labels = [];
+   	      if (useStrict) { this.strict = true; }
+
+   	      this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
+   	      node.body = this.parseBlock(false);
+   	      node.expression = false;
+   	      this.adaptDirectivePrologue(node.body.body);
+   	      this.labels = oldLabels;
+   	    }
+   	    this.exitScope();
+
+   	    if (this.strict && node.id) { this.checkLVal(node.id, BIND_OUTSIDE); }
+   	    this.strict = oldStrict;
+   	  };
+
+   	  pp$3.isSimpleParamList = function(params) {
+   	    for (var i = 0, list = params; i < list.length; i += 1)
+   	      {
+   	      var param = list[i];
+
+   	      if (param.type !== "Identifier") { return false
+   	    } }
+   	    return true
+   	  };
+
+
+   	  pp$3.checkParams = function(node, allowDuplicates) {
+   	    var nameHash = {};
+   	    for (var i = 0, list = node.params; i < list.length; i += 1)
+   	      {
+   	      var param = list[i];
+
+   	      this.checkLVal(param, BIND_VAR, allowDuplicates ? null : nameHash);
+   	    }
+   	  };
+
+
+   	  pp$3.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+   	    var elts = [], first = true;
+   	    while (!this.eat(close)) {
+   	      if (!first) {
+   	        this.expect(types.comma);
+   	        if (allowTrailingComma && this.afterTrailingComma(close)) { break }
+   	      } else { first = false; }
+
+   	      var elt = (void 0);
+   	      if (allowEmpty && this.type === types.comma)
+   	        { elt = null; }
+   	      else if (this.type === types.ellipsis) {
+   	        elt = this.parseSpread(refDestructuringErrors);
+   	        if (refDestructuringErrors && this.type === types.comma && refDestructuringErrors.trailingComma < 0)
+   	          { refDestructuringErrors.trailingComma = this.start; }
+   	      } else {
+   	        elt = this.parseMaybeAssign(false, refDestructuringErrors);
+   	      }
+   	      elts.push(elt);
+   	    }
+   	    return elts
+   	  };
+
+   	  pp$3.checkUnreserved = function(ref) {
+   	    var start = ref.start;
+   	    var end = ref.end;
+   	    var name = ref.name;
+
+   	    if (this.inGenerator && name === "yield")
+   	      { this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator"); }
+   	    if (this.inAsync && name === "await")
+   	      { this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function"); }
+   	    if (this.keywords.test(name))
+   	      { this.raise(start, ("Unexpected keyword '" + name + "'")); }
+   	    if (this.options.ecmaVersion < 6 &&
+   	      this.input.slice(start, end).indexOf("\\") !== -1) { return }
+   	    var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+   	    if (re.test(name)) {
+   	      if (!this.inAsync && name === "await")
+   	        { this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function"); }
+   	      this.raiseRecoverable(start, ("The keyword '" + name + "' is reserved"));
+   	    }
+   	  };
+
+
+   	  pp$3.parseIdent = function(liberal, isBinding) {
+   	    var node = this.startNode();
+   	    if (this.type === types.name) {
+   	      node.name = this.value;
+   	    } else if (this.type.keyword) {
+   	      node.name = this.type.keyword;
+
+   	      if ((node.name === "class" || node.name === "function") &&
+   	          (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
+   	        this.context.pop();
+   	      }
+   	    } else {
+   	      this.unexpected();
+   	    }
+   	    this.next(!!liberal);
+   	    this.finishNode(node, "Identifier");
+   	    if (!liberal) {
+   	      this.checkUnreserved(node);
+   	      if (node.name === "await" && !this.awaitIdentPos)
+   	        { this.awaitIdentPos = node.start; }
+   	    }
+   	    return node
+   	  };
+
+
+   	  pp$3.parseYield = function(noIn) {
+   	    if (!this.yieldPos) { this.yieldPos = this.start; }
+
+   	    var node = this.startNode();
+   	    this.next();
+   	    if (this.type === types.semi || this.canInsertSemicolon() || (this.type !== types.star && !this.type.startsExpr)) {
+   	      node.delegate = false;
+   	      node.argument = null;
+   	    } else {
+   	      node.delegate = this.eat(types.star);
+   	      node.argument = this.parseMaybeAssign(noIn);
+   	    }
+   	    return this.finishNode(node, "YieldExpression")
+   	  };
+
+   	  pp$3.parseAwait = function() {
+   	    if (!this.awaitPos) { this.awaitPos = this.start; }
+
+   	    var node = this.startNode();
+   	    this.next();
+   	    node.argument = this.parseMaybeUnary(null, false);
+   	    return this.finishNode(node, "AwaitExpression")
+   	  };
+
+   	  var pp$4 = Parser.prototype;
+
+
+   	  pp$4.raise = function(pos, message) {
+   	    var loc = getLineInfo(this.input, pos);
+   	    message += " (" + loc.line + ":" + loc.column + ")";
+   	    var err = new SyntaxError(message);
+   	    err.pos = pos; err.loc = loc; err.raisedAt = this.pos;
+   	    throw err
+   	  };
+
+   	  pp$4.raiseRecoverable = pp$4.raise;
+
+   	  pp$4.curPosition = function() {
+   	    if (this.options.locations) {
+   	      return new Position(this.curLine, this.pos - this.lineStart)
+   	    }
+   	  };
+
+   	  var pp$5 = Parser.prototype;
+
+   	  var Scope = function Scope(flags) {
+   	    this.flags = flags;
+   	    this.var = [];
+   	    this.lexical = [];
+   	    this.functions = [];
+   	  };
+
+
+   	  pp$5.enterScope = function(flags) {
+   	    this.scopeStack.push(new Scope(flags));
+   	  };
+
+   	  pp$5.exitScope = function() {
+   	    this.scopeStack.pop();
+   	  };
+
+   	  pp$5.treatFunctionsAsVarInScope = function(scope) {
+   	    return (scope.flags & SCOPE_FUNCTION) || !this.inModule && (scope.flags & SCOPE_TOP)
+   	  };
+
+   	  pp$5.declareName = function(name, bindingType, pos) {
+   	    var redeclared = false;
+   	    if (bindingType === BIND_LEXICAL) {
+   	      var scope = this.currentScope();
+   	      redeclared = scope.lexical.indexOf(name) > -1 || scope.functions.indexOf(name) > -1 || scope.var.indexOf(name) > -1;
+   	      scope.lexical.push(name);
+   	      if (this.inModule && (scope.flags & SCOPE_TOP))
+   	        { delete this.undefinedExports[name]; }
+   	    } else if (bindingType === BIND_SIMPLE_CATCH) {
+   	      var scope$1 = this.currentScope();
+   	      scope$1.lexical.push(name);
+   	    } else if (bindingType === BIND_FUNCTION) {
+   	      var scope$2 = this.currentScope();
+   	      if (this.treatFunctionsAsVar)
+   	        { redeclared = scope$2.lexical.indexOf(name) > -1; }
+   	      else
+   	        { redeclared = scope$2.lexical.indexOf(name) > -1 || scope$2.var.indexOf(name) > -1; }
+   	      scope$2.functions.push(name);
+   	    } else {
+   	      for (var i = this.scopeStack.length - 1; i >= 0; --i) {
+   	        var scope$3 = this.scopeStack[i];
+   	        if (scope$3.lexical.indexOf(name) > -1 && !((scope$3.flags & SCOPE_SIMPLE_CATCH) && scope$3.lexical[0] === name) ||
+   	            !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
+   	          redeclared = true;
+   	          break
+   	        }
+   	        scope$3.var.push(name);
+   	        if (this.inModule && (scope$3.flags & SCOPE_TOP))
+   	          { delete this.undefinedExports[name]; }
+   	        if (scope$3.flags & SCOPE_VAR) { break }
+   	      }
+   	    }
+   	    if (redeclared) { this.raiseRecoverable(pos, ("Identifier '" + name + "' has already been declared")); }
+   	  };
+
+   	  pp$5.checkLocalExport = function(id) {
+   	    if (this.scopeStack[0].lexical.indexOf(id.name) === -1 &&
+   	        this.scopeStack[0].var.indexOf(id.name) === -1) {
+   	      this.undefinedExports[id.name] = id;
+   	    }
+   	  };
+
+   	  pp$5.currentScope = function() {
+   	    return this.scopeStack[this.scopeStack.length - 1]
+   	  };
+
+   	  pp$5.currentVarScope = function() {
+   	    for (var i = this.scopeStack.length - 1;; i--) {
+   	      var scope = this.scopeStack[i];
+   	      if (scope.flags & SCOPE_VAR) { return scope }
+   	    }
+   	  };
+
+   	  pp$5.currentThisScope = function() {
+   	    for (var i = this.scopeStack.length - 1;; i--) {
+   	      var scope = this.scopeStack[i];
+   	      if (scope.flags & SCOPE_VAR && !(scope.flags & SCOPE_ARROW)) { return scope }
+   	    }
+   	  };
+
+   	  var Node = function Node(parser, pos, loc) {
+   	    this.type = "";
+   	    this.start = pos;
+   	    this.end = 0;
+   	    if (parser.options.locations)
+   	      { this.loc = new SourceLocation(parser, loc); }
+   	    if (parser.options.directSourceFile)
+   	      { this.sourceFile = parser.options.directSourceFile; }
+   	    if (parser.options.ranges)
+   	      { this.range = [pos, 0]; }
+   	  };
+
+
+   	  var pp$6 = Parser.prototype;
+
+   	  pp$6.startNode = function() {
+   	    return new Node(this, this.start, this.startLoc)
+   	  };
+
+   	  pp$6.startNodeAt = function(pos, loc) {
+   	    return new Node(this, pos, loc)
+   	  };
+
+
+   	  function finishNodeAt(node, type, pos, loc) {
+   	    node.type = type;
+   	    node.end = pos;
+   	    if (this.options.locations)
+   	      { node.loc.end = loc; }
+   	    if (this.options.ranges)
+   	      { node.range[1] = pos; }
+   	    return node
+   	  }
+
+   	  pp$6.finishNode = function(node, type) {
+   	    return finishNodeAt.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc)
+   	  };
+
+
+   	  pp$6.finishNodeAt = function(node, type, pos, loc) {
+   	    return finishNodeAt.call(this, node, type, pos, loc)
+   	  };
+
+
+   	  var TokContext = function TokContext(token, isExpr, preserveSpace, override, generator) {
+   	    this.token = token;
+   	    this.isExpr = !!isExpr;
+   	    this.preserveSpace = !!preserveSpace;
+   	    this.override = override;
+   	    this.generator = !!generator;
+   	  };
+
+   	  var types$1 = {
+   	    b_stat: new TokContext("{", false),
+   	    b_expr: new TokContext("{", true),
+   	    b_tmpl: new TokContext("${", false),
+   	    p_stat: new TokContext("(", false),
+   	    p_expr: new TokContext("(", true),
+   	    q_tmpl: new TokContext("`", true, true, function (p) { return p.tryReadTemplateToken(); }),
+   	    f_stat: new TokContext("function", false),
+   	    f_expr: new TokContext("function", true),
+   	    f_expr_gen: new TokContext("function", true, false, null, true),
+   	    f_gen: new TokContext("function", false, false, null, true)
+   	  };
+
+   	  var pp$7 = Parser.prototype;
+
+   	  pp$7.initialContext = function() {
+   	    return [types$1.b_stat]
+   	  };
+
+   	  pp$7.braceIsBlock = function(prevType) {
+   	    var parent = this.curContext();
+   	    if (parent === types$1.f_expr || parent === types$1.f_stat)
+   	      { return true }
+   	    if (prevType === types.colon && (parent === types$1.b_stat || parent === types$1.b_expr))
+   	      { return !parent.isExpr }
+
+   	    if (prevType === types._return || prevType === types.name && this.exprAllowed)
+   	      { return lineBreak.test(this.input.slice(this.lastTokEnd, this.start)) }
+   	    if (prevType === types._else || prevType === types.semi || prevType === types.eof || prevType === types.parenR || prevType === types.arrow)
+   	      { return true }
+   	    if (prevType === types.braceL)
+   	      { return parent === types$1.b_stat }
+   	    if (prevType === types._var || prevType === types._const || prevType === types.name)
+   	      { return false }
+   	    return !this.exprAllowed
+   	  };
+
+   	  pp$7.inGeneratorContext = function() {
+   	    for (var i = this.context.length - 1; i >= 1; i--) {
+   	      var context = this.context[i];
+   	      if (context.token === "function")
+   	        { return context.generator }
+   	    }
+   	    return false
+   	  };
+
+   	  pp$7.updateContext = function(prevType) {
+   	    var update, type = this.type;
+   	    if (type.keyword && prevType === types.dot)
+   	      { this.exprAllowed = false; }
+   	    else if (update = type.updateContext)
+   	      { update.call(this, prevType); }
+   	    else
+   	      { this.exprAllowed = type.beforeExpr; }
+   	  };
+
+
+   	  types.parenR.updateContext = types.braceR.updateContext = function() {
+   	    if (this.context.length === 1) {
+   	      this.exprAllowed = true;
+   	      return
+   	    }
+   	    var out = this.context.pop();
+   	    if (out === types$1.b_stat && this.curContext().token === "function") {
+   	      out = this.context.pop();
+   	    }
+   	    this.exprAllowed = !out.isExpr;
+   	  };
+
+   	  types.braceL.updateContext = function(prevType) {
+   	    this.context.push(this.braceIsBlock(prevType) ? types$1.b_stat : types$1.b_expr);
+   	    this.exprAllowed = true;
+   	  };
+
+   	  types.dollarBraceL.updateContext = function() {
+   	    this.context.push(types$1.b_tmpl);
+   	    this.exprAllowed = true;
+   	  };
+
+   	  types.parenL.updateContext = function(prevType) {
+   	    var statementParens = prevType === types._if || prevType === types._for || prevType === types._with || prevType === types._while;
+   	    this.context.push(statementParens ? types$1.p_stat : types$1.p_expr);
+   	    this.exprAllowed = true;
+   	  };
+
+   	  types.incDec.updateContext = function() {
+   	  };
+
+   	  types._function.updateContext = types._class.updateContext = function(prevType) {
+   	    if (prevType.beforeExpr && prevType !== types.semi && prevType !== types._else &&
+   	        !(prevType === types._return && lineBreak.test(this.input.slice(this.lastTokEnd, this.start))) &&
+   	        !((prevType === types.colon || prevType === types.braceL) && this.curContext() === types$1.b_stat))
+   	      { this.context.push(types$1.f_expr); }
+   	    else
+   	      { this.context.push(types$1.f_stat); }
+   	    this.exprAllowed = false;
+   	  };
+
+   	  types.backQuote.updateContext = function() {
+   	    if (this.curContext() === types$1.q_tmpl)
+   	      { this.context.pop(); }
+   	    else
+   	      { this.context.push(types$1.q_tmpl); }
+   	    this.exprAllowed = false;
+   	  };
+
+   	  types.star.updateContext = function(prevType) {
+   	    if (prevType === types._function) {
+   	      var index = this.context.length - 1;
+   	      if (this.context[index] === types$1.f_expr)
+   	        { this.context[index] = types$1.f_expr_gen; }
+   	      else
+   	        { this.context[index] = types$1.f_gen; }
+   	    }
+   	    this.exprAllowed = true;
+   	  };
+
+   	  types.name.updateContext = function(prevType) {
+   	    var allowed = false;
+   	    if (this.options.ecmaVersion >= 6 && prevType !== types.dot) {
+   	      if (this.value === "of" && !this.exprAllowed ||
+   	          this.value === "yield" && this.inGeneratorContext())
+   	        { allowed = true; }
+   	    }
+   	    this.exprAllowed = allowed;
+   	  };
+
+
+   	  var ecma9BinaryProperties = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
+   	  var ecma10BinaryProperties = ecma9BinaryProperties + " Extended_Pictographic";
+   	  var ecma11BinaryProperties = ecma10BinaryProperties;
+   	  var unicodeBinaryProperties = {
+   	    9: ecma9BinaryProperties,
+   	    10: ecma10BinaryProperties,
+   	    11: ecma11BinaryProperties
+   	  };
+
+   	  var unicodeGeneralCategoryValues = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
+
+   	  var ecma9ScriptValues = "Adlam Adlm Ahom Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
+   	  var ecma10ScriptValues = ecma9ScriptValues + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
+   	  var ecma11ScriptValues = ecma10ScriptValues + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
+   	  var unicodeScriptValues = {
+   	    9: ecma9ScriptValues,
+   	    10: ecma10ScriptValues,
+   	    11: ecma11ScriptValues
+   	  };
+
+   	  var data = {};
+   	  function buildUnicodeData(ecmaVersion) {
+   	    var d = data[ecmaVersion] = {
+   	      binary: wordsRegexp(unicodeBinaryProperties[ecmaVersion] + " " + unicodeGeneralCategoryValues),
+   	      nonBinary: {
+   	        General_Category: wordsRegexp(unicodeGeneralCategoryValues),
+   	        Script: wordsRegexp(unicodeScriptValues[ecmaVersion])
+   	      }
+   	    };
+   	    d.nonBinary.Script_Extensions = d.nonBinary.Script;
+
+   	    d.nonBinary.gc = d.nonBinary.General_Category;
+   	    d.nonBinary.sc = d.nonBinary.Script;
+   	    d.nonBinary.scx = d.nonBinary.Script_Extensions;
+   	  }
+   	  buildUnicodeData(9);
+   	  buildUnicodeData(10);
+   	  buildUnicodeData(11);
+
+   	  var pp$8 = Parser.prototype;
+
+   	  var RegExpValidationState = function RegExpValidationState(parser) {
+   	    this.parser = parser;
+   	    this.validFlags = "gim" + (parser.options.ecmaVersion >= 6 ? "uy" : "") + (parser.options.ecmaVersion >= 9 ? "s" : "");
+   	    this.unicodeProperties = data[parser.options.ecmaVersion >= 11 ? 11 : parser.options.ecmaVersion];
+   	    this.source = "";
+   	    this.flags = "";
+   	    this.start = 0;
+   	    this.switchU = false;
+   	    this.switchN = false;
+   	    this.pos = 0;
+   	    this.lastIntValue = 0;
+   	    this.lastStringValue = "";
+   	    this.lastAssertionIsQuantifiable = false;
+   	    this.numCapturingParens = 0;
+   	    this.maxBackReference = 0;
+   	    this.groupNames = [];
+   	    this.backReferenceNames = [];
+   	  };
+
+   	  RegExpValidationState.prototype.reset = function reset (start, pattern, flags) {
+   	    var unicode = flags.indexOf("u") !== -1;
+   	    this.start = start | 0;
+   	    this.source = pattern + "";
+   	    this.flags = flags;
+   	    this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
+   	    this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
+   	  };
+
+   	  RegExpValidationState.prototype.raise = function raise (message) {
+   	    this.parser.raiseRecoverable(this.start, ("Invalid regular expression: /" + (this.source) + "/: " + message));
+   	  };
+
+   	  RegExpValidationState.prototype.at = function at (i) {
+   	    var s = this.source;
+   	    var l = s.length;
+   	    if (i >= l) {
+   	      return -1
+   	    }
+   	    var c = s.charCodeAt(i);
+   	    if (!this.switchU || c <= 0xD7FF || c >= 0xE000 || i + 1 >= l) {
+   	      return c
+   	    }
+   	    var next = s.charCodeAt(i + 1);
+   	    return next >= 0xDC00 && next <= 0xDFFF ? (c << 10) + next - 0x35FDC00 : c
+   	  };
+
+   	  RegExpValidationState.prototype.nextIndex = function nextIndex (i) {
+   	    var s = this.source;
+   	    var l = s.length;
+   	    if (i >= l) {
+   	      return l
+   	    }
+   	    var c = s.charCodeAt(i), next;
+   	    if (!this.switchU || c <= 0xD7FF || c >= 0xE000 || i + 1 >= l ||
+   	        (next = s.charCodeAt(i + 1)) < 0xDC00 || next > 0xDFFF) {
+   	      return i + 1
+   	    }
+   	    return i + 2
+   	  };
+
+   	  RegExpValidationState.prototype.current = function current () {
+   	    return this.at(this.pos)
+   	  };
+
+   	  RegExpValidationState.prototype.lookahead = function lookahead () {
+   	    return this.at(this.nextIndex(this.pos))
+   	  };
+
+   	  RegExpValidationState.prototype.advance = function advance () {
+   	    this.pos = this.nextIndex(this.pos);
+   	  };
+
+   	  RegExpValidationState.prototype.eat = function eat (ch) {
+   	    if (this.current() === ch) {
+   	      this.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  function codePointToString(ch) {
+   	    if (ch <= 0xFFFF) { return String.fromCharCode(ch) }
+   	    ch -= 0x10000;
+   	    return String.fromCharCode((ch >> 10) + 0xD800, (ch & 0x03FF) + 0xDC00)
+   	  }
+
+   	  pp$8.validateRegExpFlags = function(state) {
+   	    var validFlags = state.validFlags;
+   	    var flags = state.flags;
+
+   	    for (var i = 0; i < flags.length; i++) {
+   	      var flag = flags.charAt(i);
+   	      if (validFlags.indexOf(flag) === -1) {
+   	        this.raise(state.start, "Invalid regular expression flag");
+   	      }
+   	      if (flags.indexOf(flag, i + 1) > -1) {
+   	        this.raise(state.start, "Duplicate regular expression flag");
+   	      }
+   	    }
+   	  };
+
+   	  pp$8.validateRegExpPattern = function(state) {
+   	    this.regexp_pattern(state);
+
+   	    if (!state.switchN && this.options.ecmaVersion >= 9 && state.groupNames.length > 0) {
+   	      state.switchN = true;
+   	      this.regexp_pattern(state);
+   	    }
+   	  };
+
+   	  pp$8.regexp_pattern = function(state) {
+   	    state.pos = 0;
+   	    state.lastIntValue = 0;
+   	    state.lastStringValue = "";
+   	    state.lastAssertionIsQuantifiable = false;
+   	    state.numCapturingParens = 0;
+   	    state.maxBackReference = 0;
+   	    state.groupNames.length = 0;
+   	    state.backReferenceNames.length = 0;
+
+   	    this.regexp_disjunction(state);
+
+   	    if (state.pos !== state.source.length) {
+   	      if (state.eat(0x29 )) {
+   	        state.raise("Unmatched ')'");
+   	      }
+   	      if (state.eat(0x5D ) || state.eat(0x7D )) {
+   	        state.raise("Lone quantifier brackets");
+   	      }
+   	    }
+   	    if (state.maxBackReference > state.numCapturingParens) {
+   	      state.raise("Invalid escape");
+   	    }
+   	    for (var i = 0, list = state.backReferenceNames; i < list.length; i += 1) {
+   	      var name = list[i];
+
+   	      if (state.groupNames.indexOf(name) === -1) {
+   	        state.raise("Invalid named capture referenced");
+   	      }
+   	    }
+   	  };
+
+   	  pp$8.regexp_disjunction = function(state) {
+   	    this.regexp_alternative(state);
+   	    while (state.eat(0x7C )) {
+   	      this.regexp_alternative(state);
+   	    }
+
+   	    if (this.regexp_eatQuantifier(state, true)) {
+   	      state.raise("Nothing to repeat");
+   	    }
+   	    if (state.eat(0x7B )) {
+   	      state.raise("Lone quantifier brackets");
+   	    }
+   	  };
+
+   	  pp$8.regexp_alternative = function(state) {
+   	    while (state.pos < state.source.length && this.regexp_eatTerm(state))
+   	      { }
+   	  };
+
+   	  pp$8.regexp_eatTerm = function(state) {
+   	    if (this.regexp_eatAssertion(state)) {
+   	      if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
+   	        if (state.switchU) {
+   	          state.raise("Invalid quantifier");
+   	        }
+   	      }
+   	      return true
+   	    }
+
+   	    if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
+   	      this.regexp_eatQuantifier(state);
+   	      return true
+   	    }
+
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatAssertion = function(state) {
+   	    var start = state.pos;
+   	    state.lastAssertionIsQuantifiable = false;
+
+   	    if (state.eat(0x5E ) || state.eat(0x24 )) {
+   	      return true
+   	    }
+
+   	    if (state.eat(0x5C )) {
+   	      if (state.eat(0x42 ) || state.eat(0x62 )) {
+   	        return true
+   	      }
+   	      state.pos = start;
+   	    }
+
+   	    if (state.eat(0x28 ) && state.eat(0x3F )) {
+   	      var lookbehind = false;
+   	      if (this.options.ecmaVersion >= 9) {
+   	        lookbehind = state.eat(0x3C );
+   	      }
+   	      if (state.eat(0x3D ) || state.eat(0x21 )) {
+   	        this.regexp_disjunction(state);
+   	        if (!state.eat(0x29 )) {
+   	          state.raise("Unterminated group");
+   	        }
+   	        state.lastAssertionIsQuantifiable = !lookbehind;
+   	        return true
+   	      }
+   	    }
+
+   	    state.pos = start;
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatQuantifier = function(state, noError) {
+   	    if ( noError === void 0 ) noError = false;
+
+   	    if (this.regexp_eatQuantifierPrefix(state, noError)) {
+   	      state.eat(0x3F );
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatQuantifierPrefix = function(state, noError) {
+   	    return (
+   	      state.eat(0x2A ) ||
+   	      state.eat(0x2B ) ||
+   	      state.eat(0x3F ) ||
+   	      this.regexp_eatBracedQuantifier(state, noError)
+   	    )
+   	  };
+   	  pp$8.regexp_eatBracedQuantifier = function(state, noError) {
+   	    var start = state.pos;
+   	    if (state.eat(0x7B )) {
+   	      var min = 0, max = -1;
+   	      if (this.regexp_eatDecimalDigits(state)) {
+   	        min = state.lastIntValue;
+   	        if (state.eat(0x2C ) && this.regexp_eatDecimalDigits(state)) {
+   	          max = state.lastIntValue;
+   	        }
+   	        if (state.eat(0x7D )) {
+   	          if (max !== -1 && max < min && !noError) {
+   	            state.raise("numbers out of order in {} quantifier");
+   	          }
+   	          return true
+   	        }
+   	      }
+   	      if (state.switchU && !noError) {
+   	        state.raise("Incomplete quantifier");
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatAtom = function(state) {
+   	    return (
+   	      this.regexp_eatPatternCharacters(state) ||
+   	      state.eat(0x2E ) ||
+   	      this.regexp_eatReverseSolidusAtomEscape(state) ||
+   	      this.regexp_eatCharacterClass(state) ||
+   	      this.regexp_eatUncapturingGroup(state) ||
+   	      this.regexp_eatCapturingGroup(state)
+   	    )
+   	  };
+   	  pp$8.regexp_eatReverseSolidusAtomEscape = function(state) {
+   	    var start = state.pos;
+   	    if (state.eat(0x5C )) {
+   	      if (this.regexp_eatAtomEscape(state)) {
+   	        return true
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_eatUncapturingGroup = function(state) {
+   	    var start = state.pos;
+   	    if (state.eat(0x28 )) {
+   	      if (state.eat(0x3F ) && state.eat(0x3A )) {
+   	        this.regexp_disjunction(state);
+   	        if (state.eat(0x29 )) {
+   	          return true
+   	        }
+   	        state.raise("Unterminated group");
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_eatCapturingGroup = function(state) {
+   	    if (state.eat(0x28 )) {
+   	      if (this.options.ecmaVersion >= 9) {
+   	        this.regexp_groupSpecifier(state);
+   	      } else if (state.current() === 0x3F ) {
+   	        state.raise("Invalid group");
+   	      }
+   	      this.regexp_disjunction(state);
+   	      if (state.eat(0x29 )) {
+   	        state.numCapturingParens += 1;
+   	        return true
+   	      }
+   	      state.raise("Unterminated group");
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatExtendedAtom = function(state) {
+   	    return (
+   	      state.eat(0x2E ) ||
+   	      this.regexp_eatReverseSolidusAtomEscape(state) ||
+   	      this.regexp_eatCharacterClass(state) ||
+   	      this.regexp_eatUncapturingGroup(state) ||
+   	      this.regexp_eatCapturingGroup(state) ||
+   	      this.regexp_eatInvalidBracedQuantifier(state) ||
+   	      this.regexp_eatExtendedPatternCharacter(state)
+   	    )
+   	  };
+
+   	  pp$8.regexp_eatInvalidBracedQuantifier = function(state) {
+   	    if (this.regexp_eatBracedQuantifier(state, true)) {
+   	      state.raise("Nothing to repeat");
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatSyntaxCharacter = function(state) {
+   	    var ch = state.current();
+   	    if (isSyntaxCharacter(ch)) {
+   	      state.lastIntValue = ch;
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+   	  function isSyntaxCharacter(ch) {
+   	    return (
+   	      ch === 0x24  ||
+   	      ch >= 0x28  && ch <= 0x2B  ||
+   	      ch === 0x2E  ||
+   	      ch === 0x3F  ||
+   	      ch >= 0x5B  && ch <= 0x5E  ||
+   	      ch >= 0x7B  && ch <= 0x7D 
+   	    )
+   	  }
+
+   	  pp$8.regexp_eatPatternCharacters = function(state) {
+   	    var start = state.pos;
+   	    var ch = 0;
+   	    while ((ch = state.current()) !== -1 && !isSyntaxCharacter(ch)) {
+   	      state.advance();
+   	    }
+   	    return state.pos !== start
+   	  };
+
+   	  pp$8.regexp_eatExtendedPatternCharacter = function(state) {
+   	    var ch = state.current();
+   	    if (
+   	      ch !== -1 &&
+   	      ch !== 0x24  &&
+   	      !(ch >= 0x28  && ch <= 0x2B ) &&
+   	      ch !== 0x2E  &&
+   	      ch !== 0x3F  &&
+   	      ch !== 0x5B  &&
+   	      ch !== 0x5E  &&
+   	      ch !== 0x7C 
+   	    ) {
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_groupSpecifier = function(state) {
+   	    if (state.eat(0x3F )) {
+   	      if (this.regexp_eatGroupName(state)) {
+   	        if (state.groupNames.indexOf(state.lastStringValue) !== -1) {
+   	          state.raise("Duplicate capture group name");
+   	        }
+   	        state.groupNames.push(state.lastStringValue);
+   	        return
+   	      }
+   	      state.raise("Invalid group");
+   	    }
+   	  };
+
+   	  pp$8.regexp_eatGroupName = function(state) {
+   	    state.lastStringValue = "";
+   	    if (state.eat(0x3C )) {
+   	      if (this.regexp_eatRegExpIdentifierName(state) && state.eat(0x3E )) {
+   	        return true
+   	      }
+   	      state.raise("Invalid capture group name");
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatRegExpIdentifierName = function(state) {
+   	    state.lastStringValue = "";
+   	    if (this.regexp_eatRegExpIdentifierStart(state)) {
+   	      state.lastStringValue += codePointToString(state.lastIntValue);
+   	      while (this.regexp_eatRegExpIdentifierPart(state)) {
+   	        state.lastStringValue += codePointToString(state.lastIntValue);
+   	      }
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatRegExpIdentifierStart = function(state) {
+   	    var start = state.pos;
+   	    var ch = state.current();
+   	    state.advance();
+
+   	    if (ch === 0x5C  && this.regexp_eatRegExpUnicodeEscapeSequence(state)) {
+   	      ch = state.lastIntValue;
+   	    }
+   	    if (isRegExpIdentifierStart(ch)) {
+   	      state.lastIntValue = ch;
+   	      return true
+   	    }
+
+   	    state.pos = start;
+   	    return false
+   	  };
+   	  function isRegExpIdentifierStart(ch) {
+   	    return isIdentifierStart(ch, true) || ch === 0x24  || ch === 0x5F 
+   	  }
+
+   	  pp$8.regexp_eatRegExpIdentifierPart = function(state) {
+   	    var start = state.pos;
+   	    var ch = state.current();
+   	    state.advance();
+
+   	    if (ch === 0x5C  && this.regexp_eatRegExpUnicodeEscapeSequence(state)) {
+   	      ch = state.lastIntValue;
+   	    }
+   	    if (isRegExpIdentifierPart(ch)) {
+   	      state.lastIntValue = ch;
+   	      return true
+   	    }
+
+   	    state.pos = start;
+   	    return false
+   	  };
+   	  function isRegExpIdentifierPart(ch) {
+   	    return isIdentifierChar(ch, true) || ch === 0x24  || ch === 0x5F  || ch === 0x200C  || ch === 0x200D 
+   	  }
+
+   	  pp$8.regexp_eatAtomEscape = function(state) {
+   	    if (
+   	      this.regexp_eatBackReference(state) ||
+   	      this.regexp_eatCharacterClassEscape(state) ||
+   	      this.regexp_eatCharacterEscape(state) ||
+   	      (state.switchN && this.regexp_eatKGroupName(state))
+   	    ) {
+   	      return true
+   	    }
+   	    if (state.switchU) {
+   	      if (state.current() === 0x63 ) {
+   	        state.raise("Invalid unicode escape");
+   	      }
+   	      state.raise("Invalid escape");
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_eatBackReference = function(state) {
+   	    var start = state.pos;
+   	    if (this.regexp_eatDecimalEscape(state)) {
+   	      var n = state.lastIntValue;
+   	      if (state.switchU) {
+   	        if (n > state.maxBackReference) {
+   	          state.maxBackReference = n;
+   	        }
+   	        return true
+   	      }
+   	      if (n <= state.numCapturingParens) {
+   	        return true
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_eatKGroupName = function(state) {
+   	    if (state.eat(0x6B )) {
+   	      if (this.regexp_eatGroupName(state)) {
+   	        state.backReferenceNames.push(state.lastStringValue);
+   	        return true
+   	      }
+   	      state.raise("Invalid named reference");
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatCharacterEscape = function(state) {
+   	    return (
+   	      this.regexp_eatControlEscape(state) ||
+   	      this.regexp_eatCControlLetter(state) ||
+   	      this.regexp_eatZero(state) ||
+   	      this.regexp_eatHexEscapeSequence(state) ||
+   	      this.regexp_eatRegExpUnicodeEscapeSequence(state) ||
+   	      (!state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state)) ||
+   	      this.regexp_eatIdentityEscape(state)
+   	    )
+   	  };
+   	  pp$8.regexp_eatCControlLetter = function(state) {
+   	    var start = state.pos;
+   	    if (state.eat(0x63 )) {
+   	      if (this.regexp_eatControlLetter(state)) {
+   	        return true
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_eatZero = function(state) {
+   	    if (state.current() === 0x30  && !isDecimalDigit(state.lookahead())) {
+   	      state.lastIntValue = 0;
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatControlEscape = function(state) {
+   	    var ch = state.current();
+   	    if (ch === 0x74 ) {
+   	      state.lastIntValue = 0x09; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    if (ch === 0x6E ) {
+   	      state.lastIntValue = 0x0A; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    if (ch === 0x76 ) {
+   	      state.lastIntValue = 0x0B; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    if (ch === 0x66 ) {
+   	      state.lastIntValue = 0x0C; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    if (ch === 0x72 ) {
+   	      state.lastIntValue = 0x0D; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatControlLetter = function(state) {
+   	    var ch = state.current();
+   	    if (isControlLetter(ch)) {
+   	      state.lastIntValue = ch % 0x20;
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+   	  function isControlLetter(ch) {
+   	    return (
+   	      (ch >= 0x41  && ch <= 0x5A ) ||
+   	      (ch >= 0x61  && ch <= 0x7A )
+   	    )
+   	  }
+
+   	  pp$8.regexp_eatRegExpUnicodeEscapeSequence = function(state) {
+   	    var start = state.pos;
+
+   	    if (state.eat(0x75 )) {
+   	      if (this.regexp_eatFixedHexDigits(state, 4)) {
+   	        var lead = state.lastIntValue;
+   	        if (state.switchU && lead >= 0xD800 && lead <= 0xDBFF) {
+   	          var leadSurrogateEnd = state.pos;
+   	          if (state.eat(0x5C ) && state.eat(0x75 ) && this.regexp_eatFixedHexDigits(state, 4)) {
+   	            var trail = state.lastIntValue;
+   	            if (trail >= 0xDC00 && trail <= 0xDFFF) {
+   	              state.lastIntValue = (lead - 0xD800) * 0x400 + (trail - 0xDC00) + 0x10000;
+   	              return true
+   	            }
+   	          }
+   	          state.pos = leadSurrogateEnd;
+   	          state.lastIntValue = lead;
+   	        }
+   	        return true
+   	      }
+   	      if (
+   	        state.switchU &&
+   	        state.eat(0x7B ) &&
+   	        this.regexp_eatHexDigits(state) &&
+   	        state.eat(0x7D ) &&
+   	        isValidUnicode(state.lastIntValue)
+   	      ) {
+   	        return true
+   	      }
+   	      if (state.switchU) {
+   	        state.raise("Invalid unicode escape");
+   	      }
+   	      state.pos = start;
+   	    }
+
+   	    return false
+   	  };
+   	  function isValidUnicode(ch) {
+   	    return ch >= 0 && ch <= 0x10FFFF
+   	  }
+
+   	  pp$8.regexp_eatIdentityEscape = function(state) {
+   	    if (state.switchU) {
+   	      if (this.regexp_eatSyntaxCharacter(state)) {
+   	        return true
+   	      }
+   	      if (state.eat(0x2F )) {
+   	        state.lastIntValue = 0x2F; 
+   	        return true
+   	      }
+   	      return false
+   	    }
+
+   	    var ch = state.current();
+   	    if (ch !== 0x63  && (!state.switchN || ch !== 0x6B )) {
+   	      state.lastIntValue = ch;
+   	      state.advance();
+   	      return true
+   	    }
+
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatDecimalEscape = function(state) {
+   	    state.lastIntValue = 0;
+   	    var ch = state.current();
+   	    if (ch >= 0x31  && ch <= 0x39 ) {
+   	      do {
+   	        state.lastIntValue = 10 * state.lastIntValue + (ch - 0x30 );
+   	        state.advance();
+   	      } while ((ch = state.current()) >= 0x30  && ch <= 0x39 )
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatCharacterClassEscape = function(state) {
+   	    var ch = state.current();
+
+   	    if (isCharacterClassEscape(ch)) {
+   	      state.lastIntValue = -1;
+   	      state.advance();
+   	      return true
+   	    }
+
+   	    if (
+   	      state.switchU &&
+   	      this.options.ecmaVersion >= 9 &&
+   	      (ch === 0x50  || ch === 0x70 )
+   	    ) {
+   	      state.lastIntValue = -1;
+   	      state.advance();
+   	      if (
+   	        state.eat(0x7B ) &&
+   	        this.regexp_eatUnicodePropertyValueExpression(state) &&
+   	        state.eat(0x7D )
+   	      ) {
+   	        return true
+   	      }
+   	      state.raise("Invalid property name");
+   	    }
+
+   	    return false
+   	  };
+   	  function isCharacterClassEscape(ch) {
+   	    return (
+   	      ch === 0x64  ||
+   	      ch === 0x44  ||
+   	      ch === 0x73  ||
+   	      ch === 0x53  ||
+   	      ch === 0x77  ||
+   	      ch === 0x57 
+   	    )
+   	  }
+
+   	  pp$8.regexp_eatUnicodePropertyValueExpression = function(state) {
+   	    var start = state.pos;
+
+   	    if (this.regexp_eatUnicodePropertyName(state) && state.eat(0x3D )) {
+   	      var name = state.lastStringValue;
+   	      if (this.regexp_eatUnicodePropertyValue(state)) {
+   	        var value = state.lastStringValue;
+   	        this.regexp_validateUnicodePropertyNameAndValue(state, name, value);
+   	        return true
+   	      }
+   	    }
+   	    state.pos = start;
+
+   	    if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
+   	      var nameOrValue = state.lastStringValue;
+   	      this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
+   	      return true
+   	    }
+   	    return false
+   	  };
+   	  pp$8.regexp_validateUnicodePropertyNameAndValue = function(state, name, value) {
+   	    if (!has(state.unicodeProperties.nonBinary, name))
+   	      { state.raise("Invalid property name"); }
+   	    if (!state.unicodeProperties.nonBinary[name].test(value))
+   	      { state.raise("Invalid property value"); }
+   	  };
+   	  pp$8.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
+   	    if (!state.unicodeProperties.binary.test(nameOrValue))
+   	      { state.raise("Invalid property name"); }
+   	  };
+
+   	  pp$8.regexp_eatUnicodePropertyName = function(state) {
+   	    var ch = 0;
+   	    state.lastStringValue = "";
+   	    while (isUnicodePropertyNameCharacter(ch = state.current())) {
+   	      state.lastStringValue += codePointToString(ch);
+   	      state.advance();
+   	    }
+   	    return state.lastStringValue !== ""
+   	  };
+   	  function isUnicodePropertyNameCharacter(ch) {
+   	    return isControlLetter(ch) || ch === 0x5F 
+   	  }
+
+   	  pp$8.regexp_eatUnicodePropertyValue = function(state) {
+   	    var ch = 0;
+   	    state.lastStringValue = "";
+   	    while (isUnicodePropertyValueCharacter(ch = state.current())) {
+   	      state.lastStringValue += codePointToString(ch);
+   	      state.advance();
+   	    }
+   	    return state.lastStringValue !== ""
+   	  };
+   	  function isUnicodePropertyValueCharacter(ch) {
+   	    return isUnicodePropertyNameCharacter(ch) || isDecimalDigit(ch)
+   	  }
+
+   	  pp$8.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
+   	    return this.regexp_eatUnicodePropertyValue(state)
+   	  };
+
+   	  pp$8.regexp_eatCharacterClass = function(state) {
+   	    if (state.eat(0x5B )) {
+   	      state.eat(0x5E );
+   	      this.regexp_classRanges(state);
+   	      if (state.eat(0x5D )) {
+   	        return true
+   	      }
+   	      state.raise("Unterminated character class");
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_classRanges = function(state) {
+   	    while (this.regexp_eatClassAtom(state)) {
+   	      var left = state.lastIntValue;
+   	      if (state.eat(0x2D ) && this.regexp_eatClassAtom(state)) {
+   	        var right = state.lastIntValue;
+   	        if (state.switchU && (left === -1 || right === -1)) {
+   	          state.raise("Invalid character class");
+   	        }
+   	        if (left !== -1 && right !== -1 && left > right) {
+   	          state.raise("Range out of order in character class");
+   	        }
+   	      }
+   	    }
+   	  };
+
+   	  pp$8.regexp_eatClassAtom = function(state) {
+   	    var start = state.pos;
+
+   	    if (state.eat(0x5C )) {
+   	      if (this.regexp_eatClassEscape(state)) {
+   	        return true
+   	      }
+   	      if (state.switchU) {
+   	        var ch$1 = state.current();
+   	        if (ch$1 === 0x63  || isOctalDigit(ch$1)) {
+   	          state.raise("Invalid class escape");
+   	        }
+   	        state.raise("Invalid escape");
+   	      }
+   	      state.pos = start;
+   	    }
+
+   	    var ch = state.current();
+   	    if (ch !== 0x5D ) {
+   	      state.lastIntValue = ch;
+   	      state.advance();
+   	      return true
+   	    }
+
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatClassEscape = function(state) {
+   	    var start = state.pos;
+
+   	    if (state.eat(0x62 )) {
+   	      state.lastIntValue = 0x08; 
+   	      return true
+   	    }
+
+   	    if (state.switchU && state.eat(0x2D )) {
+   	      state.lastIntValue = 0x2D; 
+   	      return true
+   	    }
+
+   	    if (!state.switchU && state.eat(0x63 )) {
+   	      if (this.regexp_eatClassControlLetter(state)) {
+   	        return true
+   	      }
+   	      state.pos = start;
+   	    }
+
+   	    return (
+   	      this.regexp_eatCharacterClassEscape(state) ||
+   	      this.regexp_eatCharacterEscape(state)
+   	    )
+   	  };
+
+   	  pp$8.regexp_eatClassControlLetter = function(state) {
+   	    var ch = state.current();
+   	    if (isDecimalDigit(ch) || ch === 0x5F ) {
+   	      state.lastIntValue = ch % 0x20;
+   	      state.advance();
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatHexEscapeSequence = function(state) {
+   	    var start = state.pos;
+   	    if (state.eat(0x78 )) {
+   	      if (this.regexp_eatFixedHexDigits(state, 2)) {
+   	        return true
+   	      }
+   	      if (state.switchU) {
+   	        state.raise("Invalid escape");
+   	      }
+   	      state.pos = start;
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatDecimalDigits = function(state) {
+   	    var start = state.pos;
+   	    var ch = 0;
+   	    state.lastIntValue = 0;
+   	    while (isDecimalDigit(ch = state.current())) {
+   	      state.lastIntValue = 10 * state.lastIntValue + (ch - 0x30 );
+   	      state.advance();
+   	    }
+   	    return state.pos !== start
+   	  };
+   	  function isDecimalDigit(ch) {
+   	    return ch >= 0x30  && ch <= 0x39 
+   	  }
+
+   	  pp$8.regexp_eatHexDigits = function(state) {
+   	    var start = state.pos;
+   	    var ch = 0;
+   	    state.lastIntValue = 0;
+   	    while (isHexDigit(ch = state.current())) {
+   	      state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+   	      state.advance();
+   	    }
+   	    return state.pos !== start
+   	  };
+   	  function isHexDigit(ch) {
+   	    return (
+   	      (ch >= 0x30  && ch <= 0x39 ) ||
+   	      (ch >= 0x41  && ch <= 0x46 ) ||
+   	      (ch >= 0x61  && ch <= 0x66 )
+   	    )
+   	  }
+   	  function hexToInt(ch) {
+   	    if (ch >= 0x41  && ch <= 0x46 ) {
+   	      return 10 + (ch - 0x41 )
+   	    }
+   	    if (ch >= 0x61  && ch <= 0x66 ) {
+   	      return 10 + (ch - 0x61 )
+   	    }
+   	    return ch - 0x30 
+   	  }
+
+   	  pp$8.regexp_eatLegacyOctalEscapeSequence = function(state) {
+   	    if (this.regexp_eatOctalDigit(state)) {
+   	      var n1 = state.lastIntValue;
+   	      if (this.regexp_eatOctalDigit(state)) {
+   	        var n2 = state.lastIntValue;
+   	        if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
+   	          state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
+   	        } else {
+   	          state.lastIntValue = n1 * 8 + n2;
+   	        }
+   	      } else {
+   	        state.lastIntValue = n1;
+   	      }
+   	      return true
+   	    }
+   	    return false
+   	  };
+
+   	  pp$8.regexp_eatOctalDigit = function(state) {
+   	    var ch = state.current();
+   	    if (isOctalDigit(ch)) {
+   	      state.lastIntValue = ch - 0x30; 
+   	      state.advance();
+   	      return true
+   	    }
+   	    state.lastIntValue = 0;
+   	    return false
+   	  };
+   	  function isOctalDigit(ch) {
+   	    return ch >= 0x30  && ch <= 0x37 
+   	  }
+
+   	  pp$8.regexp_eatFixedHexDigits = function(state, length) {
+   	    var start = state.pos;
+   	    state.lastIntValue = 0;
+   	    for (var i = 0; i < length; ++i) {
+   	      var ch = state.current();
+   	      if (!isHexDigit(ch)) {
+   	        state.pos = start;
+   	        return false
+   	      }
+   	      state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+   	      state.advance();
+   	    }
+   	    return true
+   	  };
+
+
+   	  var Token = function Token(p) {
+   	    this.type = p.type;
+   	    this.value = p.value;
+   	    this.start = p.start;
+   	    this.end = p.end;
+   	    if (p.options.locations)
+   	      { this.loc = new SourceLocation(p, p.startLoc, p.endLoc); }
+   	    if (p.options.ranges)
+   	      { this.range = [p.start, p.end]; }
+   	  };
+
+
+   	  var pp$9 = Parser.prototype;
+
+
+   	  pp$9.next = function(ignoreEscapeSequenceInKeyword) {
+   	    if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc)
+   	      { this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword); }
+   	    if (this.options.onToken)
+   	      { this.options.onToken(new Token(this)); }
+
+   	    this.lastTokEnd = this.end;
+   	    this.lastTokStart = this.start;
+   	    this.lastTokEndLoc = this.endLoc;
+   	    this.lastTokStartLoc = this.startLoc;
+   	    this.nextToken();
+   	  };
+
+   	  pp$9.getToken = function() {
+   	    this.next();
+   	    return new Token(this)
+   	  };
+
+   	  if (typeof Symbol !== "undefined")
+   	    { pp$9[Symbol.iterator] = function() {
+   	      var this$1$1 = this;
+
+   	      return {
+   	        next: function () {
+   	          var token = this$1$1.getToken();
+   	          return {
+   	            done: token.type === types.eof,
+   	            value: token
+   	          }
+   	        }
+   	      }
+   	    }; }
+
+
+   	  pp$9.curContext = function() {
+   	    return this.context[this.context.length - 1]
+   	  };
+
+
+   	  pp$9.nextToken = function() {
+   	    var curContext = this.curContext();
+   	    if (!curContext || !curContext.preserveSpace) { this.skipSpace(); }
+
+   	    this.start = this.pos;
+   	    if (this.options.locations) { this.startLoc = this.curPosition(); }
+   	    if (this.pos >= this.input.length) { return this.finishToken(types.eof) }
+
+   	    if (curContext.override) { return curContext.override(this) }
+   	    else { this.readToken(this.fullCharCodeAtPos()); }
+   	  };
+
+   	  pp$9.readToken = function(code) {
+   	    if (isIdentifierStart(code, this.options.ecmaVersion >= 6) || code === 92 )
+   	      { return this.readWord() }
+
+   	    return this.getTokenFromCode(code)
+   	  };
+
+   	  pp$9.fullCharCodeAtPos = function() {
+   	    var code = this.input.charCodeAt(this.pos);
+   	    if (code <= 0xd7ff || code >= 0xe000) { return code }
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    return (code << 10) + next - 0x35fdc00
+   	  };
+
+   	  pp$9.skipBlockComment = function() {
+   	    var startLoc = this.options.onComment && this.curPosition();
+   	    var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
+   	    if (end === -1) { this.raise(this.pos - 2, "Unterminated comment"); }
+   	    this.pos = end + 2;
+   	    if (this.options.locations) {
+   	      lineBreakG.lastIndex = start;
+   	      var match;
+   	      while ((match = lineBreakG.exec(this.input)) && match.index < this.pos) {
+   	        ++this.curLine;
+   	        this.lineStart = match.index + match[0].length;
+   	      }
+   	    }
+   	    if (this.options.onComment)
+   	      { this.options.onComment(true, this.input.slice(start + 2, end), start, this.pos,
+   	                             startLoc, this.curPosition()); }
+   	  };
+
+   	  pp$9.skipLineComment = function(startSkip) {
+   	    var start = this.pos;
+   	    var startLoc = this.options.onComment && this.curPosition();
+   	    var ch = this.input.charCodeAt(this.pos += startSkip);
+   	    while (this.pos < this.input.length && !isNewLine(ch)) {
+   	      ch = this.input.charCodeAt(++this.pos);
+   	    }
+   	    if (this.options.onComment)
+   	      { this.options.onComment(false, this.input.slice(start + startSkip, this.pos), start, this.pos,
+   	                             startLoc, this.curPosition()); }
+   	  };
+
+
+   	  pp$9.skipSpace = function() {
+   	    loop: while (this.pos < this.input.length) {
+   	      var ch = this.input.charCodeAt(this.pos);
+   	      switch (ch) {
+   	      case 32: case 160: 
+   	        ++this.pos;
+   	        break
+   	      case 13:
+   	        if (this.input.charCodeAt(this.pos + 1) === 10) {
+   	          ++this.pos;
+   	        }
+   	      case 10: case 8232: case 8233:
+   	        ++this.pos;
+   	        if (this.options.locations) {
+   	          ++this.curLine;
+   	          this.lineStart = this.pos;
+   	        }
+   	        break
+   	      case 47: 
+   	        switch (this.input.charCodeAt(this.pos + 1)) {
+   	        case 42: 
+   	          this.skipBlockComment();
+   	          break
+   	        case 47:
+   	          this.skipLineComment(2);
+   	          break
+   	        default:
+   	          break loop
+   	        }
+   	        break
+   	      default:
+   	        if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace.test(String.fromCharCode(ch))) {
+   	          ++this.pos;
+   	        } else {
+   	          break loop
+   	        }
+   	      }
+   	    }
+   	  };
+
+
+   	  pp$9.finishToken = function(type, val) {
+   	    this.end = this.pos;
+   	    if (this.options.locations) { this.endLoc = this.curPosition(); }
+   	    var prevType = this.type;
+   	    this.type = type;
+   	    this.value = val;
+
+   	    this.updateContext(prevType);
+   	  };
+
+
+   	  pp$9.readToken_dot = function() {
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (next >= 48 && next <= 57) { return this.readNumber(true) }
+   	    var next2 = this.input.charCodeAt(this.pos + 2);
+   	    if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) { 
+   	      this.pos += 3;
+   	      return this.finishToken(types.ellipsis)
+   	    } else {
+   	      ++this.pos;
+   	      return this.finishToken(types.dot)
+   	    }
+   	  };
+
+   	  pp$9.readToken_slash = function() { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (this.exprAllowed) { ++this.pos; return this.readRegexp() }
+   	    if (next === 61) { return this.finishOp(types.assign, 2) }
+   	    return this.finishOp(types.slash, 1)
+   	  };
+
+   	  pp$9.readToken_mult_modulo_exp = function(code) { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    var size = 1;
+   	    var tokentype = code === 42 ? types.star : types.modulo;
+
+   	    if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
+   	      ++size;
+   	      tokentype = types.starstar;
+   	      next = this.input.charCodeAt(this.pos + 2);
+   	    }
+
+   	    if (next === 61) { return this.finishOp(types.assign, size + 1) }
+   	    return this.finishOp(tokentype, size)
+   	  };
+
+   	  pp$9.readToken_pipe_amp = function(code) { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (next === code) { return this.finishOp(code === 124 ? types.logicalOR : types.logicalAND, 2) }
+   	    if (next === 61) { return this.finishOp(types.assign, 2) }
+   	    return this.finishOp(code === 124 ? types.bitwiseOR : types.bitwiseAND, 1)
+   	  };
+
+   	  pp$9.readToken_caret = function() { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (next === 61) { return this.finishOp(types.assign, 2) }
+   	    return this.finishOp(types.bitwiseXOR, 1)
+   	  };
+
+   	  pp$9.readToken_plus_min = function(code) { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (next === code) {
+   	      if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 &&
+   	          (this.lastTokEnd === 0 || lineBreak.test(this.input.slice(this.lastTokEnd, this.pos)))) {
+   	        this.skipLineComment(3);
+   	        this.skipSpace();
+   	        return this.nextToken()
+   	      }
+   	      return this.finishOp(types.incDec, 2)
+   	    }
+   	    if (next === 61) { return this.finishOp(types.assign, 2) }
+   	    return this.finishOp(types.plusMin, 1)
+   	  };
+
+   	  pp$9.readToken_lt_gt = function(code) { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    var size = 1;
+   	    if (next === code) {
+   	      size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
+   	      if (this.input.charCodeAt(this.pos + size) === 61) { return this.finishOp(types.assign, size + 1) }
+   	      return this.finishOp(types.bitShift, size)
+   	    }
+   	    if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 &&
+   	        this.input.charCodeAt(this.pos + 3) === 45) {
+   	      this.skipLineComment(4);
+   	      this.skipSpace();
+   	      return this.nextToken()
+   	    }
+   	    if (next === 61) { size = 2; }
+   	    return this.finishOp(types.relational, size)
+   	  };
+
+   	  pp$9.readToken_eq_excl = function(code) { 
+   	    var next = this.input.charCodeAt(this.pos + 1);
+   	    if (next === 61) { return this.finishOp(types.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2) }
+   	    if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) { 
+   	      this.pos += 2;
+   	      return this.finishToken(types.arrow)
+   	    }
+   	    return this.finishOp(code === 61 ? types.eq : types.prefix, 1)
+   	  };
+
+   	  pp$9.getTokenFromCode = function(code) {
+   	    switch (code) {
+   	    case 46: 
+   	      return this.readToken_dot()
+
+   	    case 40: ++this.pos; return this.finishToken(types.parenL)
+   	    case 41: ++this.pos; return this.finishToken(types.parenR)
+   	    case 59: ++this.pos; return this.finishToken(types.semi)
+   	    case 44: ++this.pos; return this.finishToken(types.comma)
+   	    case 91: ++this.pos; return this.finishToken(types.bracketL)
+   	    case 93: ++this.pos; return this.finishToken(types.bracketR)
+   	    case 123: ++this.pos; return this.finishToken(types.braceL)
+   	    case 125: ++this.pos; return this.finishToken(types.braceR)
+   	    case 58: ++this.pos; return this.finishToken(types.colon)
+   	    case 63: ++this.pos; return this.finishToken(types.question)
+
+   	    case 96: 
+   	      if (this.options.ecmaVersion < 6) { break }
+   	      ++this.pos;
+   	      return this.finishToken(types.backQuote)
+
+   	    case 48: 
+   	      var next = this.input.charCodeAt(this.pos + 1);
+   	      if (next === 120 || next === 88) { return this.readRadixNumber(16) } 
+   	      if (this.options.ecmaVersion >= 6) {
+   	        if (next === 111 || next === 79) { return this.readRadixNumber(8) } 
+   	        if (next === 98 || next === 66) { return this.readRadixNumber(2) } 
+   	      }
+
+   	    case 49: case 50: case 51: case 52: case 53: case 54: case 55: case 56: case 57: 
+   	      return this.readNumber(false)
+
+   	    case 34: case 39: 
+   	      return this.readString(code)
+
+
+   	    case 47: 
+   	      return this.readToken_slash()
+
+   	    case 37: case 42: 
+   	      return this.readToken_mult_modulo_exp(code)
+
+   	    case 124: case 38: 
+   	      return this.readToken_pipe_amp(code)
+
+   	    case 94: 
+   	      return this.readToken_caret()
+
+   	    case 43: case 45: 
+   	      return this.readToken_plus_min(code)
+
+   	    case 60: case 62: 
+   	      return this.readToken_lt_gt(code)
+
+   	    case 61: case 33: 
+   	      return this.readToken_eq_excl(code)
+
+   	    case 126: 
+   	      return this.finishOp(types.prefix, 1)
+   	    }
+
+   	    this.raise(this.pos, "Unexpected character '" + codePointToString$1(code) + "'");
+   	  };
+
+   	  pp$9.finishOp = function(type, size) {
+   	    var str = this.input.slice(this.pos, this.pos + size);
+   	    this.pos += size;
+   	    return this.finishToken(type, str)
+   	  };
+
+   	  pp$9.readRegexp = function() {
+   	    var escaped, inClass, start = this.pos;
+   	    for (;;) {
+   	      if (this.pos >= this.input.length) { this.raise(start, "Unterminated regular expression"); }
+   	      var ch = this.input.charAt(this.pos);
+   	      if (lineBreak.test(ch)) { this.raise(start, "Unterminated regular expression"); }
+   	      if (!escaped) {
+   	        if (ch === "[") { inClass = true; }
+   	        else if (ch === "]" && inClass) { inClass = false; }
+   	        else if (ch === "/" && !inClass) { break }
+   	        escaped = ch === "\\";
+   	      } else { escaped = false; }
+   	      ++this.pos;
+   	    }
+   	    var pattern = this.input.slice(start, this.pos);
+   	    ++this.pos;
+   	    var flagsStart = this.pos;
+   	    var flags = this.readWord1();
+   	    if (this.containsEsc) { this.unexpected(flagsStart); }
+
+   	    var state = this.regexpState || (this.regexpState = new RegExpValidationState(this));
+   	    state.reset(start, pattern, flags);
+   	    this.validateRegExpFlags(state);
+   	    this.validateRegExpPattern(state);
+
+   	    var value = null;
+   	    try {
+   	      value = new RegExp(pattern, flags);
+   	    } catch (e) {
+   	    }
+
+   	    return this.finishToken(types.regexp, {pattern: pattern, flags: flags, value: value})
+   	  };
+
+
+   	  pp$9.readInt = function(radix, len) {
+   	    var start = this.pos, total = 0;
+   	    for (var i = 0, e = len == null ? Infinity : len; i < e; ++i) {
+   	      var code = this.input.charCodeAt(this.pos), val = (void 0);
+   	      if (code >= 97) { val = code - 97 + 10; } 
+   	      else if (code >= 65) { val = code - 65 + 10; } 
+   	      else if (code >= 48 && code <= 57) { val = code - 48; } 
+   	      else { val = Infinity; }
+   	      if (val >= radix) { break }
+   	      ++this.pos;
+   	      total = total * radix + val;
+   	    }
+   	    if (this.pos === start || len != null && this.pos - start !== len) { return null }
+
+   	    return total
+   	  };
+
+   	  pp$9.readRadixNumber = function(radix) {
+   	    var start = this.pos;
+   	    this.pos += 2; 
+   	    var val = this.readInt(radix);
+   	    if (val == null) { this.raise(this.start + 2, "Expected number in radix " + radix); }
+   	    if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
+   	      val = typeof BigInt !== "undefined" ? BigInt(this.input.slice(start, this.pos)) : null;
+   	      ++this.pos;
+   	    } else if (isIdentifierStart(this.fullCharCodeAtPos())) { this.raise(this.pos, "Identifier directly after number"); }
+   	    return this.finishToken(types.num, val)
+   	  };
+
+
+   	  pp$9.readNumber = function(startsWithDot) {
+   	    var start = this.pos;
+   	    if (!startsWithDot && this.readInt(10) === null) { this.raise(start, "Invalid number"); }
+   	    var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
+   	    if (octal && this.strict) { this.raise(start, "Invalid number"); }
+   	    var next = this.input.charCodeAt(this.pos);
+   	    if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
+   	      var str$1 = this.input.slice(start, this.pos);
+   	      var val$1 = typeof BigInt !== "undefined" ? BigInt(str$1) : null;
+   	      ++this.pos;
+   	      if (isIdentifierStart(this.fullCharCodeAtPos())) { this.raise(this.pos, "Identifier directly after number"); }
+   	      return this.finishToken(types.num, val$1)
+   	    }
+   	    if (octal && /[89]/.test(this.input.slice(start, this.pos))) { octal = false; }
+   	    if (next === 46 && !octal) { 
+   	      ++this.pos;
+   	      this.readInt(10);
+   	      next = this.input.charCodeAt(this.pos);
+   	    }
+   	    if ((next === 69 || next === 101) && !octal) { 
+   	      next = this.input.charCodeAt(++this.pos);
+   	      if (next === 43 || next === 45) { ++this.pos; } 
+   	      if (this.readInt(10) === null) { this.raise(start, "Invalid number"); }
+   	    }
+   	    if (isIdentifierStart(this.fullCharCodeAtPos())) { this.raise(this.pos, "Identifier directly after number"); }
+
+   	    var str = this.input.slice(start, this.pos);
+   	    var val = octal ? parseInt(str, 8) : parseFloat(str);
+   	    return this.finishToken(types.num, val)
+   	  };
+
+
+   	  pp$9.readCodePoint = function() {
+   	    var ch = this.input.charCodeAt(this.pos), code;
+
+   	    if (ch === 123) { 
+   	      if (this.options.ecmaVersion < 6) { this.unexpected(); }
+   	      var codePos = ++this.pos;
+   	      code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
+   	      ++this.pos;
+   	      if (code > 0x10FFFF) { this.invalidStringToken(codePos, "Code point out of bounds"); }
+   	    } else {
+   	      code = this.readHexChar(4);
+   	    }
+   	    return code
+   	  };
+
+   	  function codePointToString$1(code) {
+   	    if (code <= 0xFFFF) { return String.fromCharCode(code) }
+   	    code -= 0x10000;
+   	    return String.fromCharCode((code >> 10) + 0xD800, (code & 1023) + 0xDC00)
+   	  }
+
+   	  pp$9.readString = function(quote) {
+   	    var out = "", chunkStart = ++this.pos;
+   	    for (;;) {
+   	      if (this.pos >= this.input.length) { this.raise(this.start, "Unterminated string constant"); }
+   	      var ch = this.input.charCodeAt(this.pos);
+   	      if (ch === quote) { break }
+   	      if (ch === 92) { 
+   	        out += this.input.slice(chunkStart, this.pos);
+   	        out += this.readEscapedChar(false);
+   	        chunkStart = this.pos;
+   	      } else {
+   	        if (isNewLine(ch, this.options.ecmaVersion >= 10)) { this.raise(this.start, "Unterminated string constant"); }
+   	        ++this.pos;
+   	      }
+   	    }
+   	    out += this.input.slice(chunkStart, this.pos++);
+   	    return this.finishToken(types.string, out)
+   	  };
+
+
+   	  var INVALID_TEMPLATE_ESCAPE_ERROR = {};
+
+   	  pp$9.tryReadTemplateToken = function() {
+   	    this.inTemplateElement = true;
+   	    try {
+   	      this.readTmplToken();
+   	    } catch (err) {
+   	      if (err === INVALID_TEMPLATE_ESCAPE_ERROR) {
+   	        this.readInvalidTemplateToken();
+   	      } else {
+   	        throw err
+   	      }
+   	    }
+
+   	    this.inTemplateElement = false;
+   	  };
+
+   	  pp$9.invalidStringToken = function(position, message) {
+   	    if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
+   	      throw INVALID_TEMPLATE_ESCAPE_ERROR
+   	    } else {
+   	      this.raise(position, message);
+   	    }
+   	  };
+
+   	  pp$9.readTmplToken = function() {
+   	    var out = "", chunkStart = this.pos;
+   	    for (;;) {
+   	      if (this.pos >= this.input.length) { this.raise(this.start, "Unterminated template"); }
+   	      var ch = this.input.charCodeAt(this.pos);
+   	      if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) { 
+   	        if (this.pos === this.start && (this.type === types.template || this.type === types.invalidTemplate)) {
+   	          if (ch === 36) {
+   	            this.pos += 2;
+   	            return this.finishToken(types.dollarBraceL)
+   	          } else {
+   	            ++this.pos;
+   	            return this.finishToken(types.backQuote)
+   	          }
+   	        }
+   	        out += this.input.slice(chunkStart, this.pos);
+   	        return this.finishToken(types.template, out)
+   	      }
+   	      if (ch === 92) { 
+   	        out += this.input.slice(chunkStart, this.pos);
+   	        out += this.readEscapedChar(true);
+   	        chunkStart = this.pos;
+   	      } else if (isNewLine(ch)) {
+   	        out += this.input.slice(chunkStart, this.pos);
+   	        ++this.pos;
+   	        switch (ch) {
+   	        case 13:
+   	          if (this.input.charCodeAt(this.pos) === 10) { ++this.pos; }
+   	        case 10:
+   	          out += "\n";
+   	          break
+   	        default:
+   	          out += String.fromCharCode(ch);
+   	          break
+   	        }
+   	        if (this.options.locations) {
+   	          ++this.curLine;
+   	          this.lineStart = this.pos;
+   	        }
+   	        chunkStart = this.pos;
+   	      } else {
+   	        ++this.pos;
+   	      }
+   	    }
+   	  };
+
+   	  pp$9.readInvalidTemplateToken = function() {
+   	    for (; this.pos < this.input.length; this.pos++) {
+   	      switch (this.input[this.pos]) {
+   	      case "\\":
+   	        ++this.pos;
+   	        break
+
+   	      case "$":
+   	        if (this.input[this.pos + 1] !== "{") {
+   	          break
+   	        }
+
+   	      case "`":
+   	        return this.finishToken(types.invalidTemplate, this.input.slice(this.start, this.pos))
+
+   	      }
+   	    }
+   	    this.raise(this.start, "Unterminated template");
+   	  };
+
+
+   	  pp$9.readEscapedChar = function(inTemplate) {
+   	    var ch = this.input.charCodeAt(++this.pos);
+   	    ++this.pos;
+   	    switch (ch) {
+   	    case 110: return "\n" 
+   	    case 114: return "\r" 
+   	    case 120: return String.fromCharCode(this.readHexChar(2)) 
+   	    case 117: return codePointToString$1(this.readCodePoint()) 
+   	    case 116: return "\t" 
+   	    case 98: return "\b" 
+   	    case 118: return "\u000b" 
+   	    case 102: return "\f" 
+   	    case 13: if (this.input.charCodeAt(this.pos) === 10) { ++this.pos; } 
+   	    case 10: 
+   	      if (this.options.locations) { this.lineStart = this.pos; ++this.curLine; }
+   	      return ""
+   	    case 56:
+   	    case 57:
+   	      if (inTemplate) {
+   	        var codePos = this.pos - 1;
+
+   	        this.invalidStringToken(
+   	          codePos,
+   	          "Invalid escape sequence in template string"
+   	        );
+
+   	        return null
+   	      }
+   	    default:
+   	      if (ch >= 48 && ch <= 55) {
+   	        var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
+   	        var octal = parseInt(octalStr, 8);
+   	        if (octal > 255) {
+   	          octalStr = octalStr.slice(0, -1);
+   	          octal = parseInt(octalStr, 8);
+   	        }
+   	        this.pos += octalStr.length - 1;
+   	        ch = this.input.charCodeAt(this.pos);
+   	        if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
+   	          this.invalidStringToken(
+   	            this.pos - 1 - octalStr.length,
+   	            inTemplate
+   	              ? "Octal literal in template string"
+   	              : "Octal literal in strict mode"
+   	          );
+   	        }
+   	        return String.fromCharCode(octal)
+   	      }
+   	      if (isNewLine(ch)) {
+   	        return ""
+   	      }
+   	      return String.fromCharCode(ch)
+   	    }
+   	  };
+
+
+   	  pp$9.readHexChar = function(len) {
+   	    var codePos = this.pos;
+   	    var n = this.readInt(16, len);
+   	    if (n === null) { this.invalidStringToken(codePos, "Bad character escape sequence"); }
+   	    return n
+   	  };
+
+
+   	  pp$9.readWord1 = function() {
+   	    this.containsEsc = false;
+   	    var word = "", first = true, chunkStart = this.pos;
+   	    var astral = this.options.ecmaVersion >= 6;
+   	    while (this.pos < this.input.length) {
+   	      var ch = this.fullCharCodeAtPos();
+   	      if (isIdentifierChar(ch, astral)) {
+   	        this.pos += ch <= 0xffff ? 1 : 2;
+   	      } else if (ch === 92) { 
+   	        this.containsEsc = true;
+   	        word += this.input.slice(chunkStart, this.pos);
+   	        var escStart = this.pos;
+   	        if (this.input.charCodeAt(++this.pos) !== 117) 
+   	          { this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX"); }
+   	        ++this.pos;
+   	        var esc = this.readCodePoint();
+   	        if (!(first ? isIdentifierStart : isIdentifierChar)(esc, astral))
+   	          { this.invalidStringToken(escStart, "Invalid Unicode escape"); }
+   	        word += codePointToString$1(esc);
+   	        chunkStart = this.pos;
+   	      } else {
+   	        break
+   	      }
+   	      first = false;
+   	    }
+   	    return word + this.input.slice(chunkStart, this.pos)
+   	  };
+
+
+   	  pp$9.readWord = function() {
+   	    var word = this.readWord1();
+   	    var type = types.name;
+   	    if (this.keywords.test(word)) {
+   	      type = keywords$1[word];
+   	    }
+   	    return this.finishToken(type, word)
+   	  };
+
+
+   	  var version = "7.1.0";
+
+   	  Parser.acorn = {
+   	    Parser: Parser,
+   	    version: version,
+   	    defaultOptions: defaultOptions,
+   	    Position: Position,
+   	    SourceLocation: SourceLocation,
+   	    getLineInfo: getLineInfo,
+   	    Node: Node,
+   	    TokenType: TokenType,
+   	    tokTypes: types,
+   	    keywordTypes: keywords$1,
+   	    TokContext: TokContext,
+   	    tokContexts: types$1,
+   	    isIdentifierChar: isIdentifierChar,
+   	    isIdentifierStart: isIdentifierStart,
+   	    Token: Token,
+   	    isNewLine: isNewLine,
+   	    lineBreak: lineBreak,
+   	    lineBreakG: lineBreakG,
+   	    nonASCIIwhitespace: nonASCIIwhitespace
+   	  };
+
+
+   	  function parse(input, options) {
+   	    return Parser.parse(input, options)
+   	  }
+
+
+   	  function parseExpressionAt(input, pos, options) {
+   	    return Parser.parseExpressionAt(input, pos, options)
+   	  }
+
+
+   	  function tokenizer(input, options) {
+   	    return Parser.tokenizer(input, options)
+   	  }
+
+   	  exports.Node = Node;
+   	  exports.Parser = Parser;
+   	  exports.Position = Position;
+   	  exports.SourceLocation = SourceLocation;
+   	  exports.TokContext = TokContext;
+   	  exports.Token = Token;
+   	  exports.TokenType = TokenType;
+   	  exports.defaultOptions = defaultOptions;
+   	  exports.getLineInfo = getLineInfo;
+   	  exports.isIdentifierChar = isIdentifierChar;
+   	  exports.isIdentifierStart = isIdentifierStart;
+   	  exports.isNewLine = isNewLine;
+   	  exports.keywordTypes = keywords$1;
+   	  exports.lineBreak = lineBreak;
+   	  exports.lineBreakG = lineBreakG;
+   	  exports.nonASCIIwhitespace = nonASCIIwhitespace;
+   	  exports.parse = parse;
+   	  exports.parseExpressionAt = parseExpressionAt;
+   	  exports.tokContexts = types$1;
+   	  exports.tokTypes = types;
+   	  exports.tokenizer = tokenizer;
+   	  exports.version = version;
+
+   	  Object.defineProperty(exports, '__esModule', { value: true });
+
+   	}));
+
+   	},{}],2:[function(require,module,exports){
+
+   	},{}],3:[function(require,module,exports){
+   	function glWiretap(gl, options = {}) {
+   	  const {
+   	    contextName = 'gl',
+   	    throwGetError,
+   	    useTrackablePrimitives,
+   	    readPixelsFile,
+   	    recording = [],
+   	    variables = {},
+   	    onReadPixels,
+   	    onUnrecognizedArgumentLookup,
+   	  } = options;
+   	  const proxy = new Proxy(gl, { get: listen });
+   	  const contextVariables = [];
+   	  const entityNames = {};
+   	  let imageCount = 0;
+   	  let indent = '';
+   	  let readPixelsVariableName;
+   	  return proxy;
+   	  function listen(obj, property) {
+   	    switch (property) {
+   	      case 'addComment': return addComment;
+   	      case 'checkThrowError': return checkThrowError;
+   	      case 'getReadPixelsVariableName': return readPixelsVariableName;
+   	      case 'insertVariable': return insertVariable;
+   	      case 'reset': return reset;
+   	      case 'setIndent': return setIndent;
+   	      case 'toString': return toString;
+   	      case 'getContextVariableName': return getContextVariableName;
+   	    }
+   	    if (typeof gl[property] === 'function') {
+   	      return function() { 
+   	        switch (property) {
+   	          case 'getError':
+   	            if (throwGetError) {
+   	              recording.push(`${indent}if (${contextName}.getError() !== ${contextName}.NONE) throw new Error('error');`);
+   	            } else {
+   	              recording.push(`${indent}${contextName}.getError();`); 
+   	            }
+   	            return gl.getError();
+   	          case 'getExtension': {
+   	            const variableName = `${contextName}Variables${contextVariables.length}`;
+   	            recording.push(`${indent}const ${variableName} = ${contextName}.getExtension('${arguments[0]}');`);
+   	            const extension = gl.getExtension(arguments[0]);
+   	            if (extension && typeof extension === 'object') {
+   	              const tappedExtension = glExtensionWiretap(extension, {
+   	                getEntity,
+   	                useTrackablePrimitives,
+   	                recording,
+   	                contextName: variableName,
+   	                contextVariables,
+   	                variables,
+   	                indent,
+   	                onUnrecognizedArgumentLookup,
+   	              });
+   	              contextVariables.push(tappedExtension);
+   	              return tappedExtension;
+   	            } else {
+   	              contextVariables.push(null);
+   	            }
+   	            return extension;
+   	          }
+   	          case 'readPixels':
+   	            const i = contextVariables.indexOf(arguments[6]);
+   	            let targetVariableName;
+   	            if (i === -1) {
+   	              const variableName = getVariableName(arguments[6]);
+   	              if (variableName) {
+   	                targetVariableName = variableName;
+   	                recording.push(`${indent}${variableName}`);
+   	              } else {
+   	                targetVariableName = `${contextName}Variable${contextVariables.length}`;
+   	                contextVariables.push(arguments[6]);
+   	                recording.push(`${indent}const ${targetVariableName} = new ${arguments[6].constructor.name}(${arguments[6].length});`);
+   	              }
+   	            } else {
+   	              targetVariableName = `${contextName}Variable${i}`;
+   	            }
+   	            readPixelsVariableName = targetVariableName;
+   	            const argumentAsStrings = [
+   	              arguments[0],
+   	              arguments[1],
+   	              arguments[2],
+   	              arguments[3],
+   	              getEntity(arguments[4]),
+   	              getEntity(arguments[5]),
+   	              targetVariableName
+   	            ];
+   	            recording.push(`${indent}${contextName}.readPixels(${argumentAsStrings.join(', ')});`);
+   	            if (readPixelsFile) {
+   	              writePPM(arguments[2], arguments[3]);
+   	            }
+   	            if (onReadPixels) {
+   	              onReadPixels(targetVariableName, argumentAsStrings);
+   	            }
+   	            return gl.readPixels.apply(gl, arguments);
+   	          case 'drawBuffers':
+   	            recording.push(`${indent}${contextName}.drawBuffers([${argumentsToString(arguments[0], { contextName, contextVariables, getEntity, addVariable, variables, onUnrecognizedArgumentLookup } )}]);`);
+   	            return gl.drawBuffers(arguments[0]);
+   	        }
+   	        let result = gl[property].apply(gl, arguments);
+   	        switch (typeof result) {
+   	          case 'undefined':
+   	            recording.push(`${indent}${methodCallToString(property, arguments)};`);
+   	            return;
+   	          case 'number':
+   	          case 'boolean':
+   	            if (useTrackablePrimitives && contextVariables.indexOf(trackablePrimitive(result)) === -1) {
+   	              recording.push(`${indent}const ${contextName}Variable${contextVariables.length} = ${methodCallToString(property, arguments)};`);
+   	              contextVariables.push(result = trackablePrimitive(result));
+   	              break;
+   	            }
+   	          default:
+   	            if (result === null) {
+   	              recording.push(`${methodCallToString(property, arguments)};`);
+   	            } else {
+   	              recording.push(`${indent}const ${contextName}Variable${contextVariables.length} = ${methodCallToString(property, arguments)};`);
+   	            }
+
+   	            contextVariables.push(result);
+   	        }
+   	        return result;
+   	      }
+   	    }
+   	    entityNames[gl[property]] = property;
+   	    return gl[property];
+   	  }
+   	  function toString() {
+   	    return recording.join('\n');
+   	  }
+   	  function reset() {
+   	    while (recording.length > 0) {
+   	      recording.pop();
+   	    }
+   	  }
+   	  function insertVariable(name, value) {
+   	    variables[name] = value;
+   	  }
+   	  function getEntity(value) {
+   	    const name = entityNames[value];
+   	    if (name) {
+   	      return contextName + '.' + name;
+   	    }
+   	    return value;
+   	  }
+   	  function setIndent(spaces) {
+   	    indent = ' '.repeat(spaces);
+   	  }
+   	  function addVariable(value, source) {
+   	    const variableName = `${contextName}Variable${contextVariables.length}`;
+   	    recording.push(`${indent}const ${variableName} = ${source};`);
+   	    contextVariables.push(value);
+   	    return variableName;
+   	  }
+   	  function writePPM(width, height) {
+   	    const sourceVariable = `${contextName}Variable${contextVariables.length}`;
+   	    const imageVariable = `imageDatum${imageCount}`;
+   	    recording.push(`${indent}let ${imageVariable} = ["P3\\n# ${readPixelsFile}.ppm\\n", ${width}, ' ', ${height}, "\\n255\\n"].join("");`);
+   	    recording.push(`${indent}for (let i = 0; i < ${imageVariable}.length; i += 4) {`);
+   	    recording.push(`${indent}  ${imageVariable} += ${sourceVariable}[i] + ' ' + ${sourceVariable}[i + 1] + ' ' + ${sourceVariable}[i + 2] + ' ';`);
+   	    recording.push(`${indent}}`);
+   	    recording.push(`${indent}if (typeof require !== "undefined") {`);
+   	    recording.push(`${indent}  require('fs').writeFileSync('./${readPixelsFile}.ppm', ${imageVariable});`);
+   	    recording.push(`${indent}}`);
+   	    imageCount++;
+   	  }
+   	  function addComment(value) {
+   	    recording.push(`${indent}// ${value}`);
+   	  }
+   	  function checkThrowError() {
+   	    recording.push(`${indent}(() => {
+${indent}const error = ${contextName}.getError();
+${indent}if (error !== ${contextName}.NONE) {
+${indent}  const names = Object.getOwnPropertyNames(gl);
+${indent}  for (let i = 0; i < names.length; i++) {
+${indent}    const name = names[i];
+${indent}    if (${contextName}[name] === error) {
+${indent}      throw new Error('${contextName} threw ' + name);
+${indent}    }
+${indent}  }
+${indent}}
+${indent}})();`);
+   	  }
+   	  function methodCallToString(method, args) {
+   	    return `${contextName}.${method}(${argumentsToString(args, { contextName, contextVariables, getEntity, addVariable, variables, onUnrecognizedArgumentLookup })})`;
+   	  }
+
+   	  function getVariableName(value) {
+   	    if (variables) {
+   	      for (const name in variables) {
+   	        if (variables[name] === value) {
+   	          return name;
+   	        }
+   	      }
+   	    }
+   	    return null;
+   	  }
+
+   	  function getContextVariableName(value) {
+   	    const i = contextVariables.indexOf(value);
+   	    if (i !== -1) {
+   	      return `${contextName}Variable${i}`;
+   	    }
+   	    return null;
+   	  }
+   	}
+
+   	function glExtensionWiretap(extension, options) {
+   	  const proxy = new Proxy(extension, { get: listen });
+   	  const extensionEntityNames = {};
+   	  const {
+   	    contextName,
+   	    contextVariables,
+   	    getEntity,
+   	    useTrackablePrimitives,
+   	    recording,
+   	    variables,
+   	    indent,
+   	    onUnrecognizedArgumentLookup,
+   	  } = options;
+   	  return proxy;
+   	  function listen(obj, property) {
+   	    if (typeof obj[property] === 'function') {
+   	      return function() {
+   	        switch (property) {
+   	          case 'drawBuffersWEBGL':
+   	            recording.push(`${indent}${contextName}.drawBuffersWEBGL([${argumentsToString(arguments[0], { contextName, contextVariables, getEntity: getExtensionEntity, addVariable, variables, onUnrecognizedArgumentLookup })}]);`);
+   	            return extension.drawBuffersWEBGL(arguments[0]);
+   	        }
+   	        let result = extension[property].apply(extension, arguments);
+   	        switch (typeof result) {
+   	          case 'undefined':
+   	            recording.push(`${indent}${methodCallToString(property, arguments)};`);
+   	            return;
+   	          case 'number':
+   	          case 'boolean':
+   	            if (useTrackablePrimitives && contextVariables.indexOf(trackablePrimitive(result)) === -1) {
+   	              recording.push(`${indent}const ${contextName}Variable${contextVariables.length} = ${methodCallToString(property, arguments)};`);
+   	              contextVariables.push(result = trackablePrimitive(result));
+   	            } else {
+   	              recording.push(`${indent}const ${contextName}Variable${contextVariables.length} = ${methodCallToString(property, arguments)};`);
+   	              contextVariables.push(result);
+   	            }
+   	            break;
+   	          default:
+   	            if (result === null) {
+   	              recording.push(`${methodCallToString(property, arguments)};`);
+   	            } else {
+   	              recording.push(`${indent}const ${contextName}Variable${contextVariables.length} = ${methodCallToString(property, arguments)};`);
+   	            }
+   	            contextVariables.push(result);
+   	        }
+   	        return result;
+   	      };
+   	    }
+   	    extensionEntityNames[extension[property]] = property;
+   	    return extension[property];
+   	  }
+
+   	  function getExtensionEntity(value) {
+   	    if (extensionEntityNames.hasOwnProperty(value)) {
+   	      return `${contextName}.${extensionEntityNames[value]}`;
+   	    }
+   	    return getEntity(value);
+   	  }
+
+   	  function methodCallToString(method, args) {
+   	    return `${contextName}.${method}(${argumentsToString(args, { contextName, contextVariables, getEntity: getExtensionEntity, addVariable, variables, onUnrecognizedArgumentLookup })})`;
+   	  }
+
+   	  function addVariable(value, source) {
+   	    const variableName = `${contextName}Variable${contextVariables.length}`;
+   	    contextVariables.push(value);
+   	    recording.push(`${indent}const ${variableName} = ${source};`);
+   	    return variableName;
+   	  }
+   	}
+
+   	function argumentsToString(args, options) {
+   	  const { variables, onUnrecognizedArgumentLookup } = options;
+   	  return (Array.from(args).map((arg) => {
+   	    const variableName = getVariableName(arg);
+   	    if (variableName) {
+   	      return variableName;
+   	    }
+   	    return argumentToString(arg, options);
+   	  }).join(', '));
+
+   	  function getVariableName(value) {
+   	    if (variables) {
+   	      for (const name in variables) {
+   	        if (!variables.hasOwnProperty(name)) continue;
+   	        if (variables[name] === value) {
+   	          return name;
+   	        }
+   	      }
+   	    }
+   	    if (onUnrecognizedArgumentLookup) {
+   	      return onUnrecognizedArgumentLookup(value);
+   	    }
+   	    return null;
+   	  }
+   	}
+
+   	function argumentToString(arg, options) {
+   	  const { contextName, contextVariables, getEntity, addVariable, onUnrecognizedArgumentLookup } = options;
+   	  if (typeof arg === 'undefined') {
+   	    return 'undefined';
+   	  }
+   	  if (arg === null) {
+   	    return 'null';
+   	  }
+   	  const i = contextVariables.indexOf(arg);
+   	  if (i > -1) {
+   	    return `${contextName}Variable${i}`;
+   	  }
+   	  switch (arg.constructor.name) {
+   	    case 'String':
+   	      const hasLines = /\n/.test(arg);
+   	      const hasSingleQuotes = /'/.test(arg);
+   	      const hasDoubleQuotes = /"/.test(arg);
+   	      if (hasLines) {
+   	        return '`' + arg + '`';
+   	      } else if (hasSingleQuotes && !hasDoubleQuotes) {
+   	        return '"' + arg + '"';
+   	      } else if (!hasSingleQuotes && hasDoubleQuotes) {
+   	        return "'" + arg + "'";
+   	      } else {
+   	        return '\'' + arg + '\'';
+   	      }
+   	    case 'Number': return getEntity(arg);
+   	    case 'Boolean': return getEntity(arg);
+   	    case 'Array':
+   	      return addVariable(arg, `new ${arg.constructor.name}([${Array.from(arg).join(',')}])`);
+   	    case 'Float32Array':
+   	    case 'Uint8Array':
+   	    case 'Uint16Array':
+   	    case 'Int32Array':
+   	      return addVariable(arg, `new ${arg.constructor.name}(${JSON.stringify(Array.from(arg))})`);
+   	    default:
+   	      if (onUnrecognizedArgumentLookup) {
+   	        const instantiationString = onUnrecognizedArgumentLookup(arg);
+   	        if (instantiationString) {
+   	          return instantiationString;
+   	        }
+   	      }
+   	      throw new Error(`unrecognized argument type ${arg.constructor.name}`);
+   	  }
+   	}
+
+   	function trackablePrimitive(value) {
+   	  return new value.constructor(value);
+   	}
+
+   	if (typeof module !== 'undefined') {
+   	  module.exports = { glWiretap, glExtensionWiretap };
+   	}
+
+   	if (typeof window !== 'undefined') {
+   	  glWiretap.glExtensionWiretap = glExtensionWiretap;
+   	  window.glWiretap = glWiretap;
+   	}
+
+   	},{}],4:[function(require,module,exports){
+   	function setupArguments(args) {
+   	  const newArguments = new Array(args.length);
+   	  for (let i = 0; i < args.length; i++) {
+   	    const arg = args[i];
+   	    if (arg.toArray) {
+   	      newArguments[i] = arg.toArray();
+   	    } else {
+   	      newArguments[i] = arg;
+   	    }
+   	  }
+   	  return newArguments;
+   	}
+
+   	function mock1D() {
+   	  const args = setupArguments(arguments);
+   	  const row = new Float32Array(this.output.x);
+   	  for (let x = 0; x < this.output.x; x++) {
+   	    this.thread.x = x;
+   	    this.thread.y = 0;
+   	    this.thread.z = 0;
+   	    row[x] = this._fn.apply(this, args);
+   	  }
+   	  return row;
+   	}
+
+   	function mock2D() {
+   	  const args = setupArguments(arguments);
+   	  const matrix = new Array(this.output.y);
+   	  for (let y = 0; y < this.output.y; y++) {
+   	    const row = new Float32Array(this.output.x);
+   	    for (let x = 0; x < this.output.x; x++) {
+   	      this.thread.x = x;
+   	      this.thread.y = y;
+   	      this.thread.z = 0;
+   	      row[x] = this._fn.apply(this, args);
+   	    }
+   	    matrix[y] = row;
+   	  }
+   	  return matrix;
+   	}
+
+   	function mock2DGraphical() {
+   	  const args = setupArguments(arguments);
+   	  for (let y = 0; y < this.output.y; y++) {
+   	    for (let x = 0; x < this.output.x; x++) {
+   	      this.thread.x = x;
+   	      this.thread.y = y;
+   	      this.thread.z = 0;
+   	      this._fn.apply(this, args);
+   	    }
+   	  }
+   	}
+
+   	function mock3D() {
+   	  const args = setupArguments(arguments);
+   	  const cube = new Array(this.output.z);
+   	  for (let z = 0; z < this.output.z; z++) {
+   	    const matrix = new Array(this.output.y);
+   	    for (let y = 0; y < this.output.y; y++) {
+   	      const row = new Float32Array(this.output.x);
+   	      for (let x = 0; x < this.output.x; x++) {
+   	        this.thread.x = x;
+   	        this.thread.y = y;
+   	        this.thread.z = z;
+   	        row[x] = this._fn.apply(this, args);
+   	      }
+   	      matrix[y] = row;
+   	    }
+   	    cube[z] = matrix;
+   	  }
+   	  return cube;
+   	}
+
+   	function apiDecorate(kernel) {
+   	  kernel.setOutput = (output) => {
+   	    kernel.output = setupOutput(output);
+   	    if (kernel.graphical) {
+   	      setupGraphical(kernel);
+   	    }
+   	  };
+   	  kernel.toJSON = () => {
+   	    throw new Error('Not usable with gpuMock');
+   	  };
+   	  kernel.setConstants = (flag) => {
+   	    kernel.constants = flag;
+   	    return kernel;
+   	  };
+   	  kernel.setGraphical = (flag) => {
+   	    kernel.graphical = flag;
+   	    return kernel;
+   	  };
+   	  kernel.setCanvas = (flag) => {
+   	    kernel.canvas = flag;
+   	    return kernel;
+   	  };
+   	  kernel.setContext = (flag) => {
+   	    kernel.context = flag;
+   	    return kernel;
+   	  };
+   	  kernel.destroy = () => {};
+   	  kernel.validateSettings = () => {};
+   	  if (kernel.graphical && kernel.output) {
+   	    setupGraphical(kernel);
+   	  }
+   	  kernel.exec = function() {
+   	    return new Promise((resolve, reject) => {
+   	      try {
+   	        resolve(kernel.apply(kernel, arguments));
+   	      } catch(e) {
+   	        reject(e);
+   	      }
+   	    });
+   	  };
+   	  kernel.getPixels = (flip) => {
+   	    const {x, y} = kernel.output;
+   	    return flip ? flipPixels(kernel._imageData.data, x, y) : kernel._imageData.data.slice(0);
+   	  };
+   	  kernel.color = function(r, g, b, a) {
+   	    if (typeof a === 'undefined') {
+   	      a = 1;
+   	    }
+
+   	    r = Math.floor(r * 255);
+   	    g = Math.floor(g * 255);
+   	    b = Math.floor(b * 255);
+   	    a = Math.floor(a * 255);
+
+   	    const width = kernel.output.x;
+   	    const height = kernel.output.y;
+
+   	    const x = kernel.thread.x;
+   	    const y = height - kernel.thread.y - 1;
+
+   	    const index = x + y * width;
+
+   	    kernel._colorData[index * 4 + 0] = r;
+   	    kernel._colorData[index * 4 + 1] = g;
+   	    kernel._colorData[index * 4 + 2] = b;
+   	    kernel._colorData[index * 4 + 3] = a;
+   	  };
+
+   	  const mockMethod = () => kernel;
+   	  const methods = [
+   	    'setWarnVarUsage',
+   	    'setArgumentTypes',
+   	    'setTactic',
+   	    'setOptimizeFloatMemory',
+   	    'setDebug',
+   	    'setLoopMaxIterations',
+   	    'setConstantTypes',
+   	    'setFunctions',
+   	    'setNativeFunctions',
+   	    'setInjectedNative',
+   	    'setPipeline',
+   	    'setPrecision',
+   	    'setOutputToTexture',
+   	    'setImmutable',
+   	    'setStrictIntegers',
+   	    'setDynamicOutput',
+   	    'setHardcodeConstants',
+   	    'setDynamicArguments',
+   	    'setUseLegacyEncoder',
+   	    'setWarnVarUsage',
+   	    'addSubKernel',
+   	  ];
+   	  for (let i = 0; i < methods.length; i++) {
+   	    kernel[methods[i]] = mockMethod;
+   	  }
+   	  return kernel;
+   	}
+
+   	function setupGraphical(kernel) {
+   	  const {x, y} = kernel.output;
+   	  if (kernel.context && kernel.context.createImageData) {
+   	    const data = new Uint8ClampedArray(x * y * 4);
+   	    kernel._imageData = kernel.context.createImageData(x, y);
+   	    kernel._colorData = data;
+   	  } else {
+   	    const data = new Uint8ClampedArray(x * y * 4);
+   	    kernel._imageData = { data };
+   	    kernel._colorData = data;
+   	  }
+   	}
+
+   	function setupOutput(output) {
+   	  let result = null;
+   	  if (output.length) {
+   	    if (output.length === 3) {
+   	      const [x,y,z] = output;
+   	      result = { x, y, z };
+   	    } else if (output.length === 2) {
+   	      const [x,y] = output;
+   	      result = { x, y };
+   	    } else {
+   	      const [x] = output;
+   	      result = { x };
+   	    }
+   	  } else {
+   	    result = output;
+   	  }
+   	  return result;
+   	}
+
+   	function gpuMock(fn, settings = {}) {
+   	  const output = settings.output ? setupOutput(settings.output) : null;
+   	  function kernel() {
+   	    if (kernel.output.z) {
+   	      return mock3D.apply(kernel, arguments);
+   	    } else if (kernel.output.y) {
+   	      if (kernel.graphical) {
+   	        return mock2DGraphical.apply(kernel, arguments);
+   	      }
+   	      return mock2D.apply(kernel, arguments);
+   	    } else {
+   	      return mock1D.apply(kernel, arguments);
+   	    }
+   	  }
+   	  kernel._fn = fn;
+   	  kernel.constants = settings.constants || null;
+   	  kernel.context = settings.context || null;
+   	  kernel.canvas = settings.canvas || null;
+   	  kernel.graphical = settings.graphical || false;
+   	  kernel._imageData = null;
+   	  kernel._colorData = null;
+   	  kernel.output = output;
+   	  kernel.thread = {
+   	    x: 0,
+   	    y: 0,
+   	    z: 0
+   	  };
+   	  return apiDecorate(kernel);
+   	}
+
+   	function flipPixels(pixels, width, height) {
+   	  const halfHeight = height / 2 | 0; 
+   	  const bytesPerRow = width * 4;
+   	  const temp = new Uint8ClampedArray(width * 4);
+   	  const result = pixels.slice(0);
+   	  for (let y = 0; y < halfHeight; ++y) {
+   	    const topOffset = y * bytesPerRow;
+   	    const bottomOffset = (height - y - 1) * bytesPerRow;
+
+   	    temp.set(result.subarray(topOffset, topOffset + bytesPerRow));
+
+   	    result.copyWithin(topOffset, bottomOffset, bottomOffset + bytesPerRow);
+
+   	    result.set(temp, bottomOffset);
+   	  }
+   	  return result;
+   	}
+
+   	module.exports = {
+   	  gpuMock
+   	};
+
+   	},{}],5:[function(require,module,exports){
+   	const { utils } = require('./utils');
+
+   	function alias(name, source) {
+   	  const fnString = source.toString();
+   	  return new Function(`return function ${ name } (${ utils.getArgumentNamesFromString(fnString).join(', ') }) {
+  ${ utils.getFunctionBodyFromString(fnString) }
+}`)();
+   	}
+
+   	module.exports = {
+   	  alias
+   	};
+   	},{"./utils":114}],6:[function(require,module,exports){
+   	const { FunctionNode } = require('../function-node');
+
+   	class CPUFunctionNode extends FunctionNode {
+   	  astFunction(ast, retArr) {
+
+   	    if (!this.isRootKernel) {
+   	      retArr.push('function');
+   	      retArr.push(' ');
+   	      retArr.push(this.name);
+   	      retArr.push('(');
+
+   	      for (let i = 0; i < this.argumentNames.length; ++i) {
+   	        const argumentName = this.argumentNames[i];
+
+   	        if (i > 0) {
+   	          retArr.push(', ');
+   	        }
+   	        retArr.push('user_');
+   	        retArr.push(argumentName);
+   	      }
+
+   	      retArr.push(') {\n');
+   	    }
+
+   	    for (let i = 0; i < ast.body.body.length; ++i) {
+   	      this.astGeneric(ast.body.body[i], retArr);
+   	      retArr.push('\n');
+   	    }
+
+   	    if (!this.isRootKernel) {
+   	      retArr.push('}\n');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astReturnStatement(ast, retArr) {
+   	    const type = this.returnType || this.getType(ast.argument);
+
+   	    if (!this.returnType) {
+   	      this.returnType = type;
+   	    }
+
+   	    if (this.isRootKernel) {
+   	      retArr.push(this.leadingReturnStatement);
+   	      this.astGeneric(ast.argument, retArr);
+   	      retArr.push(';\n');
+   	      retArr.push(this.followingReturnStatement);
+   	      retArr.push('continue;\n');
+   	    } else if (this.isSubKernel) {
+   	      retArr.push(`subKernelResult_${ this.name } = `);
+   	      this.astGeneric(ast.argument, retArr);
+   	      retArr.push(';');
+   	      retArr.push(`return subKernelResult_${ this.name };`);
+   	    } else {
+   	      retArr.push('return ');
+   	      this.astGeneric(ast.argument, retArr);
+   	      retArr.push(';');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astLiteral(ast, retArr) {
+
+   	    if (isNaN(ast.value)) {
+   	      throw this.astErrorOutput(
+   	        'Non-numeric literal not supported : ' + ast.value,
+   	        ast
+   	      );
+   	    }
+
+   	    retArr.push(ast.value);
+
+   	    return retArr;
+   	  }
+
+   	  astBinaryExpression(ast, retArr) {
+   	    retArr.push('(');
+   	    this.astGeneric(ast.left, retArr);
+   	    retArr.push(ast.operator);
+   	    this.astGeneric(ast.right, retArr);
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  astIdentifierExpression(idtNode, retArr) {
+   	    if (idtNode.type !== 'Identifier') {
+   	      throw this.astErrorOutput(
+   	        'IdentifierExpression - not an Identifier',
+   	        idtNode
+   	      );
+   	    }
+
+   	    switch (idtNode.name) {
+   	      case 'Infinity':
+   	        retArr.push('Infinity');
+   	        break;
+   	      default:
+   	        if (this.constants && this.constants.hasOwnProperty(idtNode.name)) {
+   	          retArr.push('constants_' + idtNode.name);
+   	        } else {
+   	          retArr.push('user_' + idtNode.name);
+   	        }
+   	    }
+
+   	    return retArr;
+   	  }
+
+   	  astForStatement(forNode, retArr) {
+   	    if (forNode.type !== 'ForStatement') {
+   	      throw this.astErrorOutput('Invalid for statement', forNode);
+   	    }
+
+   	    const initArr = [];
+   	    const testArr = [];
+   	    const updateArr = [];
+   	    const bodyArr = [];
+   	    let isSafe = null;
+
+   	    if (forNode.init) {
+   	      this.pushState('in-for-loop-init');
+   	      this.astGeneric(forNode.init, initArr);
+   	      for (let i = 0; i < initArr.length; i++) {
+   	        if (initArr[i].includes && initArr[i].includes(',')) {
+   	          isSafe = false;
+   	        }
+   	      }
+   	      this.popState('in-for-loop-init');
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.test) {
+   	      this.astGeneric(forNode.test, testArr);
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.update) {
+   	      this.astGeneric(forNode.update, updateArr);
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.body) {
+   	      this.pushState('loop-body');
+   	      this.astGeneric(forNode.body, bodyArr);
+   	      this.popState('loop-body');
+   	    }
+
+   	    if (isSafe === null) {
+   	      isSafe = this.isSafe(forNode.init) && this.isSafe(forNode.test);
+   	    }
+
+   	    if (isSafe) {
+   	      retArr.push(`for (${initArr.join('')};${testArr.join('')};${updateArr.join('')}){\n`);
+   	      retArr.push(bodyArr.join(''));
+   	      retArr.push('}\n');
+   	    } else {
+   	      const iVariableName = this.getInternalVariableName('safeI');
+   	      if (initArr.length > 0) {
+   	        retArr.push(initArr.join(''), ';\n');
+   	      }
+   	      retArr.push(`for (let ${iVariableName}=0;${iVariableName}<LOOP_MAX;${iVariableName}++){\n`);
+   	      if (testArr.length > 0) {
+   	        retArr.push(`if (!${testArr.join('')}) break;\n`);
+   	      }
+   	      retArr.push(bodyArr.join(''));
+   	      retArr.push(`\n${updateArr.join('')};`);
+   	      retArr.push('}\n');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astWhileStatement(whileNode, retArr) {
+   	    if (whileNode.type !== 'WhileStatement') {
+   	      throw this.astErrorOutput(
+   	        'Invalid while statement',
+   	        whileNode
+   	      );
+   	    }
+
+   	    retArr.push('for (let i = 0; i < LOOP_MAX; i++) {');
+   	    retArr.push('if (');
+   	    this.astGeneric(whileNode.test, retArr);
+   	    retArr.push(') {\n');
+   	    this.astGeneric(whileNode.body, retArr);
+   	    retArr.push('} else {\n');
+   	    retArr.push('break;\n');
+   	    retArr.push('}\n');
+   	    retArr.push('}\n');
+
+   	    return retArr;
+   	  }
+
+   	  astDoWhileStatement(doWhileNode, retArr) {
+   	    if (doWhileNode.type !== 'DoWhileStatement') {
+   	      throw this.astErrorOutput(
+   	        'Invalid while statement',
+   	        doWhileNode
+   	      );
+   	    }
+
+   	    retArr.push('for (let i = 0; i < LOOP_MAX; i++) {');
+   	    this.astGeneric(doWhileNode.body, retArr);
+   	    retArr.push('if (!');
+   	    this.astGeneric(doWhileNode.test, retArr);
+   	    retArr.push(') {\n');
+   	    retArr.push('break;\n');
+   	    retArr.push('}\n');
+   	    retArr.push('}\n');
+
+   	    return retArr;
+
+   	  }
+
+   	  astAssignmentExpression(assNode, retArr) {
+   	    const declaration = this.getDeclaration(assNode.left);
+   	    if (declaration && !declaration.assignable) {
+   	      throw this.astErrorOutput(`Variable ${assNode.left.name} is not assignable here`, assNode);
+   	    }
+   	    this.astGeneric(assNode.left, retArr);
+   	    retArr.push(assNode.operator);
+   	    this.astGeneric(assNode.right, retArr);
+   	    return retArr;
+   	  }
+
+   	  astBlockStatement(bNode, retArr) {
+   	    if (this.isState('loop-body')) {
+   	      this.pushState('block-body'); 
+   	      for (let i = 0; i < bNode.body.length; i++) {
+   	        this.astGeneric(bNode.body[i], retArr);
+   	      }
+   	      this.popState('block-body');
+   	    } else {
+   	      retArr.push('{\n');
+   	      for (let i = 0; i < bNode.body.length; i++) {
+   	        this.astGeneric(bNode.body[i], retArr);
+   	      }
+   	      retArr.push('}\n');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astVariableDeclaration(varDecNode, retArr) {
+   	    retArr.push(`${varDecNode.kind} `);
+   	    const { declarations } = varDecNode;
+   	    for (let i = 0; i < declarations.length; i++) {
+   	      if (i > 0) {
+   	        retArr.push(',');
+   	      }
+   	      const declaration = declarations[i];
+   	      const info = this.getDeclaration(declaration.id);
+   	      if (!info.valueType) {
+   	        info.valueType = this.getType(declaration.init);
+   	      }
+   	      this.astGeneric(declaration, retArr);
+   	    }
+   	    if (!this.isState('in-for-loop-init')) {
+   	      retArr.push(';');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astIfStatement(ifNode, retArr) {
+   	    retArr.push('if (');
+   	    this.astGeneric(ifNode.test, retArr);
+   	    retArr.push(')');
+   	    if (ifNode.consequent.type === 'BlockStatement') {
+   	      this.astGeneric(ifNode.consequent, retArr);
+   	    } else {
+   	      retArr.push(' {\n');
+   	      this.astGeneric(ifNode.consequent, retArr);
+   	      retArr.push('\n}\n');
+   	    }
+
+   	    if (ifNode.alternate) {
+   	      retArr.push('else ');
+   	      if (ifNode.alternate.type === 'BlockStatement' || ifNode.alternate.type === 'IfStatement') {
+   	        this.astGeneric(ifNode.alternate, retArr);
+   	      } else {
+   	        retArr.push(' {\n');
+   	        this.astGeneric(ifNode.alternate, retArr);
+   	        retArr.push('\n}\n');
+   	      }
+   	    }
+   	    return retArr;
+
+   	  }
+
+   	  astSwitchStatement(ast, retArr) {
+   	    const { discriminant, cases } = ast;
+   	    retArr.push('switch (');
+   	    this.astGeneric(discriminant, retArr);
+   	    retArr.push(') {\n');
+   	    for (let i = 0; i < cases.length; i++) {
+   	      if (cases[i].test === null) {
+   	        retArr.push('default:\n');
+   	        this.astGeneric(cases[i].consequent, retArr);
+   	        if (cases[i].consequent && cases[i].consequent.length > 0) {
+   	          retArr.push('break;\n');
+   	        }
+   	        continue;
+   	      }
+   	      retArr.push('case ');
+   	      this.astGeneric(cases[i].test, retArr);
+   	      retArr.push(':\n');
+   	      if (cases[i].consequent && cases[i].consequent.length > 0) {
+   	        this.astGeneric(cases[i].consequent, retArr);
+   	        retArr.push('break;\n');
+   	      }
+   	    }
+   	    retArr.push('\n}');
+   	  }
+
+   	  astThisExpression(tNode, retArr) {
+   	    retArr.push('_this');
+   	    return retArr;
+   	  }
+
+   	  astMemberExpression(mNode, retArr) {
+   	    const {
+   	      signature,
+   	      type,
+   	      property,
+   	      xProperty,
+   	      yProperty,
+   	      zProperty,
+   	      name,
+   	      origin
+   	    } = this.getMemberExpressionDetails(mNode);
+   	    switch (signature) {
+   	      case 'this.thread.value':
+   	        retArr.push(`_this.thread.${ name }`);
+   	        return retArr;
+   	      case 'this.output.value':
+   	        switch (name) {
+   	          case 'x':
+   	            retArr.push('outputX');
+   	            break;
+   	          case 'y':
+   	            retArr.push('outputY');
+   	            break;
+   	          case 'z':
+   	            retArr.push('outputZ');
+   	            break;
+   	          default:
+   	            throw this.astErrorOutput('Unexpected expression', mNode);
+   	        }
+   	        return retArr;
+   	      case 'value':
+   	        throw this.astErrorOutput('Unexpected expression', mNode);
+   	      case 'value[]':
+   	      case 'value[][]':
+   	      case 'value[][][]':
+   	      case 'value.value':
+   	        if (origin === 'Math') {
+   	          retArr.push(Math[name]);
+   	          return retArr;
+   	        }
+   	        switch (property) {
+   	          case 'r':
+   	            retArr.push(`user_${ name }[0]`);
+   	            return retArr;
+   	          case 'g':
+   	            retArr.push(`user_${ name }[1]`);
+   	            return retArr;
+   	          case 'b':
+   	            retArr.push(`user_${ name }[2]`);
+   	            return retArr;
+   	          case 'a':
+   	            retArr.push(`user_${ name }[3]`);
+   	            return retArr;
+   	        }
+   	        break;
+   	      case 'this.constants.value':
+   	      case 'this.constants.value[]':
+   	      case 'this.constants.value[][]':
+   	      case 'this.constants.value[][][]':
+   	        break;
+   	      case 'fn()[]':
+   	        this.astGeneric(mNode.object, retArr);
+   	        retArr.push('[');
+   	        this.astGeneric(mNode.property, retArr);
+   	        retArr.push(']');
+   	        return retArr;
+   	      case 'fn()[][]':
+   	        this.astGeneric(mNode.object.object, retArr);
+   	        retArr.push('[');
+   	        this.astGeneric(mNode.object.property, retArr);
+   	        retArr.push(']');
+   	        retArr.push('[');
+   	        this.astGeneric(mNode.property, retArr);
+   	        retArr.push(']');
+   	        return retArr;
+   	      default:
+   	        throw this.astErrorOutput('Unexpected expression', mNode);
+   	    }
+
+   	    if (!mNode.computed) {
+   	      switch (type) {
+   	        case 'Number':
+   	        case 'Integer':
+   	        case 'Float':
+   	        case 'Boolean':
+   	          retArr.push(`${origin}_${name}`);
+   	          return retArr;
+   	      }
+   	    }
+
+   	    const markupName = `${origin}_${name}`;
+
+   	    switch (type) {
+   	      case 'Array(2)':
+   	      case 'Array(3)':
+   	      case 'Array(4)':
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	      case 'HTMLImageArray':
+   	      case 'ArrayTexture(1)':
+   	      case 'ArrayTexture(2)':
+   	      case 'ArrayTexture(3)':
+   	      case 'ArrayTexture(4)':
+   	      case 'HTMLImage':
+   	      default:
+   	        let size;
+   	        let isInput;
+   	        if (origin === 'constants') {
+   	          const constant = this.constants[name];
+   	          isInput = this.constantTypes[name] === 'Input';
+   	          size = isInput ? constant.size : null;
+   	        } else {
+   	          isInput = this.isInput(name);
+   	          size = isInput ? this.argumentSizes[this.argumentNames.indexOf(name)] : null;
+   	        }
+   	        retArr.push(`${ markupName }`);
+   	        if (zProperty && yProperty) {
+   	          if (isInput) {
+   	            retArr.push('[(');
+   	            this.astGeneric(zProperty, retArr);
+   	            retArr.push(`*${ this.dynamicArguments ? '(outputY * outputX)' : size[1] * size[0] })+(`);
+   	            this.astGeneric(yProperty, retArr);
+   	            retArr.push(`*${ this.dynamicArguments ? 'outputX' : size[0] })+`);
+   	            this.astGeneric(xProperty, retArr);
+   	            retArr.push(']');
+   	          } else {
+   	            retArr.push('[');
+   	            this.astGeneric(zProperty, retArr);
+   	            retArr.push(']');
+   	            retArr.push('[');
+   	            this.astGeneric(yProperty, retArr);
+   	            retArr.push(']');
+   	            retArr.push('[');
+   	            this.astGeneric(xProperty, retArr);
+   	            retArr.push(']');
+   	          }
+   	        } else if (yProperty) {
+   	          if (isInput) {
+   	            retArr.push('[(');
+   	            this.astGeneric(yProperty, retArr);
+   	            retArr.push(`*${ this.dynamicArguments ? 'outputX' : size[0] })+`);
+   	            this.astGeneric(xProperty, retArr);
+   	            retArr.push(']');
+   	          } else {
+   	            retArr.push('[');
+   	            this.astGeneric(yProperty, retArr);
+   	            retArr.push(']');
+   	            retArr.push('[');
+   	            this.astGeneric(xProperty, retArr);
+   	            retArr.push(']');
+   	          }
+   	        } else if (typeof xProperty !== 'undefined') {
+   	          retArr.push('[');
+   	          this.astGeneric(xProperty, retArr);
+   	          retArr.push(']');
+   	        }
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astCallExpression(ast, retArr) {
+   	    if (ast.type !== 'CallExpression') {
+   	      throw this.astErrorOutput('Unknown CallExpression', ast);
+   	    }
+   	    let functionName = this.astMemberExpressionUnroll(ast.callee);
+
+   	    if (this.calledFunctions.indexOf(functionName) < 0) {
+   	      this.calledFunctions.push(functionName);
+   	    }
+
+   	    this.isAstMathFunction(ast);
+
+   	    if (this.onFunctionCall) {
+   	      this.onFunctionCall(this.name, functionName, ast.arguments);
+   	    }
+
+   	    retArr.push(functionName);
+
+   	    retArr.push('(');
+   	    const targetTypes = this.lookupFunctionArgumentTypes(functionName) || [];
+   	    for (let i = 0; i < ast.arguments.length; ++i) {
+   	      const argument = ast.arguments[i];
+
+   	      let argumentType = this.getType(argument);
+   	      if (!targetTypes[i]) {
+   	        this.triggerImplyArgumentType(functionName, i, argumentType, this);
+   	      }
+
+   	      if (i > 0) {
+   	        retArr.push(', ');
+   	      }
+   	      this.astGeneric(argument, retArr);
+   	    }
+   	    retArr.push(')');
+
+   	    return retArr;
+   	  }
+
+   	  astArrayExpression(arrNode, retArr) {
+   	    const returnType = this.getType(arrNode);
+   	    const arrLen = arrNode.elements.length;
+   	    const elements = [];
+   	    for (let i = 0; i < arrLen; ++i) {
+   	      const element = [];
+   	      this.astGeneric(arrNode.elements[i], element);
+   	      elements.push(element.join(''));
+   	    }
+   	    switch (returnType) {
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	        retArr.push(`[${elements.join(', ')}]`);
+   	        break;
+   	      default:
+   	        retArr.push(`new Float32Array([${elements.join(', ')}])`);
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astDebuggerStatement(arrNode, retArr) {
+   	    retArr.push('debugger;');
+   	    return retArr;
+   	  }
+   	}
+
+   	module.exports = {
+   	  CPUFunctionNode
+   	};
+   	},{"../function-node":10}],7:[function(require,module,exports){
+   	const { utils } = require('../../utils');
+
+   	function constantsToString(constants, types) {
+   	  const results = [];
+   	  for (const name in types) {
+   	    if (!types.hasOwnProperty(name)) continue;
+   	    const type = types[name];
+   	    const constant = constants[name];
+   	    switch (type) {
+   	      case 'Number':
+   	      case 'Integer':
+   	      case 'Float':
+   	      case 'Boolean':
+   	        results.push(`${name}:${constant}`);
+   	        break;
+   	      case 'Array(2)':
+   	      case 'Array(3)':
+   	      case 'Array(4)':
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	        results.push(`${name}:new ${constant.constructor.name}(${JSON.stringify(Array.from(constant))})`);
+   	        break;
+   	    }
+   	  }
+   	  return `{ ${ results.join() } }`;
+   	}
+
+   	function cpuKernelString(cpuKernel, name) {
+   	  const header = [];
+   	  const thisProperties = [];
+   	  const beforeReturn = [];
+
+   	  const useFunctionKeyword = !/^function/.test(cpuKernel.color.toString());
+
+   	  header.push(
+   	    '  const { context, canvas, constants: incomingConstants } = settings;',
+   	    `  const output = new Int32Array(${JSON.stringify(Array.from(cpuKernel.output))});`,
+   	    `  const _constantTypes = ${JSON.stringify(cpuKernel.constantTypes)};`,
+   	    `  const _constants = ${constantsToString(cpuKernel.constants, cpuKernel.constantTypes)};`
+   	  );
+
+   	  thisProperties.push(
+   	    '    constants: _constants,',
+   	    '    context,',
+   	    '    output,',
+   	    '    thread: {x: 0, y: 0, z: 0},'
+   	  );
+
+   	  if (cpuKernel.graphical) {
+   	    header.push(`  const _imageData = context.createImageData(${cpuKernel.output[0]}, ${cpuKernel.output[1]});`);
+   	    header.push(`  const _colorData = new Uint8ClampedArray(${cpuKernel.output[0]} * ${cpuKernel.output[1]} * 4);`);
+
+   	    const colorFn = utils.flattenFunctionToString((useFunctionKeyword ? 'function ' : '') + cpuKernel.color.toString(), {
+   	      thisLookup: (propertyName) => {
+   	        switch (propertyName) {
+   	          case '_colorData':
+   	            return '_colorData';
+   	          case '_imageData':
+   	            return '_imageData';
+   	          case 'output':
+   	            return 'output';
+   	          case 'thread':
+   	            return 'this.thread';
+   	        }
+   	        return JSON.stringify(cpuKernel[propertyName]);
+   	      },
+   	      findDependency: (object, name) => {
+   	        return null;
+   	      }
+   	    });
+
+   	    const getPixelsFn = utils.flattenFunctionToString((useFunctionKeyword ? 'function ' : '') + cpuKernel.getPixels.toString(), {
+   	      thisLookup: (propertyName) => {
+   	        switch (propertyName) {
+   	          case '_colorData':
+   	            return '_colorData';
+   	          case '_imageData':
+   	            return '_imageData';
+   	          case 'output':
+   	            return 'output';
+   	          case 'thread':
+   	            return 'this.thread';
+   	        }
+   	        return JSON.stringify(cpuKernel[propertyName]);
+   	      },
+   	      findDependency: () => {
+   	        return null;
+   	      }
+   	    });
+
+   	    thisProperties.push(
+   	      '    _imageData,',
+   	      '    _colorData,',
+   	      `    color: ${colorFn},`
+   	    );
+
+   	    beforeReturn.push(
+   	      `  kernel.getPixels = ${getPixelsFn};`
+   	    );
+   	  }
+
+   	  const constantTypes = [];
+   	  const constantKeys = Object.keys(cpuKernel.constantTypes);
+   	  for (let i = 0; i < constantKeys.length; i++) {
+   	    constantTypes.push(cpuKernel.constantTypes[constantKeys]);
+   	  }
+   	  if (cpuKernel.argumentTypes.indexOf('HTMLImageArray') !== -1 || constantTypes.indexOf('HTMLImageArray') !== -1) {
+   	    const flattenedImageTo3DArray = utils.flattenFunctionToString((useFunctionKeyword ? 'function ' : '') + cpuKernel._imageTo3DArray.toString(), {
+   	      doNotDefine: ['canvas'],
+   	      findDependency: (object, name) => {
+   	        if (object === 'this') {
+   	          return (useFunctionKeyword ? 'function ' : '') + cpuKernel[name].toString();
+   	        }
+   	        return null;
+   	      },
+   	      thisLookup: (propertyName) => {
+   	        switch (propertyName) {
+   	          case 'canvas':
+   	            return;
+   	          case 'context':
+   	            return 'context';
+   	        }
+   	      }
+   	    });
+   	    beforeReturn.push(flattenedImageTo3DArray);
+   	    thisProperties.push(`    _mediaTo2DArray,`);
+   	    thisProperties.push(`    _imageTo3DArray,`);
+   	  } else if (cpuKernel.argumentTypes.indexOf('HTMLImage') !== -1 || constantTypes.indexOf('HTMLImage') !== -1) {
+   	    const flattenedImageTo2DArray = utils.flattenFunctionToString((useFunctionKeyword ? 'function ' : '') + cpuKernel._mediaTo2DArray.toString(), {
+   	      findDependency: (object, name) => {
+   	        return null;
+   	      },
+   	      thisLookup: (propertyName) => {
+   	        switch (propertyName) {
+   	          case 'canvas':
+   	            return 'settings.canvas';
+   	          case 'context':
+   	            return 'settings.context';
+   	        }
+   	        throw new Error('unhandled thisLookup');
+   	      }
+   	    });
+   	    beforeReturn.push(flattenedImageTo2DArray);
+   	    thisProperties.push(`    _mediaTo2DArray,`);
+   	  }
+
+   	  return `function(settings) {
+${ header.join('\n') }
+  for (const p in _constantTypes) {
+    if (!_constantTypes.hasOwnProperty(p)) continue;
+    const type = _constantTypes[p];
+    switch (type) {
+      case 'Number':
+      case 'Integer':
+      case 'Float':
+      case 'Boolean':
+      case 'Array(2)':
+      case 'Array(3)':
+      case 'Array(4)':
+      case 'Matrix(2)':
+      case 'Matrix(3)':
+      case 'Matrix(4)':
+        if (incomingConstants.hasOwnProperty(p)) {
+          console.warn('constant ' + p + ' of type ' + type + ' cannot be resigned');
+        }
+        continue;
+    }
+    if (!incomingConstants.hasOwnProperty(p)) {
+      throw new Error('constant ' + p + ' not found');
+    }
+    _constants[p] = incomingConstants[p];
+  }
+  const kernel = (function() {
+${cpuKernel._kernelString}
+  })
+    .apply({ ${thisProperties.join('\n')} });
+  ${ beforeReturn.join('\n') }
+  return kernel;
+}`;
+   	}
+
+   	module.exports = {
+   	  cpuKernelString
+   	};
+   	},{"../../utils":114}],8:[function(require,module,exports){
+   	const { Kernel } = require('../kernel');
+   	const { FunctionBuilder } = require('../function-builder');
+   	const { CPUFunctionNode } = require('./function-node');
+   	const { utils } = require('../../utils');
+   	const { cpuKernelString } = require('./kernel-string');
+
+   	class CPUKernel extends Kernel {
+   	  static getFeatures() {
+   	    return this.features;
+   	  }
+   	  static get features() {
+   	    return Object.freeze({
+   	      kernelMap: true,
+   	      isIntegerDivisionAccurate: true
+   	    });
+   	  }
+   	  static get isSupported() {
+   	    return true;
+   	  }
+   	  static isContextMatch(context) {
+   	    return false;
+   	  }
+   	  static get mode() {
+   	    return 'cpu';
+   	  }
+
+   	  static nativeFunctionArguments() {
+   	    return null;
+   	  }
+
+   	  static nativeFunctionReturnType() {
+   	    throw new Error(`Looking up native function return type not supported on ${this.name}`);
+   	  }
+
+   	  static combineKernels(combinedKernel) {
+   	    return combinedKernel;
+   	  }
+
+   	  static getSignature(kernel, argumentTypes) {
+   	    return 'cpu' + (argumentTypes.length > 0 ? ':' + argumentTypes.join(',') : '');
+   	  }
+
+   	  constructor(source, settings) {
+   	    super(source, settings);
+   	    this.mergeSettings(source.settings || settings);
+
+   	    this._imageData = null;
+   	    this._colorData = null;
+   	    this._kernelString = null;
+   	    this._prependedString = [];
+   	    this.thread = {
+   	      x: 0,
+   	      y: 0,
+   	      z: 0
+   	    };
+   	    this.translatedSources = null;
+   	  }
+
+   	  initCanvas() {
+   	    if (typeof document !== 'undefined') {
+   	      return document.createElement('canvas');
+   	    } else if (typeof OffscreenCanvas !== 'undefined') {
+   	      return new OffscreenCanvas(0, 0);
+   	    }
+   	  }
+
+   	  initContext() {
+   	    if (!this.canvas) return null;
+   	    return this.canvas.getContext('2d');
+   	  }
+
+   	  initPlugins(settings) {
+   	    return [];
+   	  }
+
+   	  validateSettings(args) {
+   	    if (!this.output || this.output.length === 0) {
+   	      if (args.length !== 1) {
+   	        throw new Error('Auto output only supported for kernels with only one input');
+   	      }
+
+   	      const argType = utils.getVariableType(args[0], this.strictIntegers);
+   	      if (argType === 'Array') {
+   	        this.output = utils.getDimensions(argType);
+   	      } else if (argType === 'NumberTexture' || argType === 'ArrayTexture(4)') {
+   	        this.output = args[0].output;
+   	      } else {
+   	        throw new Error('Auto output not supported for input type: ' + argType);
+   	      }
+   	    }
+
+   	    if (this.graphical) {
+   	      if (this.output.length !== 2) {
+   	        throw new Error('Output must have 2 dimensions on graphical mode');
+   	      }
+   	    }
+
+   	    this.checkOutput();
+   	  }
+
+   	  translateSource() {
+   	    this.leadingReturnStatement = this.output.length > 1 ? 'resultX[x] = ' : 'result[x] = ';
+   	    if (this.subKernels) {
+   	      const followingReturnStatement = [];
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        const {
+   	          name
+   	        } = this.subKernels[i];
+   	        followingReturnStatement.push(this.output.length > 1 ? `resultX_${ name }[x] = subKernelResult_${ name };\n` : `result_${ name }[x] = subKernelResult_${ name };\n`);
+   	      }
+   	      this.followingReturnStatement = followingReturnStatement.join('');
+   	    }
+   	    const functionBuilder = FunctionBuilder.fromKernel(this, CPUFunctionNode);
+   	    this.translatedSources = functionBuilder.getPrototypes('kernel');
+   	    if (!this.graphical && !this.returnType) {
+   	      this.returnType = functionBuilder.getKernelResultType();
+   	    }
+   	  }
+
+   	  build() {
+   	    if (this.built) return;
+   	    this.setupConstants();
+   	    this.setupArguments(arguments);
+   	    this.validateSettings(arguments);
+   	    this.translateSource();
+
+   	    if (this.graphical) {
+   	      const {
+   	        canvas,
+   	        output
+   	      } = this;
+   	      if (!canvas) {
+   	        throw new Error('no canvas available for using graphical output');
+   	      }
+   	      const width = output[0];
+   	      const height = output[1] || 1;
+   	      canvas.width = width;
+   	      canvas.height = height;
+   	      this._imageData = this.context.createImageData(width, height);
+   	      this._colorData = new Uint8ClampedArray(width * height * 4);
+   	    }
+
+   	    const kernelString = this.getKernelString();
+   	    this.kernelString = kernelString;
+
+   	    if (this.debug) {
+   	      console.log('Function output:');
+   	      console.log(kernelString);
+   	    }
+
+   	    try {
+   	      this.run = new Function([], kernelString).bind(this)();
+   	    } catch (e) {
+   	      console.error('An error occurred compiling the javascript: ', e);
+   	    }
+   	    this.buildSignature(arguments);
+   	    this.built = true;
+   	  }
+
+   	  color(r, g, b, a) {
+   	    if (typeof a === 'undefined') {
+   	      a = 1;
+   	    }
+
+   	    r = Math.floor(r * 255);
+   	    g = Math.floor(g * 255);
+   	    b = Math.floor(b * 255);
+   	    a = Math.floor(a * 255);
+
+   	    const width = this.output[0];
+   	    const height = this.output[1];
+
+   	    const x = this.thread.x;
+   	    const y = height - this.thread.y - 1;
+
+   	    const index = x + y * width;
+
+   	    this._colorData[index * 4 + 0] = r;
+   	    this._colorData[index * 4 + 1] = g;
+   	    this._colorData[index * 4 + 2] = b;
+   	    this._colorData[index * 4 + 3] = a;
+   	  }
+
+   	  getKernelString() {
+   	    if (this._kernelString !== null) return this._kernelString;
+
+   	    let kernelThreadString = null;
+   	    let {
+   	      translatedSources
+   	    } = this;
+   	    if (translatedSources.length > 1) {
+   	      translatedSources = translatedSources.filter(fn => {
+   	        if (/^function/.test(fn)) return fn;
+   	        kernelThreadString = fn;
+   	        return false;
+   	      });
+   	    } else {
+   	      kernelThreadString = translatedSources.shift();
+   	    }
+   	    return this._kernelString = `  const LOOP_MAX = ${ this._getLoopMaxString() };
+  ${ this.injectedNative || '' }
+  const _this = this;
+  ${ this._resultKernelHeader() }
+  ${ this._processConstants() }
+  return (${ this.argumentNames.map(argumentName => 'user_' + argumentName).join(', ') }) => {
+    ${ this._prependedString.join('') }
+    ${ this._earlyThrows() }
+    ${ this._processArguments() }
+    ${ this.graphical ? this._graphicalKernelBody(kernelThreadString) : this._resultKernelBody(kernelThreadString) }
+    ${ translatedSources.length > 0 ? translatedSources.join('\n') : '' }
+  };`;
+   	  }
+
+   	  toString() {
+   	    return cpuKernelString(this);
+   	  }
+
+   	  _getLoopMaxString() {
+   	    return (
+   	      this.loopMaxIterations ?
+   	      ` ${ parseInt(this.loopMaxIterations) };` :
+   	      ' 1000;'
+   	    );
+   	  }
+
+   	  _processConstants() {
+   	    if (!this.constants) return '';
+
+   	    const result = [];
+   	    for (let p in this.constants) {
+   	      const type = this.constantTypes[p];
+   	      switch (type) {
+   	        case 'HTMLCanvas':
+   	        case 'OffscreenCanvas':
+   	        case 'HTMLImage':
+   	        case 'ImageBitmap':
+   	        case 'ImageData':
+   	        case 'HTMLVideo':
+   	          result.push(`    const constants_${p} = this._mediaTo2DArray(this.constants.${p});\n`);
+   	          break;
+   	        case 'HTMLImageArray':
+   	          result.push(`    const constants_${p} = this._imageTo3DArray(this.constants.${p});\n`);
+   	          break;
+   	        case 'Input':
+   	          result.push(`    const constants_${p} = this.constants.${p}.value;\n`);
+   	          break;
+   	        default:
+   	          result.push(`    const constants_${p} = this.constants.${p};\n`);
+   	      }
+   	    }
+   	    return result.join('');
+   	  }
+
+   	  _earlyThrows() {
+   	    if (this.graphical) return '';
+   	    if (this.immutable) return '';
+   	    if (!this.pipeline) return '';
+   	    const arrayArguments = [];
+   	    for (let i = 0; i < this.argumentTypes.length; i++) {
+   	      if (this.argumentTypes[i] === 'Array') {
+   	        arrayArguments.push(this.argumentNames[i]);
+   	      }
+   	    }
+   	    if (arrayArguments.length === 0) return '';
+   	    const checks = [];
+   	    for (let i = 0; i < arrayArguments.length; i++) {
+   	      const argumentName = arrayArguments[i];
+   	      const checkSubKernels = this._mapSubKernels(subKernel => `user_${argumentName} === result_${subKernel.name}`).join(' || ');
+   	      checks.push(`user_${argumentName} === result${checkSubKernels ? ` || ${checkSubKernels}` : ''}`);
+   	    }
+   	    return `if (${checks.join(' || ')}) throw new Error('Source and destination arrays are the same.  Use immutable = true');`;
+   	  }
+
+   	  _processArguments() {
+   	    const result = [];
+   	    for (let i = 0; i < this.argumentTypes.length; i++) {
+   	      const variableName = `user_${this.argumentNames[i]}`;
+   	      switch (this.argumentTypes[i]) {
+   	        case 'HTMLCanvas':
+   	        case 'OffscreenCanvas':
+   	        case 'HTMLImage':
+   	        case 'ImageBitmap':
+   	        case 'ImageData':
+   	        case 'HTMLVideo':
+   	          result.push(`    ${variableName} = this._mediaTo2DArray(${variableName});\n`);
+   	          break;
+   	        case 'HTMLImageArray':
+   	          result.push(`    ${variableName} = this._imageTo3DArray(${variableName});\n`);
+   	          break;
+   	        case 'Input':
+   	          result.push(`    ${variableName} = ${variableName}.value;\n`);
+   	          break;
+   	        case 'ArrayTexture(1)':
+   	        case 'ArrayTexture(2)':
+   	        case 'ArrayTexture(3)':
+   	        case 'ArrayTexture(4)':
+   	        case 'NumberTexture':
+   	        case 'MemoryOptimizedNumberTexture':
+   	          result.push(`
+    if (${variableName}.toArray) {
+      if (!_this.textureCache) {
+        _this.textureCache = [];
+        _this.arrayCache = [];
+      }
+      const textureIndex = _this.textureCache.indexOf(${variableName});
+      if (textureIndex !== -1) {
+        ${variableName} = _this.arrayCache[textureIndex];
+      } else {
+        _this.textureCache.push(${variableName});
+        ${variableName} = ${variableName}.toArray();
+        _this.arrayCache.push(${variableName});
+      }
+    }`);
+   	          break;
+   	      }
+   	    }
+   	    return result.join('');
+   	  }
+
+   	  _mediaTo2DArray(media) {
+   	    const canvas = this.canvas;
+   	    const width = media.width > 0 ? media.width : media.videoWidth;
+   	    const height = media.height > 0 ? media.height : media.videoHeight;
+   	    if (canvas.width < width) {
+   	      canvas.width = width;
+   	    }
+   	    if (canvas.height < height) {
+   	      canvas.height = height;
+   	    }
+   	    const ctx = this.context;
+   	    let pixelsData;
+   	    if (media.constructor === ImageData) {
+   	      pixelsData = media.data;
+   	    } else {
+   	      ctx.drawImage(media, 0, 0, width, height);
+   	      pixelsData = ctx.getImageData(0, 0, width, height).data;
+   	    }
+   	    const imageArray = new Array(height);
+   	    let index = 0;
+   	    for (let y = height - 1; y >= 0; y--) {
+   	      const row = imageArray[y] = new Array(width);
+   	      for (let x = 0; x < width; x++) {
+   	        const pixel = new Float32Array(4);
+   	        pixel[0] = pixelsData[index++] / 255; 
+   	        pixel[1] = pixelsData[index++] / 255; 
+   	        pixel[2] = pixelsData[index++] / 255; 
+   	        pixel[3] = pixelsData[index++] / 255; 
+   	        row[x] = pixel;
+   	      }
+   	    }
+   	    return imageArray;
+   	  }
+
+   	  getPixels(flip) {
+   	    const [width, height] = this.output;
+   	    return flip ? utils.flipPixels(this._imageData.data, width, height) : this._imageData.data.slice(0);
+   	  }
+
+   	  _imageTo3DArray(images) {
+   	    const imagesArray = new Array(images.length);
+   	    for (let i = 0; i < images.length; i++) {
+   	      imagesArray[i] = this._mediaTo2DArray(images[i]);
+   	    }
+   	    return imagesArray;
+   	  }
+
+   	  _resultKernelHeader() {
+   	    if (this.graphical) return '';
+   	    if (this.immutable) return '';
+   	    if (!this.pipeline) return '';
+   	    switch (this.output.length) {
+   	      case 1:
+   	        return this._mutableKernel1DResults();
+   	      case 2:
+   	        return this._mutableKernel2DResults();
+   	      case 3:
+   	        return this._mutableKernel3DResults();
+   	    }
+   	  }
+
+   	  _resultKernelBody(kernelString) {
+   	    switch (this.output.length) {
+   	      case 1:
+   	        return (!this.immutable && this.pipeline ? this._resultMutableKernel1DLoop(kernelString) : this._resultImmutableKernel1DLoop(kernelString)) + this._kernelOutput();
+   	      case 2:
+   	        return (!this.immutable && this.pipeline ? this._resultMutableKernel2DLoop(kernelString) : this._resultImmutableKernel2DLoop(kernelString)) + this._kernelOutput();
+   	      case 3:
+   	        return (!this.immutable && this.pipeline ? this._resultMutableKernel3DLoop(kernelString) : this._resultImmutableKernel3DLoop(kernelString)) + this._kernelOutput();
+   	      default:
+   	        throw new Error('unsupported size kernel');
+   	    }
+   	  }
+
+   	  _graphicalKernelBody(kernelThreadString) {
+   	    switch (this.output.length) {
+   	      case 2:
+   	        return this._graphicalKernel2DLoop(kernelThreadString) + this._graphicalOutput();
+   	      default:
+   	        throw new Error('unsupported size kernel');
+   	    }
+   	  }
+
+   	  _graphicalOutput() {
+   	    return `
+    this._imageData.data.set(this._colorData);
+    this.context.putImageData(this._imageData, 0, 0);
+    return;`
+   	  }
+
+   	  _getKernelResultTypeConstructorString() {
+   	    switch (this.returnType) {
+   	      case 'LiteralInteger':
+   	      case 'Number':
+   	      case 'Integer':
+   	      case 'Float':
+   	        return 'Float32Array';
+   	      case 'Array(2)':
+   	      case 'Array(3)':
+   	      case 'Array(4)':
+   	        return 'Array';
+   	      default:
+   	        if (this.graphical) {
+   	          return 'Float32Array';
+   	        }
+   	        throw new Error(`unhandled returnType ${ this.returnType }`);
+   	    }
+   	  }
+
+   	  _resultImmutableKernel1DLoop(kernelString) {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const result = new ${constructorString}(outputX);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new ${constructorString}(outputX);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let x = 0; x < outputX; x++) {
+      this.thread.x = x;
+      this.thread.y = 0;
+      this.thread.z = 0;
+      ${ kernelString }
+    }`;
+   	  }
+
+   	  _mutableKernel1DResults() {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const result = new ${constructorString}(outputX);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new ${constructorString}(outputX);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }`;
+   	  }
+
+   	  _resultMutableKernel1DLoop(kernelString) {
+   	    return `  const outputX = _this.output[0];
+    for (let x = 0; x < outputX; x++) {
+      this.thread.x = x;
+      this.thread.y = 0;
+      this.thread.z = 0;
+      ${ kernelString }
+    }`;
+   	  }
+
+   	  _resultImmutableKernel2DLoop(kernelString) {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const result = new Array(outputY);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputY);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let y = 0; y < outputY; y++) {
+      this.thread.z = 0;
+      this.thread.y = y;
+      const resultX = result[y] = new ${constructorString}(outputX);
+      ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = result_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('') }
+      for (let x = 0; x < outputX; x++) {
+        this.thread.x = x;
+        ${ kernelString }
+      }
+    }`;
+   	  }
+
+   	  _mutableKernel2DResults() {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const result = new Array(outputY);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputY);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let y = 0; y < outputY; y++) {
+      const resultX = result[y] = new ${constructorString}(outputX);
+      ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = result_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('') }
+    }`;
+   	  }
+
+   	  _resultMutableKernel2DLoop(kernelString) {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    for (let y = 0; y < outputY; y++) {
+      this.thread.z = 0;
+      this.thread.y = y;
+      const resultX = result[y];
+      ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = result_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('') }
+      for (let x = 0; x < outputX; x++) {
+        this.thread.x = x;
+        ${ kernelString }
+      }
+    }`;
+   	  }
+
+   	  _graphicalKernel2DLoop(kernelString) {
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    for (let y = 0; y < outputY; y++) {
+      this.thread.z = 0;
+      this.thread.y = y;
+      for (let x = 0; x < outputX; x++) {
+        this.thread.x = x;
+        ${ kernelString }
+      }
+    }`;
+   	  }
+
+   	  _resultImmutableKernel3DLoop(kernelString) {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const outputZ = _this.output[2];
+    const result = new Array(outputZ);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputZ);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let z = 0; z < outputZ; z++) {
+      this.thread.z = z;
+      const resultY = result[z] = new Array(outputY);
+      ${ this._mapSubKernels(subKernel => `const resultY_${ subKernel.name } = result_${subKernel.name}[z] = new Array(outputY);\n`).join('      ') }
+      for (let y = 0; y < outputY; y++) {
+        this.thread.y = y;
+        const resultX = resultY[y] = new ${constructorString}(outputX);
+        ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = resultY_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('        ') }
+        for (let x = 0; x < outputX; x++) {
+          this.thread.x = x;
+          ${ kernelString }
+        }
+      }
+    }`;
+   	  }
+
+   	  _mutableKernel3DResults() {
+   	    const constructorString = this._getKernelResultTypeConstructorString();
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const outputZ = _this.output[2];
+    const result = new Array(outputZ);
+    ${ this._mapSubKernels(subKernel => `const result_${ subKernel.name } = new Array(outputZ);\n`).join('    ') }
+    ${ this._mapSubKernels(subKernel => `let subKernelResult_${ subKernel.name };\n`).join('    ') }
+    for (let z = 0; z < outputZ; z++) {
+      const resultY = result[z] = new Array(outputY);
+      ${ this._mapSubKernels(subKernel => `const resultY_${ subKernel.name } = result_${subKernel.name}[z] = new Array(outputY);\n`).join('      ') }
+      for (let y = 0; y < outputY; y++) {
+        const resultX = resultY[y] = new ${constructorString}(outputX);
+        ${ this._mapSubKernels(subKernel => `const resultX_${ subKernel.name } = resultY_${subKernel.name}[y] = new ${constructorString}(outputX);\n`).join('        ') }
+      }
+    }`;
+   	  }
+
+   	  _resultMutableKernel3DLoop(kernelString) {
+   	    return `  const outputX = _this.output[0];
+    const outputY = _this.output[1];
+    const outputZ = _this.output[2];
+    for (let z = 0; z < outputZ; z++) {
+      this.thread.z = z;
+      const resultY = result[z];
+      for (let y = 0; y < outputY; y++) {
+        this.thread.y = y;
+        const resultX = resultY[y];
+        for (let x = 0; x < outputX; x++) {
+          this.thread.x = x;
+          ${ kernelString }
+        }
+      }
+    }`;
+   	  }
+
+   	  _kernelOutput() {
+   	    if (!this.subKernels) {
+   	      return '\n    return result;';
+   	    }
+   	    return `\n    return {
+      result: result,
+      ${ this.subKernels.map(subKernel => `${ subKernel.property }: result_${ subKernel.name }`).join(',\n      ') }
+    };`;
+   	  }
+
+   	  _mapSubKernels(fn) {
+   	    return this.subKernels === null ? [''] :
+   	      this.subKernels.map(fn);
+   	  }
+
+   	  destroy(removeCanvasReference) {
+   	    if (removeCanvasReference) {
+   	      delete this.canvas;
+   	    }
+   	  }
+
+   	  static destroyContext(context) {}
+
+   	  toJSON() {
+   	    const json = super.toJSON();
+   	    json.functionNodes = FunctionBuilder.fromKernel(this, CPUFunctionNode).toJSON();
+   	    return json;
+   	  }
+
+   	  setOutput(output) {
+   	    super.setOutput(output);
+   	    const [width, height] = this.output;
+   	    if (this.graphical) {
+   	      this._imageData = this.context.createImageData(width, height);
+   	      this._colorData = new Uint8ClampedArray(width * height * 4);
+   	    }
+   	  }
+
+   	  prependString(value) {
+   	    if (this._kernelString) throw new Error('Kernel already built');
+   	    this._prependedString.push(value);
+   	  }
+
+   	  hasPrependString(value) {
+   	    return this._prependedString.indexOf(value) > -1;
+   	  }
+   	}
+
+   	module.exports = {
+   	  CPUKernel
+   	};
+   	},{"../../utils":114,"../function-builder":9,"../kernel":36,"./function-node":6,"./kernel-string":7}],9:[function(require,module,exports){
+   	class FunctionBuilder {
+   	  static fromKernel(kernel, FunctionNode, extraNodeOptions) {
+   	    const {
+   	      kernelArguments,
+   	      kernelConstants,
+   	      argumentNames,
+   	      argumentSizes,
+   	      argumentBitRatios,
+   	      constants,
+   	      constantBitRatios,
+   	      debug,
+   	      loopMaxIterations,
+   	      nativeFunctions,
+   	      output,
+   	      optimizeFloatMemory,
+   	      precision,
+   	      plugins,
+   	      source,
+   	      subKernels,
+   	      functions,
+   	      leadingReturnStatement,
+   	      followingReturnStatement,
+   	      dynamicArguments,
+   	      dynamicOutput,
+   	    } = kernel;
+
+   	    const argumentTypes = new Array(kernelArguments.length);
+   	    const constantTypes = {};
+
+   	    for (let i = 0; i < kernelArguments.length; i++) {
+   	      argumentTypes[i] = kernelArguments[i].type;
+   	    }
+
+   	    for (let i = 0; i < kernelConstants.length; i++) {
+   	      const kernelConstant = kernelConstants[i];
+   	      constantTypes[kernelConstant.name] = kernelConstant.type;
+   	    }
+
+   	    const needsArgumentType = (functionName, index) => {
+   	      return functionBuilder.needsArgumentType(functionName, index);
+   	    };
+
+   	    const assignArgumentType = (functionName, index, type) => {
+   	      functionBuilder.assignArgumentType(functionName, index, type);
+   	    };
+
+   	    const lookupReturnType = (functionName, ast, requestingNode) => {
+   	      return functionBuilder.lookupReturnType(functionName, ast, requestingNode);
+   	    };
+
+   	    const lookupFunctionArgumentTypes = (functionName) => {
+   	      return functionBuilder.lookupFunctionArgumentTypes(functionName);
+   	    };
+
+   	    const lookupFunctionArgumentName = (functionName, argumentIndex) => {
+   	      return functionBuilder.lookupFunctionArgumentName(functionName, argumentIndex);
+   	    };
+
+   	    const lookupFunctionArgumentBitRatio = (functionName, argumentName) => {
+   	      return functionBuilder.lookupFunctionArgumentBitRatio(functionName, argumentName);
+   	    };
+
+   	    const triggerImplyArgumentType = (functionName, i, argumentType, requestingNode) => {
+   	      functionBuilder.assignArgumentType(functionName, i, argumentType, requestingNode);
+   	    };
+
+   	    const triggerImplyArgumentBitRatio = (functionName, argumentName, calleeFunctionName, argumentIndex) => {
+   	      functionBuilder.assignArgumentBitRatio(functionName, argumentName, calleeFunctionName, argumentIndex);
+   	    };
+
+   	    const onFunctionCall = (functionName, calleeFunctionName, args) => {
+   	      functionBuilder.trackFunctionCall(functionName, calleeFunctionName, args);
+   	    };
+
+   	    const onNestedFunction = (ast, source) => {
+   	      const argumentNames = [];
+   	      for (let i = 0; i < ast.params.length; i++) {
+   	        argumentNames.push(ast.params[i].name);
+   	      }
+   	      const nestedFunction = new FunctionNode(source, Object.assign({}, nodeOptions, {
+   	        returnType: null,
+   	        ast,
+   	        name: ast.id.name,
+   	        argumentNames,
+   	        lookupReturnType,
+   	        lookupFunctionArgumentTypes,
+   	        lookupFunctionArgumentName,
+   	        lookupFunctionArgumentBitRatio,
+   	        needsArgumentType,
+   	        assignArgumentType,
+   	        triggerImplyArgumentType,
+   	        triggerImplyArgumentBitRatio,
+   	        onFunctionCall,
+   	      }));
+   	      nestedFunction.traceFunctionAST(ast);
+   	      functionBuilder.addFunctionNode(nestedFunction);
+   	    };
+
+   	    const nodeOptions = Object.assign({
+   	      isRootKernel: false,
+   	      onNestedFunction,
+   	      lookupReturnType,
+   	      lookupFunctionArgumentTypes,
+   	      lookupFunctionArgumentName,
+   	      lookupFunctionArgumentBitRatio,
+   	      needsArgumentType,
+   	      assignArgumentType,
+   	      triggerImplyArgumentType,
+   	      triggerImplyArgumentBitRatio,
+   	      onFunctionCall,
+   	      optimizeFloatMemory,
+   	      precision,
+   	      constants,
+   	      constantTypes,
+   	      constantBitRatios,
+   	      debug,
+   	      loopMaxIterations,
+   	      output,
+   	      plugins,
+   	      dynamicArguments,
+   	      dynamicOutput,
+   	    }, extraNodeOptions || {});
+
+   	    const rootNodeOptions = Object.assign({}, nodeOptions, {
+   	      isRootKernel: true,
+   	      name: 'kernel',
+   	      argumentNames,
+   	      argumentTypes,
+   	      argumentSizes,
+   	      argumentBitRatios,
+   	      leadingReturnStatement,
+   	      followingReturnStatement,
+   	    });
+
+   	    if (typeof source === 'object' && source.functionNodes) {
+   	      return new FunctionBuilder().fromJSON(source.functionNodes, FunctionNode);
+   	    }
+
+   	    const rootNode = new FunctionNode(source, rootNodeOptions);
+
+   	    let functionNodes = null;
+   	    if (functions) {
+   	      functionNodes = functions.map((fn) => new FunctionNode(fn.source, {
+   	        returnType: fn.returnType,
+   	        argumentTypes: fn.argumentTypes,
+   	        output,
+   	        plugins,
+   	        constants,
+   	        constantTypes,
+   	        constantBitRatios,
+   	        optimizeFloatMemory,
+   	        precision,
+   	        lookupReturnType,
+   	        lookupFunctionArgumentTypes,
+   	        lookupFunctionArgumentName,
+   	        lookupFunctionArgumentBitRatio,
+   	        needsArgumentType,
+   	        assignArgumentType,
+   	        triggerImplyArgumentType,
+   	        triggerImplyArgumentBitRatio,
+   	        onFunctionCall,
+   	        onNestedFunction,
+   	      }));
+   	    }
+
+   	    let subKernelNodes = null;
+   	    if (subKernels) {
+   	      subKernelNodes = subKernels.map((subKernel) => {
+   	        const { name, source } = subKernel;
+   	        return new FunctionNode(source, Object.assign({}, nodeOptions, {
+   	          name,
+   	          isSubKernel: true,
+   	          isRootKernel: false,
+   	        }));
+   	      });
+   	    }
+
+   	    const functionBuilder = new FunctionBuilder({
+   	      kernel,
+   	      rootNode,
+   	      functionNodes,
+   	      nativeFunctions,
+   	      subKernelNodes
+   	    });
+
+   	    return functionBuilder;
+   	  }
+
+   	  constructor(settings) {
+   	    settings = settings || {};
+   	    this.kernel = settings.kernel;
+   	    this.rootNode = settings.rootNode;
+   	    this.functionNodes = settings.functionNodes || [];
+   	    this.subKernelNodes = settings.subKernelNodes || [];
+   	    this.nativeFunctions = settings.nativeFunctions || [];
+   	    this.functionMap = {};
+   	    this.nativeFunctionNames = [];
+   	    this.lookupChain = [];
+   	    this.functionNodeDependencies = {};
+   	    this.functionCalls = {};
+
+   	    if (this.rootNode) {
+   	      this.functionMap['kernel'] = this.rootNode;
+   	    }
+
+   	    if (this.functionNodes) {
+   	      for (let i = 0; i < this.functionNodes.length; i++) {
+   	        this.functionMap[this.functionNodes[i].name] = this.functionNodes[i];
+   	      }
+   	    }
+
+   	    if (this.subKernelNodes) {
+   	      for (let i = 0; i < this.subKernelNodes.length; i++) {
+   	        this.functionMap[this.subKernelNodes[i].name] = this.subKernelNodes[i];
+   	      }
+   	    }
+
+   	    if (this.nativeFunctions) {
+   	      for (let i = 0; i < this.nativeFunctions.length; i++) {
+   	        const nativeFunction = this.nativeFunctions[i];
+   	        this.nativeFunctionNames.push(nativeFunction.name);
+   	      }
+   	    }
+   	  }
+
+   	  addFunctionNode(functionNode) {
+   	    if (!functionNode.name) throw new Error('functionNode.name needs set');
+   	    this.functionMap[functionNode.name] = functionNode;
+   	    if (functionNode.isRootKernel) {
+   	      this.rootNode = functionNode;
+   	    }
+   	  }
+
+   	  traceFunctionCalls(functionName, retList) {
+   	    functionName = functionName || 'kernel';
+   	    retList = retList || [];
+
+   	    if (this.nativeFunctionNames.indexOf(functionName) > -1) {
+   	      const nativeFunctionIndex = retList.indexOf(functionName);
+   	      if (nativeFunctionIndex === -1) {
+   	        retList.push(functionName);
+   	      } else {
+   	        const dependantNativeFunctionName = retList.splice(nativeFunctionIndex, 1)[0];
+   	        retList.push(dependantNativeFunctionName);
+   	      }
+   	      return retList;
+   	    }
+
+   	    const functionNode = this.functionMap[functionName];
+   	    if (functionNode) {
+   	      const functionIndex = retList.indexOf(functionName);
+   	      if (functionIndex === -1) {
+   	        retList.push(functionName);
+   	        functionNode.toString(); 
+   	        for (let i = 0; i < functionNode.calledFunctions.length; ++i) {
+   	          this.traceFunctionCalls(functionNode.calledFunctions[i], retList);
+   	        }
+   	      } else {
+   	        const dependantFunctionName = retList.splice(functionIndex, 1)[0];
+   	        retList.push(dependantFunctionName);
+   	      }
+   	    }
+
+   	    return retList;
+   	  }
+
+   	  getPrototypeString(functionName) {
+   	    return this.getPrototypes(functionName).join('\n');
+   	  }
+
+   	  getPrototypes(functionName) {
+   	    if (this.rootNode) {
+   	      this.rootNode.toString();
+   	    }
+   	    if (functionName) {
+   	      return this.getPrototypesFromFunctionNames(this.traceFunctionCalls(functionName, []).reverse());
+   	    }
+   	    return this.getPrototypesFromFunctionNames(Object.keys(this.functionMap));
+   	  }
+
+   	  getStringFromFunctionNames(functionList) {
+   	    const ret = [];
+   	    for (let i = 0; i < functionList.length; ++i) {
+   	      const node = this.functionMap[functionList[i]];
+   	      if (node) {
+   	        ret.push(this.functionMap[functionList[i]].toString());
+   	      }
+   	    }
+   	    return ret.join('\n');
+   	  }
+
+   	  getPrototypesFromFunctionNames(functionList) {
+   	    const ret = [];
+   	    for (let i = 0; i < functionList.length; ++i) {
+   	      const functionName = functionList[i];
+   	      const functionIndex = this.nativeFunctionNames.indexOf(functionName);
+   	      if (functionIndex > -1) {
+   	        ret.push(this.nativeFunctions[functionIndex].source);
+   	        continue;
+   	      }
+   	      const node = this.functionMap[functionName];
+   	      if (node) {
+   	        ret.push(node.toString());
+   	      }
+   	    }
+   	    return ret;
+   	  }
+
+   	  toJSON() {
+   	    return this.traceFunctionCalls(this.rootNode.name).reverse().map(name => {
+   	      const nativeIndex = this.nativeFunctions.indexOf(name);
+   	      if (nativeIndex > -1) {
+   	        return {
+   	          name,
+   	          source: this.nativeFunctions[nativeIndex].source
+   	        };
+   	      } else if (this.functionMap[name]) {
+   	        return this.functionMap[name].toJSON();
+   	      } else {
+   	        throw new Error(`function ${ name } not found`);
+   	      }
+   	    });
+   	  }
+
+   	  fromJSON(jsonFunctionNodes, FunctionNode) {
+   	    this.functionMap = {};
+   	    for (let i = 0; i < jsonFunctionNodes.length; i++) {
+   	      const jsonFunctionNode = jsonFunctionNodes[i];
+   	      this.functionMap[jsonFunctionNode.settings.name] = new FunctionNode(jsonFunctionNode.ast, jsonFunctionNode.settings);
+   	    }
+   	    return this;
+   	  }
+
+   	  getString(functionName) {
+   	    if (functionName) {
+   	      return this.getStringFromFunctionNames(this.traceFunctionCalls(functionName).reverse());
+   	    }
+   	    return this.getStringFromFunctionNames(Object.keys(this.functionMap));
+   	  }
+
+   	  lookupReturnType(functionName, ast, requestingNode) {
+   	    if (ast.type !== 'CallExpression') {
+   	      throw new Error(`expected ast type of "CallExpression", but is ${ ast.type }`);
+   	    }
+   	    if (this._isNativeFunction(functionName)) {
+   	      return this._lookupNativeFunctionReturnType(functionName);
+   	    } else if (this._isFunction(functionName)) {
+   	      const node = this._getFunction(functionName);
+   	      if (node.returnType) {
+   	        return node.returnType;
+   	      } else {
+   	        for (let i = 0; i < this.lookupChain.length; i++) {
+   	          if (this.lookupChain[i].ast === ast) {
+   	            if (node.argumentTypes.length === 0 && ast.arguments.length > 0) {
+   	              const args = ast.arguments;
+   	              for (let j = 0; j < args.length; j++) {
+   	                this.lookupChain.push({
+   	                  name: requestingNode.name,
+   	                  ast: args[i],
+   	                  requestingNode
+   	                });
+   	                node.argumentTypes[j] = requestingNode.getType(args[j]);
+   	                this.lookupChain.pop();
+   	              }
+   	              return node.returnType = node.getType(node.getJsAST());
+   	            }
+
+   	            throw new Error('circlical logic detected!');
+   	          }
+   	        }
+   	        this.lookupChain.push({
+   	          name: requestingNode.name,
+   	          ast,
+   	          requestingNode
+   	        });
+   	        const type = node.getType(node.getJsAST());
+   	        this.lookupChain.pop();
+   	        return node.returnType = type;
+   	      }
+   	    }
+
+   	    return null;
+   	  }
+
+   	  _getFunction(functionName) {
+   	    if (!this._isFunction(functionName)) ;
+   	    return this.functionMap[functionName];
+   	  }
+
+   	  _isFunction(functionName) {
+   	    return Boolean(this.functionMap[functionName]);
+   	  }
+
+   	  _getNativeFunction(functionName) {
+   	    for (let i = 0; i < this.nativeFunctions.length; i++) {
+   	      if (this.nativeFunctions[i].name === functionName) return this.nativeFunctions[i];
+   	    }
+   	    return null;
+   	  }
+
+   	  _isNativeFunction(functionName) {
+   	    return Boolean(this._getNativeFunction(functionName));
+   	  }
+
+   	  _lookupNativeFunctionReturnType(functionName) {
+   	    let nativeFunction = this._getNativeFunction(functionName);
+   	    if (nativeFunction) {
+   	      return nativeFunction.returnType;
+   	    }
+   	    throw new Error(`Native function ${ functionName } not found`);
+   	  }
+
+   	  lookupFunctionArgumentTypes(functionName) {
+   	    if (this._isNativeFunction(functionName)) {
+   	      return this._getNativeFunction(functionName).argumentTypes;
+   	    } else if (this._isFunction(functionName)) {
+   	      return this._getFunction(functionName).argumentTypes;
+   	    }
+   	    return null;
+   	  }
+
+   	  lookupFunctionArgumentName(functionName, argumentIndex) {
+   	    return this._getFunction(functionName).argumentNames[argumentIndex];
+   	  }
+
+   	  lookupFunctionArgumentBitRatio(functionName, argumentName) {
+   	    if (!this._isFunction(functionName)) {
+   	      throw new Error('function not found');
+   	    }
+   	    if (this.rootNode.name === functionName) {
+   	      const i = this.rootNode.argumentNames.indexOf(argumentName);
+   	      if (i !== -1) {
+   	        return this.rootNode.argumentBitRatios[i];
+   	      }
+   	    }
+   	    const node = this._getFunction(functionName);
+   	    const i = node.argumentNames.indexOf(argumentName);
+   	    if (i === -1) {
+   	      throw new Error('argument not found');
+   	    }
+   	    const bitRatio = node.argumentBitRatios[i];
+   	    if (typeof bitRatio !== 'number') {
+   	      throw new Error('argument bit ratio not found');
+   	    }
+   	    return bitRatio;
+   	  }
+
+   	  needsArgumentType(functionName, i) {
+   	    if (!this._isFunction(functionName)) return false;
+   	    const fnNode = this._getFunction(functionName);
+   	    return !fnNode.argumentTypes[i];
+   	  }
+
+   	  assignArgumentType(functionName, i, argumentType, requestingNode) {
+   	    if (!this._isFunction(functionName)) return;
+   	    const fnNode = this._getFunction(functionName);
+   	    if (!fnNode.argumentTypes[i]) {
+   	      fnNode.argumentTypes[i] = argumentType;
+   	    }
+   	  }
+
+   	  assignArgumentBitRatio(functionName, argumentName, calleeFunctionName, argumentIndex) {
+   	    const node = this._getFunction(functionName);
+   	    if (this._isNativeFunction(calleeFunctionName)) return null;
+   	    const calleeNode = this._getFunction(calleeFunctionName);
+   	    const i = node.argumentNames.indexOf(argumentName);
+   	    if (i === -1) {
+   	      throw new Error(`Argument ${argumentName} not found in arguments from function ${functionName}`);
+   	    }
+   	    const bitRatio = node.argumentBitRatios[i];
+   	    if (typeof bitRatio !== 'number') {
+   	      throw new Error(`Bit ratio for argument ${argumentName} not found in function ${functionName}`);
+   	    }
+   	    if (!calleeNode.argumentBitRatios) {
+   	      calleeNode.argumentBitRatios = new Array(calleeNode.argumentNames.length);
+   	    }
+   	    const calleeBitRatio = calleeNode.argumentBitRatios[i];
+   	    if (typeof calleeBitRatio === 'number') {
+   	      if (calleeBitRatio !== bitRatio) {
+   	        throw new Error(`Incompatible bit ratio found at function ${functionName} at argument ${argumentName}`);
+   	      }
+   	      return calleeBitRatio;
+   	    }
+   	    calleeNode.argumentBitRatios[i] = bitRatio;
+   	    return bitRatio;
+   	  }
+
+   	  trackFunctionCall(functionName, calleeFunctionName, args) {
+   	    if (!this.functionNodeDependencies[functionName]) {
+   	      this.functionNodeDependencies[functionName] = new Set();
+   	      this.functionCalls[functionName] = [];
+   	    }
+   	    this.functionNodeDependencies[functionName].add(calleeFunctionName);
+   	    this.functionCalls[functionName].push(args);
+   	  }
+
+   	  getKernelResultType() {
+   	    return this.rootNode.returnType || this.rootNode.getType(this.rootNode.ast);
+   	  }
+
+   	  getSubKernelResultType(index) {
+   	    const subKernelNode = this.subKernelNodes[index];
+   	    let called = false;
+   	    for (let functionCallIndex = 0; functionCallIndex < this.rootNode.functionCalls.length; functionCallIndex++) {
+   	      const functionCall = this.rootNode.functionCalls[functionCallIndex];
+   	      if (functionCall.ast.callee.name === subKernelNode.name) {
+   	        called = true;
+   	      }
+   	    }
+   	    if (!called) {
+   	      throw new Error(`SubKernel ${ subKernelNode.name } never called by kernel`);
+   	    }
+   	    return subKernelNode.returnType || subKernelNode.getType(subKernelNode.getJsAST());
+   	  }
+
+   	  getReturnTypes() {
+   	    const result = {
+   	      [this.rootNode.name]: this.rootNode.getType(this.rootNode.ast),
+   	    };
+   	    const list = this.traceFunctionCalls(this.rootNode.name);
+   	    for (let i = 0; i < list.length; i++) {
+   	      const functionName = list[i];
+   	      const functionNode = this.functionMap[functionName];
+   	      result[functionName] = functionNode.getType(functionNode.ast);
+   	    }
+   	    return result;
+   	  }
+   	}
+
+   	module.exports = {
+   	  FunctionBuilder
+   	};
+   	},{}],10:[function(require,module,exports){
+   	const acorn = require('acorn');
+   	const { utils } = require('../utils');
+   	const { FunctionTracer } = require('./function-tracer');
+
+   	class FunctionNode {
+   	  constructor(source, settings) {
+   	    if (!source && !settings.ast) {
+   	      throw new Error('source parameter is missing');
+   	    }
+   	    settings = settings || {};
+   	    this.source = source;
+   	    this.ast = null;
+   	    this.name = typeof source === 'string' ? settings.isRootKernel ?
+   	      'kernel' :
+   	      (settings.name || utils.getFunctionNameFromString(source)) : null;
+   	    this.calledFunctions = [];
+   	    this.constants = {};
+   	    this.constantTypes = {};
+   	    this.constantBitRatios = {};
+   	    this.isRootKernel = false;
+   	    this.isSubKernel = false;
+   	    this.debug = null;
+   	    this.functions = null;
+   	    this.identifiers = null;
+   	    this.contexts = null;
+   	    this.functionCalls = null;
+   	    this.states = [];
+   	    this.needsArgumentType = null;
+   	    this.assignArgumentType = null;
+   	    this.lookupReturnType = null;
+   	    this.lookupFunctionArgumentTypes = null;
+   	    this.lookupFunctionArgumentBitRatio = null;
+   	    this.triggerImplyArgumentType = null;
+   	    this.triggerImplyArgumentBitRatio = null;
+   	    this.onNestedFunction = null;
+   	    this.onFunctionCall = null;
+   	    this.optimizeFloatMemory = null;
+   	    this.precision = null;
+   	    this.loopMaxIterations = null;
+   	    this.argumentNames = (typeof this.source === 'string' ? utils.getArgumentNamesFromString(this.source) : null);
+   	    this.argumentTypes = [];
+   	    this.argumentSizes = [];
+   	    this.argumentBitRatios = null;
+   	    this.returnType = null;
+   	    this.output = [];
+   	    this.plugins = null;
+   	    this.leadingReturnStatement = null;
+   	    this.followingReturnStatement = null;
+   	    this.dynamicOutput = null;
+   	    this.dynamicArguments = null;
+   	    this.strictTypingChecking = false;
+   	    this.fixIntegerDivisionAccuracy = null;
+
+   	    if (settings) {
+   	      for (const p in settings) {
+   	        if (!settings.hasOwnProperty(p)) continue;
+   	        if (!this.hasOwnProperty(p)) continue;
+   	        this[p] = settings[p];
+   	      }
+   	    }
+
+   	    this.literalTypes = {};
+
+   	    this.validate();
+   	    this._string = null;
+   	    this._internalVariableNames = {};
+   	  }
+
+   	  validate() {
+   	    if (typeof this.source !== 'string' && !this.ast) {
+   	      throw new Error('this.source not a string');
+   	    }
+
+   	    if (!this.ast && !utils.isFunctionString(this.source)) {
+   	      throw new Error('this.source not a function string');
+   	    }
+
+   	    if (!this.name) {
+   	      throw new Error('this.name could not be set');
+   	    }
+
+   	    if (this.argumentTypes.length > 0 && this.argumentTypes.length !== this.argumentNames.length) {
+   	      throw new Error(`argumentTypes count of ${ this.argumentTypes.length } exceeds ${ this.argumentNames.length }`);
+   	    }
+
+   	    if (this.output.length < 1) {
+   	      throw new Error('this.output is not big enough');
+   	    }
+   	  }
+
+   	  isIdentifierConstant(name) {
+   	    if (!this.constants) return false;
+   	    return this.constants.hasOwnProperty(name);
+   	  }
+
+   	  isInput(argumentName) {
+   	    return this.argumentTypes[this.argumentNames.indexOf(argumentName)] === 'Input';
+   	  }
+
+   	  pushState(state) {
+   	    this.states.push(state);
+   	  }
+
+   	  popState(state) {
+   	    if (this.state !== state) {
+   	      throw new Error(`Cannot popState ${ state } when in ${ this.state }`);
+   	    }
+   	    this.states.pop();
+   	  }
+
+   	  isState(state) {
+   	    return this.state === state;
+   	  }
+
+   	  get state() {
+   	    return this.states[this.states.length - 1];
+   	  }
+
+   	  astMemberExpressionUnroll(ast) {
+   	    if (ast.type === 'Identifier') {
+   	      return ast.name;
+   	    } else if (ast.type === 'ThisExpression') {
+   	      return 'this';
+   	    }
+
+   	    if (ast.type === 'MemberExpression') {
+   	      if (ast.object && ast.property) {
+   	        if (ast.object.hasOwnProperty('name') && ast.object.name !== 'Math') {
+   	          return this.astMemberExpressionUnroll(ast.property);
+   	        }
+
+   	        return (
+   	          this.astMemberExpressionUnroll(ast.object) +
+   	          '.' +
+   	          this.astMemberExpressionUnroll(ast.property)
+   	        );
+   	      }
+   	    }
+
+   	    if (ast.hasOwnProperty('expressions')) {
+   	      const firstExpression = ast.expressions[0];
+   	      if (firstExpression.type === 'Literal' && firstExpression.value === 0 && ast.expressions.length === 2) {
+   	        return this.astMemberExpressionUnroll(ast.expressions[1]);
+   	      }
+   	    }
+
+   	    throw this.astErrorOutput('Unknown astMemberExpressionUnroll', ast);
+   	  }
+
+   	  getJsAST(inParser) {
+   	    if (this.ast) {
+   	      return this.ast;
+   	    }
+   	    if (typeof this.source === 'object') {
+   	      this.traceFunctionAST(this.source);
+   	      return this.ast = this.source;
+   	    }
+
+   	    inParser = inParser || acorn;
+   	    if (inParser === null) {
+   	      throw new Error('Missing JS to AST parser');
+   	    }
+
+   	    const ast = Object.freeze(inParser.parse(`const parser_${ this.name } = ${ this.source };`, {
+   	      locations: true
+   	    }));
+   	    const functionAST = ast.body[0].declarations[0].init;
+   	    this.traceFunctionAST(functionAST);
+
+   	    if (!ast) {
+   	      throw new Error('Failed to parse JS code');
+   	    }
+
+   	    return this.ast = functionAST;
+   	  }
+
+   	  traceFunctionAST(ast) {
+   	    const { contexts, declarations, functions, identifiers, functionCalls } = new FunctionTracer(ast);
+   	    this.contexts = contexts;
+   	    this.identifiers = identifiers;
+   	    this.functionCalls = functionCalls;
+   	    this.functions = functions;
+   	    for (let i = 0; i < declarations.length; i++) {
+   	      const declaration = declarations[i];
+   	      const { ast, inForLoopInit, inForLoopTest } = declaration;
+   	      const { init } = ast;
+   	      const dependencies = this.getDependencies(init);
+   	      let valueType = null;
+
+   	      if (inForLoopInit && inForLoopTest) {
+   	        valueType = 'Integer';
+   	      } else {
+   	        if (init) {
+   	          const realType = this.getType(init);
+   	          switch (realType) {
+   	            case 'Integer':
+   	            case 'Float':
+   	            case 'Number':
+   	              if (init.type === 'MemberExpression') {
+   	                valueType = realType;
+   	              } else {
+   	                valueType = 'Number';
+   	              }
+   	              break;
+   	            case 'LiteralInteger':
+   	              valueType = 'Number';
+   	              break;
+   	            default:
+   	              valueType = realType;
+   	          }
+   	        }
+   	      }
+   	      declaration.valueType = valueType;
+   	      declaration.dependencies = dependencies;
+   	      declaration.isSafe = this.isSafeDependencies(dependencies);
+   	    }
+
+   	    for (let i = 0; i < functions.length; i++) {
+   	      this.onNestedFunction(functions[i], this.source);
+   	    }
+   	  }
+
+   	  getDeclaration(ast) {
+   	    for (let i = 0; i < this.identifiers.length; i++) {
+   	      const identifier = this.identifiers[i];
+   	      if (ast === identifier.ast) {
+   	        return identifier.declaration;
+   	      }
+   	    }
+   	    return null;
+   	  }
+
+   	  getVariableType(ast) {
+   	    if (ast.type !== 'Identifier') {
+   	      throw new Error(`ast of ${ast.type} not "Identifier"`);
+   	    }
+   	    let type = null;
+   	    const argumentIndex = this.argumentNames.indexOf(ast.name);
+   	    if (argumentIndex === -1) {
+   	      const declaration = this.getDeclaration(ast);
+   	      if (declaration) {
+   	        return declaration.valueType;
+   	      }
+   	    } else {
+   	      const argumentType = this.argumentTypes[argumentIndex];
+   	      if (argumentType) {
+   	        type = argumentType;
+   	      }
+   	    }
+   	    if (!type && this.strictTypingChecking) {
+   	      throw new Error(`Declaration of ${name} not found`);
+   	    }
+   	    return type;
+   	  }
+
+   	  getLookupType(type) {
+   	    if (!typeLookupMap.hasOwnProperty(type)) {
+   	      throw new Error(`unknown typeLookupMap ${ type }`);
+   	    }
+   	    return typeLookupMap[type];
+   	  }
+
+   	  getConstantType(constantName) {
+   	    if (this.constantTypes[constantName]) {
+   	      const type = this.constantTypes[constantName];
+   	      if (type === 'Float') {
+   	        return 'Number';
+   	      } else {
+   	        return type;
+   	      }
+   	    }
+   	    throw new Error(`Type for constant "${ constantName }" not declared`);
+   	  }
+
+   	  toString() {
+   	    if (this._string) return this._string;
+   	    return this._string = this.astGeneric(this.getJsAST(), []).join('').trim();
+   	  }
+
+   	  toJSON() {
+   	    const settings = {
+   	      source: this.source,
+   	      name: this.name,
+   	      constants: this.constants,
+   	      constantTypes: this.constantTypes,
+   	      isRootKernel: this.isRootKernel,
+   	      isSubKernel: this.isSubKernel,
+   	      debug: this.debug,
+   	      output: this.output,
+   	      loopMaxIterations: this.loopMaxIterations,
+   	      argumentNames: this.argumentNames,
+   	      argumentTypes: this.argumentTypes,
+   	      argumentSizes: this.argumentSizes,
+   	      returnType: this.returnType,
+   	      leadingReturnStatement: this.leadingReturnStatement,
+   	      followingReturnStatement: this.followingReturnStatement,
+   	    };
+
+   	    return {
+   	      ast: this.ast,
+   	      settings
+   	    };
+   	  }
+
+   	  getType(ast) {
+   	    if (Array.isArray(ast)) {
+   	      return this.getType(ast[ast.length - 1]);
+   	    }
+   	    switch (ast.type) {
+   	      case 'BlockStatement':
+   	        return this.getType(ast.body);
+   	      case 'ArrayExpression':
+   	        const childType = this.getType(ast.elements[0]);
+   	        switch (childType) {
+   	          case 'Array(2)':
+   	          case 'Array(3)':
+   	          case 'Array(4)':
+   	            return `Matrix(${ast.elements.length})`;
+   	        }
+   	        return `Array(${ ast.elements.length })`;
+   	      case 'Literal':
+   	        const literalKey = this.astKey(ast);
+   	        if (this.literalTypes[literalKey]) {
+   	          return this.literalTypes[literalKey];
+   	        }
+   	        if (Number.isInteger(ast.value)) {
+   	          return 'LiteralInteger';
+   	        } else if (ast.value === true || ast.value === false) {
+   	          return 'Boolean';
+   	        } else {
+   	          return 'Number';
+   	        }
+   	        case 'AssignmentExpression':
+   	          return this.getType(ast.left);
+   	        case 'CallExpression':
+   	          if (this.isAstMathFunction(ast)) {
+   	            return 'Number';
+   	          }
+   	          if (!ast.callee || !ast.callee.name) {
+   	            if (ast.callee.type === 'SequenceExpression' && ast.callee.expressions[ast.callee.expressions.length - 1].property.name) {
+   	              const functionName = ast.callee.expressions[ast.callee.expressions.length - 1].property.name;
+   	              this.inferArgumentTypesIfNeeded(functionName, ast.arguments);
+   	              return this.lookupReturnType(functionName, ast, this);
+   	            }
+   	            if (this.getVariableSignature(ast.callee, true) === 'this.color') {
+   	              return null;
+   	            }
+   	            if (ast.callee.type === 'MemberExpression' && ast.callee.object && ast.callee.property && ast.callee.property.name && ast.arguments) {
+   	              const functionName = ast.callee.property.name;
+   	              this.inferArgumentTypesIfNeeded(functionName, ast.arguments);
+   	              return this.lookupReturnType(functionName, ast, this);
+   	            }
+   	            throw this.astErrorOutput('Unknown call expression', ast);
+   	          }
+   	          if (ast.callee && ast.callee.name) {
+   	            const functionName = ast.callee.name;
+   	            this.inferArgumentTypesIfNeeded(functionName, ast.arguments);
+   	            return this.lookupReturnType(functionName, ast, this);
+   	          }
+   	          throw this.astErrorOutput(`Unhandled getType Type "${ ast.type }"`, ast);
+   	        case 'LogicalExpression':
+   	          return 'Boolean';
+   	        case 'BinaryExpression':
+   	          switch (ast.operator) {
+   	            case '%':
+   	            case '/':
+   	              if (this.fixIntegerDivisionAccuracy) {
+   	                return 'Number';
+   	              } else {
+   	                break;
+   	              }
+   	              case '>':
+   	              case '<':
+   	                return 'Boolean';
+   	              case '&':
+   	              case '|':
+   	              case '^':
+   	              case '<<':
+   	              case '>>':
+   	              case '>>>':
+   	                return 'Integer';
+   	          }
+   	          const type = this.getType(ast.left);
+   	          if (this.isState('skip-literal-correction')) return type;
+   	          if (type === 'LiteralInteger') {
+   	            const rightType = this.getType(ast.right);
+   	            if (rightType === 'LiteralInteger') {
+   	              if (ast.left.value % 1 === 0) {
+   	                return 'Integer';
+   	              } else {
+   	                return 'Float';
+   	              }
+   	            }
+   	            return rightType;
+   	          }
+   	          return typeLookupMap[type] || type;
+   	        case 'UpdateExpression':
+   	          return this.getType(ast.argument);
+   	        case 'UnaryExpression':
+   	          if (ast.operator === '~') {
+   	            return 'Integer';
+   	          }
+   	          return this.getType(ast.argument);
+   	        case 'VariableDeclaration': {
+   	          const declarations = ast.declarations;
+   	          let lastType;
+   	          for (let i = 0; i < declarations.length; i++) {
+   	            const declaration = declarations[i];
+   	            lastType = this.getType(declaration);
+   	          }
+   	          if (!lastType) {
+   	            throw this.astErrorOutput(`Unable to find type for declaration`, ast);
+   	          }
+   	          return lastType;
+   	        }
+   	        case 'VariableDeclarator':
+   	          const declaration = this.getDeclaration(ast.id);
+   	          if (!declaration) {
+   	            throw this.astErrorOutput(`Unable to find declarator`, ast);
+   	          }
+
+   	          if (!declaration.valueType) {
+   	            throw this.astErrorOutput(`Unable to find declarator valueType`, ast);
+   	          }
+
+   	          return declaration.valueType;
+   	        case 'Identifier':
+   	          if (ast.name === 'Infinity') {
+   	            return 'Number';
+   	          }
+   	          if (this.isAstVariable(ast)) {
+   	            const signature = this.getVariableSignature(ast);
+   	            if (signature === 'value') {
+   	              return this.getCheckVariableType(ast);
+   	            }
+   	          }
+   	          const origin = this.findIdentifierOrigin(ast);
+   	          if (origin && origin.init) {
+   	            return this.getType(origin.init);
+   	          }
+   	          return null;
+   	        case 'ReturnStatement':
+   	          return this.getType(ast.argument);
+   	        case 'MemberExpression':
+   	          if (this.isAstMathFunction(ast)) {
+   	            switch (ast.property.name) {
+   	              case 'ceil':
+   	                return 'Integer';
+   	              case 'floor':
+   	                return 'Integer';
+   	              case 'round':
+   	                return 'Integer';
+   	            }
+   	            return 'Number';
+   	          }
+   	          if (this.isAstVariable(ast)) {
+   	            const variableSignature = this.getVariableSignature(ast);
+   	            switch (variableSignature) {
+   	              case 'value[]':
+   	                return this.getLookupType(this.getCheckVariableType(ast.object));
+   	              case 'value[][]':
+   	                return this.getLookupType(this.getCheckVariableType(ast.object.object));
+   	              case 'value[][][]':
+   	                return this.getLookupType(this.getCheckVariableType(ast.object.object.object));
+   	              case 'value[][][][]':
+   	                return this.getLookupType(this.getCheckVariableType(ast.object.object.object.object));
+   	              case 'value.thread.value':
+   	              case 'this.thread.value':
+   	                return 'Integer';
+   	              case 'this.output.value':
+   	                return this.dynamicOutput ? 'Integer' : 'LiteralInteger';
+   	              case 'this.constants.value':
+   	                return this.getConstantType(ast.property.name);
+   	              case 'this.constants.value[]':
+   	                return this.getLookupType(this.getConstantType(ast.object.property.name));
+   	              case 'this.constants.value[][]':
+   	                return this.getLookupType(this.getConstantType(ast.object.object.property.name));
+   	              case 'this.constants.value[][][]':
+   	                return this.getLookupType(this.getConstantType(ast.object.object.object.property.name));
+   	              case 'this.constants.value[][][][]':
+   	                return this.getLookupType(this.getConstantType(ast.object.object.object.object.property.name));
+   	              case 'fn()[]':
+   	              case 'fn()[][]':
+   	              case 'fn()[][][]':
+   	                return this.getLookupType(this.getType(ast.object));
+   	              case 'value.value':
+   	                if (this.isAstMathVariable(ast)) {
+   	                  return 'Number';
+   	                }
+   	                switch (ast.property.name) {
+   	                  case 'r':
+   	                  case 'g':
+   	                  case 'b':
+   	                  case 'a':
+   	                    return this.getLookupType(this.getCheckVariableType(ast.object));
+   	                }
+   	                case '[][]':
+   	                  return 'Number';
+   	            }
+   	            throw this.astErrorOutput('Unhandled getType MemberExpression', ast);
+   	          }
+   	          throw this.astErrorOutput('Unhandled getType MemberExpression', ast);
+   	        case 'ConditionalExpression':
+   	          return this.getType(ast.consequent);
+   	        case 'FunctionDeclaration':
+   	        case 'FunctionExpression':
+   	          const lastReturn = this.findLastReturn(ast.body);
+   	          if (lastReturn) {
+   	            return this.getType(lastReturn);
+   	          }
+   	          return null;
+   	        case 'IfStatement':
+   	          return this.getType(ast.consequent);
+   	        case 'SequenceExpression':
+   	          return this.getType(ast.expressions[ast.expressions.length - 1]);
+   	        default:
+   	          throw this.astErrorOutput(`Unhandled getType Type "${ ast.type }"`, ast);
+   	    }
+   	  }
+
+   	  getCheckVariableType(ast) {
+   	    const type = this.getVariableType(ast);
+   	    if (!type) {
+   	      throw this.astErrorOutput(`${ast.type} is not defined`, ast);
+   	    }
+   	    return type;
+   	  }
+
+   	  inferArgumentTypesIfNeeded(functionName, args) {
+   	    for (let i = 0; i < args.length; i++) {
+   	      if (!this.needsArgumentType(functionName, i)) continue;
+   	      const type = this.getType(args[i]);
+   	      if (!type) {
+   	        throw this.astErrorOutput(`Unable to infer argument ${i}`, args[i]);
+   	      }
+   	      this.assignArgumentType(functionName, i, type);
+   	    }
+   	  }
+
+   	  isAstMathVariable(ast) {
+   	    const mathProperties = [
+   	      'E',
+   	      'PI',
+   	      'SQRT2',
+   	      'SQRT1_2',
+   	      'LN2',
+   	      'LN10',
+   	      'LOG2E',
+   	      'LOG10E',
+   	    ];
+   	    return ast.type === 'MemberExpression' &&
+   	      ast.object && ast.object.type === 'Identifier' &&
+   	      ast.object.name === 'Math' &&
+   	      ast.property &&
+   	      ast.property.type === 'Identifier' &&
+   	      mathProperties.indexOf(ast.property.name) > -1;
+   	  }
+
+   	  isAstMathFunction(ast) {
+   	    const mathFunctions = [
+   	      'abs',
+   	      'acos',
+   	      'acosh',
+   	      'asin',
+   	      'asinh',
+   	      'atan',
+   	      'atan2',
+   	      'atanh',
+   	      'cbrt',
+   	      'ceil',
+   	      'clz32',
+   	      'cos',
+   	      'cosh',
+   	      'expm1',
+   	      'exp',
+   	      'floor',
+   	      'fround',
+   	      'imul',
+   	      'log',
+   	      'log2',
+   	      'log10',
+   	      'log1p',
+   	      'max',
+   	      'min',
+   	      'pow',
+   	      'random',
+   	      'round',
+   	      'sign',
+   	      'sin',
+   	      'sinh',
+   	      'sqrt',
+   	      'tan',
+   	      'tanh',
+   	      'trunc',
+   	    ];
+   	    return ast.type === 'CallExpression' &&
+   	      ast.callee &&
+   	      ast.callee.type === 'MemberExpression' &&
+   	      ast.callee.object &&
+   	      ast.callee.object.type === 'Identifier' &&
+   	      ast.callee.object.name === 'Math' &&
+   	      ast.callee.property &&
+   	      ast.callee.property.type === 'Identifier' &&
+   	      mathFunctions.indexOf(ast.callee.property.name) > -1;
+   	  }
+
+   	  isAstVariable(ast) {
+   	    return ast.type === 'Identifier' || ast.type === 'MemberExpression';
+   	  }
+
+   	  isSafe(ast) {
+   	    return this.isSafeDependencies(this.getDependencies(ast));
+   	  }
+
+   	  isSafeDependencies(dependencies) {
+   	    return dependencies && dependencies.every ? dependencies.every(dependency => dependency.isSafe) : true;
+   	  }
+
+   	  getDependencies(ast, dependencies, isNotSafe) {
+   	    if (!dependencies) {
+   	      dependencies = [];
+   	    }
+   	    if (!ast) return null;
+   	    if (Array.isArray(ast)) {
+   	      for (let i = 0; i < ast.length; i++) {
+   	        this.getDependencies(ast[i], dependencies, isNotSafe);
+   	      }
+   	      return dependencies;
+   	    }
+   	    switch (ast.type) {
+   	      case 'AssignmentExpression':
+   	        this.getDependencies(ast.left, dependencies, isNotSafe);
+   	        this.getDependencies(ast.right, dependencies, isNotSafe);
+   	        return dependencies;
+   	      case 'ConditionalExpression':
+   	        this.getDependencies(ast.test, dependencies, isNotSafe);
+   	        this.getDependencies(ast.alternate, dependencies, isNotSafe);
+   	        this.getDependencies(ast.consequent, dependencies, isNotSafe);
+   	        return dependencies;
+   	      case 'Literal':
+   	        dependencies.push({
+   	          origin: 'literal',
+   	          value: ast.value,
+   	          isSafe: isNotSafe === true ? false : ast.value > -Infinity && ast.value < Infinity && !isNaN(ast.value)
+   	        });
+   	        break;
+   	      case 'VariableDeclarator':
+   	        return this.getDependencies(ast.init, dependencies, isNotSafe);
+   	      case 'Identifier':
+   	        const declaration = this.getDeclaration(ast);
+   	        if (declaration) {
+   	          dependencies.push({
+   	            name: ast.name,
+   	            origin: 'declaration',
+   	            isSafe: isNotSafe ? false : this.isSafeDependencies(declaration.dependencies),
+   	          });
+   	        } else if (this.argumentNames.indexOf(ast.name) > -1) {
+   	          dependencies.push({
+   	            name: ast.name,
+   	            origin: 'argument',
+   	            isSafe: false,
+   	          });
+   	        } else if (this.strictTypingChecking) {
+   	          throw new Error(`Cannot find identifier origin "${ast.name}"`);
+   	        }
+   	        break;
+   	      case 'FunctionDeclaration':
+   	        return this.getDependencies(ast.body.body[ast.body.body.length - 1], dependencies, isNotSafe);
+   	      case 'ReturnStatement':
+   	        return this.getDependencies(ast.argument, dependencies);
+   	      case 'BinaryExpression':
+   	      case 'LogicalExpression':
+   	        isNotSafe = (ast.operator === '/' || ast.operator === '*');
+   	        this.getDependencies(ast.left, dependencies, isNotSafe);
+   	        this.getDependencies(ast.right, dependencies, isNotSafe);
+   	        return dependencies;
+   	      case 'UnaryExpression':
+   	      case 'UpdateExpression':
+   	        return this.getDependencies(ast.argument, dependencies, isNotSafe);
+   	      case 'VariableDeclaration':
+   	        return this.getDependencies(ast.declarations, dependencies, isNotSafe);
+   	      case 'ArrayExpression':
+   	        dependencies.push({
+   	          origin: 'declaration',
+   	          isSafe: true,
+   	        });
+   	        return dependencies;
+   	      case 'CallExpression':
+   	        dependencies.push({
+   	          origin: 'function',
+   	          isSafe: true,
+   	        });
+   	        return dependencies;
+   	      case 'MemberExpression':
+   	        const details = this.getMemberExpressionDetails(ast);
+   	        switch (details.signature) {
+   	          case 'value[]':
+   	            this.getDependencies(ast.object, dependencies, isNotSafe);
+   	            break;
+   	          case 'value[][]':
+   	            this.getDependencies(ast.object.object, dependencies, isNotSafe);
+   	            break;
+   	          case 'value[][][]':
+   	            this.getDependencies(ast.object.object.object, dependencies, isNotSafe);
+   	            break;
+   	          case 'this.output.value':
+   	            if (this.dynamicOutput) {
+   	              dependencies.push({
+   	                name: details.name,
+   	                origin: 'output',
+   	                isSafe: false,
+   	              });
+   	            }
+   	            break;
+   	        }
+   	        if (details) {
+   	          if (details.property) {
+   	            this.getDependencies(details.property, dependencies, isNotSafe);
+   	          }
+   	          if (details.xProperty) {
+   	            this.getDependencies(details.xProperty, dependencies, isNotSafe);
+   	          }
+   	          if (details.yProperty) {
+   	            this.getDependencies(details.yProperty, dependencies, isNotSafe);
+   	          }
+   	          if (details.zProperty) {
+   	            this.getDependencies(details.zProperty, dependencies, isNotSafe);
+   	          }
+   	          return dependencies;
+   	        }
+   	        case 'SequenceExpression':
+   	          return this.getDependencies(ast.expressions, dependencies, isNotSafe);
+   	        default:
+   	          throw this.astErrorOutput(`Unhandled type ${ ast.type } in getDependencies`, ast);
+   	    }
+   	    return dependencies;
+   	  }
+
+   	  getVariableSignature(ast, returnRawValue) {
+   	    if (!this.isAstVariable(ast)) {
+   	      throw new Error(`ast of type "${ ast.type }" is not a variable signature`);
+   	    }
+   	    if (ast.type === 'Identifier') {
+   	      return 'value';
+   	    }
+   	    const signature = [];
+   	    while (true) {
+   	      if (!ast) break;
+   	      if (ast.computed) {
+   	        signature.push('[]');
+   	      } else if (ast.type === 'ThisExpression') {
+   	        signature.unshift('this');
+   	      } else if (ast.property && ast.property.name) {
+   	        if (
+   	          ast.property.name === 'x' ||
+   	          ast.property.name === 'y' ||
+   	          ast.property.name === 'z'
+   	        ) {
+   	          signature.unshift(returnRawValue ? '.' + ast.property.name : '.value');
+   	        } else if (
+   	          ast.property.name === 'constants' ||
+   	          ast.property.name === 'thread' ||
+   	          ast.property.name === 'output'
+   	        ) {
+   	          signature.unshift('.' + ast.property.name);
+   	        } else {
+   	          signature.unshift(returnRawValue ? '.' + ast.property.name : '.value');
+   	        }
+   	      } else if (ast.name) {
+   	        signature.unshift(returnRawValue ? ast.name : 'value');
+   	      } else if (ast.callee && ast.callee.name) {
+   	        signature.unshift(returnRawValue ? ast.callee.name + '()' : 'fn()');
+   	      } else if (ast.elements) {
+   	        signature.unshift('[]');
+   	      } else {
+   	        signature.unshift('unknown');
+   	      }
+   	      ast = ast.object;
+   	    }
+
+   	    const signatureString = signature.join('');
+   	    if (returnRawValue) {
+   	      return signatureString;
+   	    }
+
+   	    const allowedExpressions = [
+   	      'value',
+   	      'value[]',
+   	      'value[][]',
+   	      'value[][][]',
+   	      'value[][][][]',
+   	      'value.value',
+   	      'value.thread.value',
+   	      'this.thread.value',
+   	      'this.output.value',
+   	      'this.constants.value',
+   	      'this.constants.value[]',
+   	      'this.constants.value[][]',
+   	      'this.constants.value[][][]',
+   	      'this.constants.value[][][][]',
+   	      'fn()[]',
+   	      'fn()[][]',
+   	      'fn()[][][]',
+   	      '[][]',
+   	    ];
+   	    if (allowedExpressions.indexOf(signatureString) > -1) {
+   	      return signatureString;
+   	    }
+   	    return null;
+   	  }
+
+   	  build() {
+   	    return this.toString().length > 0;
+   	  }
+
+   	  astGeneric(ast, retArr) {
+   	    if (ast === null) {
+   	      throw this.astErrorOutput('NULL ast', ast);
+   	    } else {
+   	      if (Array.isArray(ast)) {
+   	        for (let i = 0; i < ast.length; i++) {
+   	          this.astGeneric(ast[i], retArr);
+   	        }
+   	        return retArr;
+   	      }
+
+   	      switch (ast.type) {
+   	        case 'FunctionDeclaration':
+   	          return this.astFunctionDeclaration(ast, retArr);
+   	        case 'FunctionExpression':
+   	          return this.astFunctionExpression(ast, retArr);
+   	        case 'ReturnStatement':
+   	          return this.astReturnStatement(ast, retArr);
+   	        case 'Literal':
+   	          return this.astLiteral(ast, retArr);
+   	        case 'BinaryExpression':
+   	          return this.astBinaryExpression(ast, retArr);
+   	        case 'Identifier':
+   	          return this.astIdentifierExpression(ast, retArr);
+   	        case 'AssignmentExpression':
+   	          return this.astAssignmentExpression(ast, retArr);
+   	        case 'ExpressionStatement':
+   	          return this.astExpressionStatement(ast, retArr);
+   	        case 'EmptyStatement':
+   	          return this.astEmptyStatement(ast, retArr);
+   	        case 'BlockStatement':
+   	          return this.astBlockStatement(ast, retArr);
+   	        case 'IfStatement':
+   	          return this.astIfStatement(ast, retArr);
+   	        case 'SwitchStatement':
+   	          return this.astSwitchStatement(ast, retArr);
+   	        case 'BreakStatement':
+   	          return this.astBreakStatement(ast, retArr);
+   	        case 'ContinueStatement':
+   	          return this.astContinueStatement(ast, retArr);
+   	        case 'ForStatement':
+   	          return this.astForStatement(ast, retArr);
+   	        case 'WhileStatement':
+   	          return this.astWhileStatement(ast, retArr);
+   	        case 'DoWhileStatement':
+   	          return this.astDoWhileStatement(ast, retArr);
+   	        case 'VariableDeclaration':
+   	          return this.astVariableDeclaration(ast, retArr);
+   	        case 'VariableDeclarator':
+   	          return this.astVariableDeclarator(ast, retArr);
+   	        case 'ThisExpression':
+   	          return this.astThisExpression(ast, retArr);
+   	        case 'SequenceExpression':
+   	          return this.astSequenceExpression(ast, retArr);
+   	        case 'UnaryExpression':
+   	          return this.astUnaryExpression(ast, retArr);
+   	        case 'UpdateExpression':
+   	          return this.astUpdateExpression(ast, retArr);
+   	        case 'LogicalExpression':
+   	          return this.astLogicalExpression(ast, retArr);
+   	        case 'MemberExpression':
+   	          return this.astMemberExpression(ast, retArr);
+   	        case 'CallExpression':
+   	          return this.astCallExpression(ast, retArr);
+   	        case 'ArrayExpression':
+   	          return this.astArrayExpression(ast, retArr);
+   	        case 'DebuggerStatement':
+   	          return this.astDebuggerStatement(ast, retArr);
+   	        case 'ConditionalExpression':
+   	          return this.astConditionalExpression(ast, retArr);
+   	      }
+
+   	      throw this.astErrorOutput('Unknown ast type : ' + ast.type, ast);
+   	    }
+   	  }
+   	  astErrorOutput(error, ast) {
+   	    if (typeof this.source !== 'string') {
+   	      return new Error(error);
+   	    }
+
+   	    const debugString = utils.getAstString(this.source, ast);
+   	    const leadingSource = this.source.substr(ast.start);
+   	    const splitLines = leadingSource.split(/\n/);
+   	    const lineBefore = splitLines.length > 0 ? splitLines[splitLines.length - 1] : 0;
+   	    return new Error(`${error} on line ${ splitLines.length }, position ${ lineBefore.length }:\n ${ debugString }`);
+   	  }
+
+   	  astDebuggerStatement(arrNode, retArr) {
+   	    return retArr;
+   	  }
+
+   	  astConditionalExpression(ast, retArr) {
+   	    if (ast.type !== 'ConditionalExpression') {
+   	      throw this.astErrorOutput('Not a conditional expression', ast);
+   	    }
+   	    retArr.push('(');
+   	    this.astGeneric(ast.test, retArr);
+   	    retArr.push('?');
+   	    this.astGeneric(ast.consequent, retArr);
+   	    retArr.push(':');
+   	    this.astGeneric(ast.alternate, retArr);
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  astFunction(ast, retArr) {
+   	    throw new Error(`"astFunction" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  astFunctionDeclaration(ast, retArr) {
+   	    if (this.isChildFunction(ast)) {
+   	      return retArr;
+   	    }
+   	    return this.astFunction(ast, retArr);
+   	  }
+   	  astFunctionExpression(ast, retArr) {
+   	    if (this.isChildFunction(ast)) {
+   	      return retArr;
+   	    }
+   	    return this.astFunction(ast, retArr);
+   	  }
+   	  isChildFunction(ast) {
+   	    for (let i = 0; i < this.functions.length; i++) {
+   	      if (this.functions[i] === ast) {
+   	        return true;
+   	      }
+   	    }
+   	    return false;
+   	  }
+   	  astReturnStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astLiteral(ast, retArr) {
+   	    this.literalTypes[this.astKey(ast)] = 'Number';
+   	    return retArr;
+   	  }
+   	  astBinaryExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astIdentifierExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astAssignmentExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astExpressionStatement(esNode, retArr) {
+   	    this.astGeneric(esNode.expression, retArr);
+   	    retArr.push(';');
+   	    return retArr;
+   	  }
+   	  astEmptyStatement(eNode, retArr) {
+   	    return retArr;
+   	  }
+   	  astBlockStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astIfStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astSwitchStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astBreakStatement(brNode, retArr) {
+   	    retArr.push('break;');
+   	    return retArr;
+   	  }
+   	  astContinueStatement(crNode, retArr) {
+   	    retArr.push('continue;\n');
+   	    return retArr;
+   	  }
+   	  astForStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astWhileStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astDoWhileStatement(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astVariableDeclarator(iVarDecNode, retArr) {
+   	    this.astGeneric(iVarDecNode.id, retArr);
+   	    if (iVarDecNode.init !== null) {
+   	      retArr.push('=');
+   	      this.astGeneric(iVarDecNode.init, retArr);
+   	    }
+   	    return retArr;
+   	  }
+   	  astThisExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astSequenceExpression(sNode, retArr) {
+   	    const { expressions } = sNode;
+   	    const sequenceResult = [];
+   	    for (let i = 0; i < expressions.length; i++) {
+   	      const expression = expressions[i];
+   	      const expressionResult = [];
+   	      this.astGeneric(expression, expressionResult);
+   	      sequenceResult.push(expressionResult.join(''));
+   	    }
+   	    if (sequenceResult.length > 1) {
+   	      retArr.push('(', sequenceResult.join(','), ')');
+   	    } else {
+   	      retArr.push(sequenceResult[0]);
+   	    }
+   	    return retArr;
+   	  }
+   	  astUnaryExpression(uNode, retArr) {
+   	    const unaryResult = this.checkAndUpconvertBitwiseUnary(uNode, retArr);
+   	    if (unaryResult) {
+   	      return retArr;
+   	    }
+
+   	    if (uNode.prefix) {
+   	      retArr.push(uNode.operator);
+   	      this.astGeneric(uNode.argument, retArr);
+   	    } else {
+   	      this.astGeneric(uNode.argument, retArr);
+   	      retArr.push(uNode.operator);
+   	    }
+
+   	    return retArr;
+   	  }
+
+   	  checkAndUpconvertBitwiseUnary(uNode, retArr) {}
+
+   	  astUpdateExpression(uNode, retArr) {
+   	    if (uNode.prefix) {
+   	      retArr.push(uNode.operator);
+   	      this.astGeneric(uNode.argument, retArr);
+   	    } else {
+   	      this.astGeneric(uNode.argument, retArr);
+   	      retArr.push(uNode.operator);
+   	    }
+
+   	    return retArr;
+   	  }
+   	  astLogicalExpression(logNode, retArr) {
+   	    retArr.push('(');
+   	    this.astGeneric(logNode.left, retArr);
+   	    retArr.push(logNode.operator);
+   	    this.astGeneric(logNode.right, retArr);
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+   	  astMemberExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astCallExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+   	  astArrayExpression(ast, retArr) {
+   	    return retArr;
+   	  }
+
+   	  getMemberExpressionDetails(ast) {
+   	    if (ast.type !== 'MemberExpression') {
+   	      throw this.astErrorOutput(`Expression ${ ast.type } not a MemberExpression`, ast);
+   	    }
+   	    let name = null;
+   	    let type = null;
+   	    const variableSignature = this.getVariableSignature(ast);
+   	    switch (variableSignature) {
+   	      case 'value':
+   	        return null;
+   	      case 'value.thread.value':
+   	      case 'this.thread.value':
+   	      case 'this.output.value':
+   	        return {
+   	          signature: variableSignature,
+   	            type: 'Integer',
+   	            name: ast.property.name
+   	        };
+   	      case 'value[]':
+   	        if (typeof ast.object.name !== 'string') {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        name = ast.object.name;
+   	        return {
+   	          name,
+   	          origin: 'user',
+   	            signature: variableSignature,
+   	            type: this.getVariableType(ast.object),
+   	            xProperty: ast.property
+   	        };
+   	      case 'value[][]':
+   	        if (typeof ast.object.object.name !== 'string') {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        name = ast.object.object.name;
+   	        return {
+   	          name,
+   	          origin: 'user',
+   	            signature: variableSignature,
+   	            type: this.getVariableType(ast.object.object),
+   	            yProperty: ast.object.property,
+   	            xProperty: ast.property,
+   	        };
+   	      case 'value[][][]':
+   	        if (typeof ast.object.object.object.name !== 'string') {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        name = ast.object.object.object.name;
+   	        return {
+   	          name,
+   	          origin: 'user',
+   	            signature: variableSignature,
+   	            type: this.getVariableType(ast.object.object.object),
+   	            zProperty: ast.object.object.property,
+   	            yProperty: ast.object.property,
+   	            xProperty: ast.property,
+   	        };
+   	      case 'value[][][][]':
+   	        if (typeof ast.object.object.object.object.name !== 'string') {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        name = ast.object.object.object.object.name;
+   	        return {
+   	          name,
+   	          origin: 'user',
+   	            signature: variableSignature,
+   	            type: this.getVariableType(ast.object.object.object.object),
+   	            zProperty: ast.object.object.property,
+   	            yProperty: ast.object.property,
+   	            xProperty: ast.property,
+   	        };
+   	      case 'value.value':
+   	        if (typeof ast.property.name !== 'string') {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        if (this.isAstMathVariable(ast)) {
+   	          name = ast.property.name;
+   	          return {
+   	            name,
+   	            origin: 'Math',
+   	            type: 'Number',
+   	            signature: variableSignature,
+   	          };
+   	        }
+   	        switch (ast.property.name) {
+   	          case 'r':
+   	          case 'g':
+   	          case 'b':
+   	          case 'a':
+   	            name = ast.object.name;
+   	            return {
+   	              name,
+   	              property: ast.property.name,
+   	                origin: 'user',
+   	                signature: variableSignature,
+   	                type: 'Number'
+   	            };
+   	          default:
+   	            throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        case 'this.constants.value':
+   	          if (typeof ast.property.name !== 'string') {
+   	            throw this.astErrorOutput('Unexpected expression', ast);
+   	          }
+   	          name = ast.property.name;
+   	          type = this.getConstantType(name);
+   	          if (!type) {
+   	            throw this.astErrorOutput('Constant has no type', ast);
+   	          }
+   	          return {
+   	            name,
+   	            type,
+   	            origin: 'constants',
+   	              signature: variableSignature,
+   	          };
+   	        case 'this.constants.value[]':
+   	          if (typeof ast.object.property.name !== 'string') {
+   	            throw this.astErrorOutput('Unexpected expression', ast);
+   	          }
+   	          name = ast.object.property.name;
+   	          type = this.getConstantType(name);
+   	          if (!type) {
+   	            throw this.astErrorOutput('Constant has no type', ast);
+   	          }
+   	          return {
+   	            name,
+   	            type,
+   	            origin: 'constants',
+   	              signature: variableSignature,
+   	              xProperty: ast.property,
+   	          };
+   	        case 'this.constants.value[][]': {
+   	          if (typeof ast.object.object.property.name !== 'string') {
+   	            throw this.astErrorOutput('Unexpected expression', ast);
+   	          }
+   	          name = ast.object.object.property.name;
+   	          type = this.getConstantType(name);
+   	          if (!type) {
+   	            throw this.astErrorOutput('Constant has no type', ast);
+   	          }
+   	          return {
+   	            name,
+   	            type,
+   	            origin: 'constants',
+   	            signature: variableSignature,
+   	            yProperty: ast.object.property,
+   	            xProperty: ast.property,
+   	          };
+   	        }
+   	        case 'this.constants.value[][][]': {
+   	          if (typeof ast.object.object.object.property.name !== 'string') {
+   	            throw this.astErrorOutput('Unexpected expression', ast);
+   	          }
+   	          name = ast.object.object.object.property.name;
+   	          type = this.getConstantType(name);
+   	          if (!type) {
+   	            throw this.astErrorOutput('Constant has no type', ast);
+   	          }
+   	          return {
+   	            name,
+   	            type,
+   	            origin: 'constants',
+   	            signature: variableSignature,
+   	            zProperty: ast.object.object.property,
+   	            yProperty: ast.object.property,
+   	            xProperty: ast.property,
+   	          };
+   	        }
+   	        case 'fn()[]':
+   	        case 'fn()[][]':
+   	        case '[][]':
+   	          return {
+   	            signature: variableSignature,
+   	              property: ast.property,
+   	          };
+   	        default:
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	    }
+   	  }
+
+   	  findIdentifierOrigin(astToFind) {
+   	    const stack = [this.ast];
+
+   	    while (stack.length > 0) {
+   	      const atNode = stack[0];
+   	      if (atNode.type === 'VariableDeclarator' && atNode.id && atNode.id.name && atNode.id.name === astToFind.name) {
+   	        return atNode;
+   	      }
+   	      stack.shift();
+   	      if (atNode.argument) {
+   	        stack.push(atNode.argument);
+   	      } else if (atNode.body) {
+   	        stack.push(atNode.body);
+   	      } else if (atNode.declarations) {
+   	        stack.push(atNode.declarations);
+   	      } else if (Array.isArray(atNode)) {
+   	        for (let i = 0; i < atNode.length; i++) {
+   	          stack.push(atNode[i]);
+   	        }
+   	      }
+   	    }
+   	    return null;
+   	  }
+
+   	  findLastReturn(ast) {
+   	    const stack = [ast || this.ast];
+
+   	    while (stack.length > 0) {
+   	      const atNode = stack.pop();
+   	      if (atNode.type === 'ReturnStatement') {
+   	        return atNode;
+   	      }
+   	      if (atNode.type === 'FunctionDeclaration') {
+   	        continue;
+   	      }
+   	      if (atNode.argument) {
+   	        stack.push(atNode.argument);
+   	      } else if (atNode.body) {
+   	        stack.push(atNode.body);
+   	      } else if (atNode.declarations) {
+   	        stack.push(atNode.declarations);
+   	      } else if (Array.isArray(atNode)) {
+   	        for (let i = 0; i < atNode.length; i++) {
+   	          stack.push(atNode[i]);
+   	        }
+   	      } else if (atNode.consequent) {
+   	        stack.push(atNode.consequent);
+   	      } else if (atNode.cases) {
+   	        stack.push(atNode.cases);
+   	      }
+   	    }
+   	    return null;
+   	  }
+
+   	  getInternalVariableName(name) {
+   	    if (!this._internalVariableNames.hasOwnProperty(name)) {
+   	      this._internalVariableNames[name] = 0;
+   	    }
+   	    this._internalVariableNames[name]++;
+   	    if (this._internalVariableNames[name] === 1) {
+   	      return name;
+   	    }
+   	    return name + this._internalVariableNames[name];
+   	  }
+
+   	  astKey(ast, separator = ',') {
+   	    if (!ast.start || !ast.end) throw new Error('AST start and end needed');
+   	    return `${ast.start}${separator}${ast.end}`;
+   	  }
+   	}
+
+   	const typeLookupMap = {
+   	  'Number': 'Number',
+   	  'Float': 'Float',
+   	  'Integer': 'Integer',
+   	  'Array': 'Number',
+   	  'Array(2)': 'Number',
+   	  'Array(3)': 'Number',
+   	  'Array(4)': 'Number',
+   	  'Matrix(2)': 'Number',
+   	  'Matrix(3)': 'Number',
+   	  'Matrix(4)': 'Number',
+   	  'Array2D': 'Number',
+   	  'Array3D': 'Number',
+   	  'Input': 'Number',
+   	  'HTMLCanvas': 'Array(4)',
+   	  'OffscreenCanvas': 'Array(4)',
+   	  'HTMLImage': 'Array(4)',
+   	  'ImageBitmap': 'Array(4)',
+   	  'ImageData': 'Array(4)',
+   	  'HTMLVideo': 'Array(4)',
+   	  'HTMLImageArray': 'Array(4)',
+   	  'NumberTexture': 'Number',
+   	  'MemoryOptimizedNumberTexture': 'Number',
+   	  'Array1D(2)': 'Array(2)',
+   	  'Array1D(3)': 'Array(3)',
+   	  'Array1D(4)': 'Array(4)',
+   	  'Array2D(2)': 'Array(2)',
+   	  'Array2D(3)': 'Array(3)',
+   	  'Array2D(4)': 'Array(4)',
+   	  'Array3D(2)': 'Array(2)',
+   	  'Array3D(3)': 'Array(3)',
+   	  'Array3D(4)': 'Array(4)',
+   	  'ArrayTexture(1)': 'Number',
+   	  'ArrayTexture(2)': 'Array(2)',
+   	  'ArrayTexture(3)': 'Array(3)',
+   	  'ArrayTexture(4)': 'Array(4)',
+   	};
+
+   	module.exports = {
+   	  FunctionNode
+   	};
+   	},{"../utils":114,"./function-tracer":11,"acorn":1}],11:[function(require,module,exports){
+   	const { utils } = require('../utils');
+
+   	function last(array) {
+   	  return array.length > 0 ? array[array.length - 1] : null;
+   	}
+
+   	const states = {
+   	  trackIdentifiers: 'trackIdentifiers',
+   	  memberExpression: 'memberExpression',
+   	  inForLoopInit: 'inForLoopInit'
+   	};
+
+   	class FunctionTracer {
+   	  constructor(ast) {
+   	    this.runningContexts = [];
+   	    this.functionContexts = [];
+   	    this.contexts = [];
+   	    this.functionCalls = [];
+   	    this.declarations = [];
+   	    this.identifiers = [];
+   	    this.functions = [];
+   	    this.returnStatements = [];
+   	    this.trackedIdentifiers = null;
+   	    this.states = [];
+   	    this.newFunctionContext();
+   	    this.scan(ast);
+   	  }
+
+   	  isState(state) {
+   	    return this.states[this.states.length - 1] === state;
+   	  }
+
+   	  hasState(state) {
+   	    return this.states.indexOf(state) > -1;
+   	  }
+
+   	  pushState(state) {
+   	    this.states.push(state);
+   	  }
+
+   	  popState(state) {
+   	    if (this.isState(state)) {
+   	      this.states.pop();
+   	    } else {
+   	      throw new Error(`Cannot pop the non-active state "${state}"`);
+   	    }
+   	  }
+
+   	  get currentFunctionContext() {
+   	    return last(this.functionContexts);
+   	  }
+
+   	  get currentContext() {
+   	    return last(this.runningContexts);
+   	  }
+
+   	  newFunctionContext() {
+   	    const newContext = { '@contextType': 'function' };
+   	    this.contexts.push(newContext);
+   	    this.functionContexts.push(newContext);
+   	  }
+
+   	  newContext(run) {
+   	    const newContext = Object.assign({ '@contextType': 'const/let' }, this.currentContext);
+   	    this.contexts.push(newContext);
+   	    this.runningContexts.push(newContext);
+   	    run();
+   	    const { currentFunctionContext } = this;
+   	    for (const p in currentFunctionContext) {
+   	      if (!currentFunctionContext.hasOwnProperty(p) || newContext.hasOwnProperty(p)) continue;
+   	      newContext[p] = currentFunctionContext[p];
+   	    }
+   	    this.runningContexts.pop();
+   	    return newContext;
+   	  }
+
+   	  useFunctionContext(run) {
+   	    const functionContext = last(this.functionContexts);
+   	    this.runningContexts.push(functionContext);
+   	    run();
+   	    this.runningContexts.pop();
+   	  }
+
+   	  getIdentifiers(run) {
+   	    const trackedIdentifiers = this.trackedIdentifiers = [];
+   	    this.pushState(states.trackIdentifiers);
+   	    run();
+   	    this.trackedIdentifiers = null;
+   	    this.popState(states.trackIdentifiers);
+   	    return trackedIdentifiers;
+   	  }
+
+   	  getDeclaration(name) {
+   	    const { currentContext, currentFunctionContext, runningContexts } = this;
+   	    const declaration = currentContext[name] || currentFunctionContext[name] || null;
+
+   	    if (
+   	      !declaration &&
+   	      currentContext === currentFunctionContext &&
+   	      runningContexts.length > 0
+   	    ) {
+   	      const previousRunningContext = runningContexts[runningContexts.length - 2];
+   	      if (previousRunningContext[name]) {
+   	        return previousRunningContext[name];
+   	      }
+   	    }
+
+   	    return declaration;
+   	  }
+
+   	  scan(ast) {
+   	    if (!ast) return;
+   	    if (Array.isArray(ast)) {
+   	      for (let i = 0; i < ast.length; i++) {
+   	        this.scan(ast[i]);
+   	      }
+   	      return;
+   	    }
+   	    switch (ast.type) {
+   	      case 'Program':
+   	        this.useFunctionContext(() => {
+   	          this.scan(ast.body);
+   	        });
+   	        break;
+   	      case 'BlockStatement':
+   	        this.newContext(() => {
+   	          this.scan(ast.body);
+   	        });
+   	        break;
+   	      case 'AssignmentExpression':
+   	      case 'LogicalExpression':
+   	        this.scan(ast.left);
+   	        this.scan(ast.right);
+   	        break;
+   	      case 'BinaryExpression':
+   	        this.scan(ast.left);
+   	        this.scan(ast.right);
+   	        break;
+   	      case 'UpdateExpression':
+   	        if (ast.operator === '++') {
+   	          const declaration = this.getDeclaration(ast.argument.name);
+   	          if (declaration) {
+   	            declaration.suggestedType = 'Integer';
+   	          }
+   	        }
+   	        this.scan(ast.argument);
+   	        break;
+   	      case 'UnaryExpression':
+   	        this.scan(ast.argument);
+   	        break;
+   	      case 'VariableDeclaration':
+   	        if (ast.kind === 'var') {
+   	          this.useFunctionContext(() => {
+   	            ast.declarations = utils.normalizeDeclarations(ast);
+   	            this.scan(ast.declarations);
+   	          });
+   	        } else {
+   	          ast.declarations = utils.normalizeDeclarations(ast);
+   	          this.scan(ast.declarations);
+   	        }
+   	        break;
+   	      case 'VariableDeclarator': {
+   	        const { currentContext } = this;
+   	        const inForLoopInit = this.hasState(states.inForLoopInit);
+   	        const declaration = {
+   	          ast: ast,
+   	          context: currentContext,
+   	          name: ast.id.name,
+   	          origin: 'declaration',
+   	          inForLoopInit,
+   	          inForLoopTest: null,
+   	          assignable: currentContext === this.currentFunctionContext || (!inForLoopInit && !currentContext.hasOwnProperty(ast.id.name)),
+   	          suggestedType: null,
+   	          valueType: null,
+   	          dependencies: null,
+   	          isSafe: null,
+   	        };
+   	        if (!currentContext[ast.id.name]) {
+   	          currentContext[ast.id.name] = declaration;
+   	        }
+   	        this.declarations.push(declaration);
+   	        this.scan(ast.id);
+   	        this.scan(ast.init);
+   	        break;
+   	      }
+   	      case 'FunctionExpression':
+   	      case 'FunctionDeclaration':
+   	        if (this.runningContexts.length === 0) {
+   	          this.scan(ast.body);
+   	        } else {
+   	          this.functions.push(ast);
+   	        }
+   	        break;
+   	      case 'IfStatement':
+   	        this.scan(ast.test);
+   	        this.scan(ast.consequent);
+   	        if (ast.alternate) this.scan(ast.alternate);
+   	        break;
+   	      case 'ForStatement': {
+   	        let testIdentifiers;
+   	        const context = this.newContext(() => {
+   	          this.pushState(states.inForLoopInit);
+   	          this.scan(ast.init);
+   	          this.popState(states.inForLoopInit);
+
+   	          testIdentifiers = this.getIdentifiers(() => {
+   	            this.scan(ast.test);
+   	          });
+
+   	          this.scan(ast.update);
+   	          this.newContext(() => {
+   	            this.scan(ast.body);
+   	          });
+   	        });
+
+   	        if (testIdentifiers) {
+   	          for (const p in context) {
+   	            if (p === '@contextType') continue;
+   	            if (testIdentifiers.indexOf(p) > -1) {
+   	              context[p].inForLoopTest = true;
+   	            }
+   	          }
+   	        }
+   	        break;
+   	      }
+   	      case 'DoWhileStatement':
+   	      case 'WhileStatement':
+   	        this.newContext(() => {
+   	          this.scan(ast.body);
+   	          this.scan(ast.test);
+   	        });
+   	        break;
+   	      case 'Identifier': {
+   	        if (this.isState(states.trackIdentifiers)) {
+   	          this.trackedIdentifiers.push(ast.name);
+   	        }
+   	        this.identifiers.push({
+   	          context: this.currentContext,
+   	          declaration: this.getDeclaration(ast.name),
+   	          ast,
+   	        });
+   	        break;
+   	      }
+   	      case 'ReturnStatement':
+   	        this.returnStatements.push(ast);
+   	        this.scan(ast.argument);
+   	        break;
+   	      case 'MemberExpression':
+   	        this.pushState(states.memberExpression);
+   	        this.scan(ast.object);
+   	        this.scan(ast.property);
+   	        this.popState(states.memberExpression);
+   	        break;
+   	      case 'ExpressionStatement':
+   	        this.scan(ast.expression);
+   	        break;
+   	      case 'SequenceExpression':
+   	        this.scan(ast.expressions);
+   	        break;
+   	      case 'CallExpression':
+   	        this.functionCalls.push({
+   	          context: this.currentContext,
+   	          ast,
+   	        });
+   	        this.scan(ast.arguments);
+   	        break;
+   	      case 'ArrayExpression':
+   	        this.scan(ast.elements);
+   	        break;
+   	      case 'ConditionalExpression':
+   	        this.scan(ast.test);
+   	        this.scan(ast.alternate);
+   	        this.scan(ast.consequent);
+   	        break;
+   	      case 'SwitchStatement':
+   	        this.scan(ast.discriminant);
+   	        this.scan(ast.cases);
+   	        break;
+   	      case 'SwitchCase':
+   	        this.scan(ast.test);
+   	        this.scan(ast.consequent);
+   	        break;
+
+   	      case 'ThisExpression':
+   	      case 'Literal':
+   	      case 'DebuggerStatement':
+   	      case 'EmptyStatement':
+   	      case 'BreakStatement':
+   	      case 'ContinueStatement':
+   	        break;
+   	      default:
+   	        throw new Error(`unhandled type "${ast.type}"`);
+   	    }
+   	  }
+   	}
+
+   	module.exports = {
+   	  FunctionTracer,
+   	};
+   	},{"../utils":114}],12:[function(require,module,exports){
+   	const { glWiretap } = require('gl-wiretap');
+   	const { utils } = require('../../utils');
+
+   	function toStringWithoutUtils(fn) {
+   	  return fn.toString()
+   	    .replace('=>', '')
+   	    .replace(/^function /, '')
+   	    .replace(/utils[.]/g, '/*utils.*/');
+   	}
+
+   	function glKernelString(Kernel, args, originKernel, setupContextString, destroyContextString) {
+   	  if (!originKernel.built) {
+   	    originKernel.build.apply(originKernel, args);
+   	  }
+   	  args = args ? Array.from(args).map(arg => {
+   	    switch (typeof arg) {
+   	      case 'boolean':
+   	        return new Boolean(arg);
+   	      case 'number':
+   	        return new Number(arg);
+   	      default:
+   	        return arg;
+   	    }
+   	  }) : null;
+   	  const postResult = [];
+   	  const context = glWiretap(originKernel.context, {
+   	    useTrackablePrimitives: true,
+   	    onReadPixels: (targetName) => {
+   	      if (kernel.subKernels) {
+   	        if (!subKernelsResultVariableSetup) {
+   	          postResult.push(`    const result = { result: ${getRenderString(targetName, kernel)} };`);
+   	          subKernelsResultVariableSetup = true;
+   	        } else {
+   	          const property = kernel.subKernels[subKernelsResultIndex++].property;
+   	          postResult.push(`    result${isNaN(property) ? '.' + property : `[${property}]`} = ${getRenderString(targetName, kernel)};`);
+   	        }
+   	        if (subKernelsResultIndex === kernel.subKernels.length) {
+   	          postResult.push('    return result;');
+   	        }
+   	        return;
+   	      }
+   	      if (targetName) {
+   	        postResult.push(`    return ${getRenderString(targetName, kernel)};`);
+   	      } else {
+   	        postResult.push(`    return null;`);
+   	      }
+   	    },
+   	    onUnrecognizedArgumentLookup: (argument) => {
+   	      const argumentName = findKernelValue(argument, kernel.kernelArguments, [], context);
+   	      if (argumentName) {
+   	        return argumentName;
+   	      }
+   	      const constantName = findKernelValue(argument, kernel.kernelConstants, constants ? Object.keys(constants).map(key => constants[key]) : [], context);
+   	      if (constantName) {
+   	        return constantName;
+   	      }
+   	      return null;
+   	    }
+   	  });
+   	  let subKernelsResultVariableSetup = false;
+   	  let subKernelsResultIndex = 0;
+   	  const {
+   	    source,
+   	    canvas,
+   	    output,
+   	    pipeline,
+   	    graphical,
+   	    loopMaxIterations,
+   	    constants,
+   	    optimizeFloatMemory,
+   	    precision,
+   	    fixIntegerDivisionAccuracy,
+   	    functions,
+   	    nativeFunctions,
+   	    subKernels,
+   	    immutable,
+   	    argumentTypes,
+   	    constantTypes,
+   	    kernelArguments,
+   	    kernelConstants,
+   	    tactic,
+   	  } = originKernel;
+   	  const kernel = new Kernel(source, {
+   	    canvas,
+   	    context,
+   	    checkContext: false,
+   	    output,
+   	    pipeline,
+   	    graphical,
+   	    loopMaxIterations,
+   	    constants,
+   	    optimizeFloatMemory,
+   	    precision,
+   	    fixIntegerDivisionAccuracy,
+   	    functions,
+   	    nativeFunctions,
+   	    subKernels,
+   	    immutable,
+   	    argumentTypes,
+   	    constantTypes,
+   	    tactic,
+   	  });
+   	  let result = [];
+   	  context.setIndent(2);
+   	  kernel.build.apply(kernel, args);
+   	  result.push(context.toString());
+   	  context.reset();
+
+   	  kernel.kernelArguments.forEach((kernelArgument, i) => {
+   	    switch (kernelArgument.type) {
+   	      case 'Integer':
+   	      case 'Boolean':
+   	      case 'Number':
+   	      case 'Float':
+   	      case 'Array':
+   	      case 'Array(2)':
+   	      case 'Array(3)':
+   	      case 'Array(4)':
+   	      case 'HTMLCanvas':
+   	      case 'HTMLImage':
+   	      case 'HTMLVideo':
+   	        context.insertVariable(`uploadValue_${kernelArgument.name}`, kernelArgument.uploadValue);
+   	        break;
+   	      case 'HTMLImageArray':
+   	        for (let imageIndex = 0; imageIndex < args[i].length; imageIndex++) {
+   	          const arg = args[i];
+   	          context.insertVariable(`uploadValue_${kernelArgument.name}[${imageIndex}]`, arg[imageIndex]);
+   	        }
+   	        break;
+   	      case 'Input':
+   	        context.insertVariable(`uploadValue_${kernelArgument.name}`, kernelArgument.uploadValue);
+   	        break;
+   	      case 'MemoryOptimizedNumberTexture':
+   	      case 'NumberTexture':
+   	      case 'Array1D(2)':
+   	      case 'Array1D(3)':
+   	      case 'Array1D(4)':
+   	      case 'Array2D(2)':
+   	      case 'Array2D(3)':
+   	      case 'Array2D(4)':
+   	      case 'Array3D(2)':
+   	      case 'Array3D(3)':
+   	      case 'Array3D(4)':
+   	      case 'ArrayTexture(1)':
+   	      case 'ArrayTexture(2)':
+   	      case 'ArrayTexture(3)':
+   	      case 'ArrayTexture(4)':
+   	        context.insertVariable(`uploadValue_${kernelArgument.name}`, args[i].texture);
+   	        break;
+   	      default:
+   	        throw new Error(`unhandled kernelArgumentType insertion for glWiretap of type ${kernelArgument.type}`);
+   	    }
+   	  });
+   	  result.push('/** start of injected functions **/');
+   	  result.push(`function ${toStringWithoutUtils(utils.flattenTo)}`);
+   	  result.push(`function ${toStringWithoutUtils(utils.flatten2dArrayTo)}`);
+   	  result.push(`function ${toStringWithoutUtils(utils.flatten3dArrayTo)}`);
+   	  result.push(`function ${toStringWithoutUtils(utils.flatten4dArrayTo)}`);
+   	  result.push(`function ${toStringWithoutUtils(utils.isArray)}`);
+   	  if (kernel.renderOutput !== kernel.renderTexture && kernel.formatValues) {
+   	    result.push(
+   	      `  const renderOutput = function ${toStringWithoutUtils(kernel.formatValues)};`
+   	    );
+   	  }
+   	  result.push('/** end of injected functions **/');
+   	  result.push(`  const innerKernel = function (${kernel.kernelArguments.map(kernelArgument => kernelArgument.varName).join(', ')}) {`);
+   	  context.setIndent(4);
+   	  kernel.run.apply(kernel, args);
+   	  if (kernel.renderKernels) {
+   	    kernel.renderKernels();
+   	  } else if (kernel.renderOutput) {
+   	    kernel.renderOutput();
+   	  }
+   	  result.push('    /** start setup uploads for kernel values **/');
+   	  kernel.kernelArguments.forEach(kernelArgument => {
+   	    result.push('    ' + kernelArgument.getStringValueHandler().split('\n').join('\n    '));
+   	  });
+   	  result.push('    /** end setup uploads for kernel values **/');
+   	  result.push(context.toString());
+   	  if (kernel.renderOutput === kernel.renderTexture) {
+   	    context.reset();
+   	    const framebufferName = context.getContextVariableName(kernel.framebuffer);
+   	    if (kernel.renderKernels) {
+   	      const results = kernel.renderKernels();
+   	      const textureName = context.getContextVariableName(kernel.texture.texture);
+   	      result.push(`    return {
+      result: {
+        texture: ${ textureName },
+        type: '${ results.result.type }',
+        toArray: ${ getToArrayString(results.result, textureName, framebufferName) }
+      },`);
+   	      const { subKernels, mappedTextures } = kernel;
+   	      for (let i = 0; i < subKernels.length; i++) {
+   	        const texture = mappedTextures[i];
+   	        const subKernel = subKernels[i];
+   	        const subKernelResult = results[subKernel.property];
+   	        const subKernelTextureName = context.getContextVariableName(texture.texture);
+   	        result.push(`
+      ${subKernel.property}: {
+        texture: ${ subKernelTextureName },
+        type: '${ subKernelResult.type }',
+        toArray: ${ getToArrayString(subKernelResult, subKernelTextureName, framebufferName) }
+      },`);
+   	      }
+   	      result.push(`    };`);
+   	    } else {
+   	      const rendered = kernel.renderOutput();
+   	      const textureName = context.getContextVariableName(kernel.texture.texture);
+   	      result.push(`    return {
+        texture: ${ textureName },
+        type: '${ rendered.type }',
+        toArray: ${ getToArrayString(rendered, textureName, framebufferName) }
+      };`);
+   	    }
+   	  }
+   	  result.push(`    ${destroyContextString ? '\n' + destroyContextString + '    ': ''}`);
+   	  result.push(postResult.join('\n'));
+   	  result.push('  };');
+   	  if (kernel.graphical) {
+   	    result.push(getGetPixelsString(kernel));
+   	    result.push(`  innerKernel.getPixels = getPixels;`);
+   	  }
+   	  result.push('  return innerKernel;');
+
+   	  let constantsUpload = [];
+   	  kernelConstants.forEach((kernelConstant) => {
+   	    constantsUpload.push(`${kernelConstant.getStringValueHandler()}`);
+   	  });
+   	  return `function kernel(settings) {
+  const { context, constants } = settings;
+  ${constantsUpload.join('')}
+  ${setupContextString ? setupContextString : ''}
+${result.join('\n')}
+}`;
+   	}
+
+   	function getRenderString(targetName, kernel) {
+   	  const readBackValue = kernel.precision === 'single' ? targetName : `new Float32Array(${targetName}.buffer)`;
+   	  if (kernel.output[2]) {
+   	    return `renderOutput(${readBackValue}, ${kernel.output[0]}, ${kernel.output[1]}, ${kernel.output[2]})`;
+   	  }
+   	  if (kernel.output[1]) {
+   	    return `renderOutput(${readBackValue}, ${kernel.output[0]}, ${kernel.output[1]})`;
+   	  }
+
+   	  return `renderOutput(${readBackValue}, ${kernel.output[0]})`;
+   	}
+
+   	function getGetPixelsString(kernel) {
+   	  const getPixels = kernel.getPixels.toString();
+   	  const useFunctionKeyword = !/^function/.test(getPixels);
+   	  return utils.flattenFunctionToString(`${useFunctionKeyword ? 'function ' : ''}${ getPixels }`, {
+   	    findDependency: (object, name) => {
+   	      if (object === 'utils') {
+   	        return `const ${name} = ${utils[name].toString()};`;
+   	      }
+   	      return null;
+   	    },
+   	    thisLookup: (property) => {
+   	      if (property === 'context') {
+   	        return null;
+   	      }
+   	      if (kernel.hasOwnProperty(property)) {
+   	        return JSON.stringify(kernel[property]);
+   	      }
+   	      throw new Error(`unhandled thisLookup ${ property }`);
+   	    }
+   	  });
+   	}
+
+   	function getToArrayString(kernelResult, textureName, framebufferName) {
+   	  const toArray = kernelResult.toArray.toString();
+   	  const useFunctionKeyword = !/^function/.test(toArray);
+   	  const flattenedFunctions = utils.flattenFunctionToString(`${useFunctionKeyword ? 'function ' : ''}${ toArray }`, {
+   	    findDependency: (object, name) => {
+   	      if (object === 'utils') {
+   	        return `const ${name} = ${utils[name].toString()};`;
+   	      } else if (object === 'this') {
+   	        if (name === 'framebuffer') {
+   	          return '';
+   	        }
+   	        return `${useFunctionKeyword ? 'function ' : ''}${kernelResult[name].toString()}`;
+   	      } else {
+   	        throw new Error('unhandled fromObject');
+   	      }
+   	    },
+   	    thisLookup: (property, isDeclaration) => {
+   	      if (property === 'texture') {
+   	        return textureName;
+   	      }
+   	      if (property === 'context') {
+   	        if (isDeclaration) return null;
+   	        return 'gl';
+   	      }
+   	      if (kernelResult.hasOwnProperty(property)) {
+   	        return JSON.stringify(kernelResult[property]);
+   	      }
+   	      throw new Error(`unhandled thisLookup ${ property }`);
+   	    }
+   	  });
+   	  return `() => {
+  function framebuffer() { return ${framebufferName}; };
+  ${flattenedFunctions}
+  return toArray();
+  }`;
+   	}
+
+   	function findKernelValue(argument, kernelValues, values, context, uploadedValues) {
+   	  if (argument === null) return null;
+   	  if (kernelValues === null) return null;
+   	  switch (typeof argument) {
+   	    case 'boolean':
+   	    case 'number':
+   	      return null;
+   	  }
+   	  if (
+   	    typeof HTMLImageElement !== 'undefined' &&
+   	    argument instanceof HTMLImageElement
+   	  ) {
+   	    for (let i = 0; i < kernelValues.length; i++) {
+   	      const kernelValue = kernelValues[i];
+   	      if (kernelValue.type !== 'HTMLImageArray' && kernelValue) continue;
+   	      if (kernelValue.uploadValue !== argument) continue;
+   	      const variableIndex = values[i].indexOf(argument);
+   	      if (variableIndex === -1) continue;
+   	      const variableName = `uploadValue_${kernelValue.name}[${variableIndex}]`;
+   	      context.insertVariable(variableName, argument);
+   	      return variableName;
+   	    }
+   	  }
+
+   	  for (let i = 0; i < kernelValues.length; i++) {
+   	    const kernelValue = kernelValues[i];
+   	    if (argument !== kernelValue.uploadValue) continue;
+   	    const variable = `uploadValue_${kernelValue.name}`;
+   	    context.insertVariable(variable, kernelValue);
+   	    return variable;
+   	  }
+   	  return null;
+   	}
+
+   	module.exports = {
+   	  glKernelString
+   	};
+   	},{"../../utils":114,"gl-wiretap":3}],13:[function(require,module,exports){
+   	const { Kernel } = require('../kernel');
+   	const { utils } = require('../../utils');
+   	const { GLTextureArray2Float } = require('./texture/array-2-float');
+   	const { GLTextureArray2Float2D } = require('./texture/array-2-float-2d');
+   	const { GLTextureArray2Float3D } = require('./texture/array-2-float-3d');
+   	const { GLTextureArray3Float } = require('./texture/array-3-float');
+   	const { GLTextureArray3Float2D } = require('./texture/array-3-float-2d');
+   	const { GLTextureArray3Float3D } = require('./texture/array-3-float-3d');
+   	const { GLTextureArray4Float } = require('./texture/array-4-float');
+   	const { GLTextureArray4Float2D } = require('./texture/array-4-float-2d');
+   	const { GLTextureArray4Float3D } = require('./texture/array-4-float-3d');
+   	const { GLTextureFloat } = require('./texture/float');
+   	const { GLTextureFloat2D } = require('./texture/float-2d');
+   	const { GLTextureFloat3D } = require('./texture/float-3d');
+   	const { GLTextureMemoryOptimized } = require('./texture/memory-optimized');
+   	const { GLTextureMemoryOptimized2D } = require('./texture/memory-optimized-2d');
+   	const { GLTextureMemoryOptimized3D } = require('./texture/memory-optimized-3d');
+   	const { GLTextureUnsigned } = require('./texture/unsigned');
+   	const { GLTextureUnsigned2D } = require('./texture/unsigned-2d');
+   	const { GLTextureUnsigned3D } = require('./texture/unsigned-3d');
+   	const { GLTextureGraphical } = require('./texture/graphical');
+
+   	class GLKernel extends Kernel {
+   	  static get mode() {
+   	    return 'gpu';
+   	  }
+
+   	  static getIsFloatRead() {
+   	    const kernelString = `function kernelFunction() {
+      return 1;
+    }`;
+   	    const kernel = new this(kernelString, {
+   	      context: this.testContext,
+   	      canvas: this.testCanvas,
+   	      validate: false,
+   	      output: [1],
+   	      precision: 'single',
+   	      returnType: 'Number',
+   	      tactic: 'speed',
+   	    });
+   	    kernel.build();
+   	    kernel.run();
+   	    const result = kernel.renderOutput();
+   	    kernel.destroy(true);
+   	    return result[0] === 1;
+   	  }
+
+   	  static getIsIntegerDivisionAccurate() {
+   	    function kernelFunction(v1, v2) {
+   	      return v1[this.thread.x] / v2[this.thread.x];
+   	    }
+   	    const kernel = new this(kernelFunction.toString(), {
+   	      context: this.testContext,
+   	      canvas: this.testCanvas,
+   	      validate: false,
+   	      output: [2],
+   	      returnType: 'Number',
+   	      precision: 'unsigned',
+   	      tactic: 'speed',
+   	    });
+   	    const args = [
+   	      [6, 6030401],
+   	      [3, 3991]
+   	    ];
+   	    kernel.build.apply(kernel, args);
+   	    kernel.run.apply(kernel, args);
+   	    const result = kernel.renderOutput();
+   	    kernel.destroy(true);
+   	    return result[0] === 2 && result[1] === 1511;
+   	  }
+
+   	  static getIsSpeedTacticSupported() {
+   	    function kernelFunction(value) {
+   	      return value[this.thread.x];
+   	    }
+   	    const kernel = new this(kernelFunction.toString(), {
+   	      context: this.testContext,
+   	      canvas: this.testCanvas,
+   	      validate: false,
+   	      output: [4],
+   	      returnType: 'Number',
+   	      precision: 'unsigned',
+   	      tactic: 'speed',
+   	    });
+   	    const args = [
+   	      [0, 1, 2, 3]
+   	    ];
+   	    kernel.build.apply(kernel, args);
+   	    kernel.run.apply(kernel, args);
+   	    const result = kernel.renderOutput();
+   	    kernel.destroy(true);
+   	    return Math.round(result[0]) === 0 && Math.round(result[1]) === 1 && Math.round(result[2]) === 2 && Math.round(result[3]) === 3;
+   	  }
+
+   	  static get testCanvas() {
+   	    throw new Error(`"testCanvas" not defined on ${ this.name }`);
+   	  }
+
+   	  static get testContext() {
+   	    throw new Error(`"testContext" not defined on ${ this.name }`);
+   	  }
+
+   	  static getFeatures() {
+   	    const gl = this.testContext;
+   	    const isDrawBuffers = this.getIsDrawBuffers();
+   	    return Object.freeze({
+   	      isFloatRead: this.getIsFloatRead(),
+   	      isIntegerDivisionAccurate: this.getIsIntegerDivisionAccurate(),
+   	      isSpeedTacticSupported: this.getIsSpeedTacticSupported(),
+   	      isTextureFloat: this.getIsTextureFloat(),
+   	      isDrawBuffers,
+   	      kernelMap: isDrawBuffers,
+   	      channelCount: this.getChannelCount(),
+   	      maxTextureSize: this.getMaxTextureSize(),
+   	      lowIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.LOW_INT),
+   	      lowFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.LOW_FLOAT),
+   	      mediumIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.MEDIUM_INT),
+   	      mediumFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.MEDIUM_FLOAT),
+   	      highIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_INT),
+   	      highFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT),
+   	    });
+   	  }
+
+   	  static setupFeatureChecks() {
+   	    throw new Error(`"setupFeatureChecks" not defined on ${ this.name }`);
+   	  }
+
+   	  static getSignature(kernel, argumentTypes) {
+   	    return kernel.getVariablePrecisionString() + (argumentTypes.length > 0 ? ':' + argumentTypes.join(',') : '');
+   	  }
+
+   	  setFixIntegerDivisionAccuracy(fix) {
+   	    this.fixIntegerDivisionAccuracy = fix;
+   	    return this;
+   	  }
+
+   	  setPrecision(flag) {
+   	    this.precision = flag;
+   	    return this;
+   	  }
+
+   	  setFloatTextures(flag) {
+   	    utils.warnDeprecated('method', 'setFloatTextures', 'setOptimizeFloatMemory');
+   	    this.floatTextures = flag;
+   	    return this;
+   	  }
+
+   	  static nativeFunctionArguments(source) {
+   	    const argumentTypes = [];
+   	    const argumentNames = [];
+   	    const states = [];
+   	    const isStartingVariableName = /^[a-zA-Z_]/;
+   	    const isVariableChar = /[a-zA-Z_0-9]/;
+   	    let i = 0;
+   	    let argumentName = null;
+   	    let argumentType = null;
+   	    while (i < source.length) {
+   	      const char = source[i];
+   	      const nextChar = source[i + 1];
+   	      const state = states.length > 0 ? states[states.length - 1] : null;
+
+   	      if (state === 'FUNCTION_ARGUMENTS' && char === '/' && nextChar === '*') {
+   	        states.push('MULTI_LINE_COMMENT');
+   	        i += 2;
+   	        continue;
+   	      } else if (state === 'MULTI_LINE_COMMENT' && char === '*' && nextChar === '/') {
+   	        states.pop();
+   	        i += 2;
+   	        continue;
+   	      }
+
+   	      else if (state === 'FUNCTION_ARGUMENTS' && char === '/' && nextChar === '/') {
+   	        states.push('COMMENT');
+   	        i += 2;
+   	        continue;
+   	      } else if (state === 'COMMENT' && char === '\n') {
+   	        states.pop();
+   	        i++;
+   	        continue;
+   	      }
+
+   	      else if (state === null && char === '(') {
+   	        states.push('FUNCTION_ARGUMENTS');
+   	        i++;
+   	        continue;
+   	      } else if (state === 'FUNCTION_ARGUMENTS') {
+   	        if (char === ')') {
+   	          states.pop();
+   	          break;
+   	        }
+   	        if (char === 'f' && nextChar === 'l' && source[i + 2] === 'o' && source[i + 3] === 'a' && source[i + 4] === 't' && source[i + 5] === ' ') {
+   	          states.push('DECLARE_VARIABLE');
+   	          argumentType = 'float';
+   	          argumentName = '';
+   	          i += 6;
+   	          continue;
+   	        } else if (char === 'i' && nextChar === 'n' && source[i + 2] === 't' && source[i + 3] === ' ') {
+   	          states.push('DECLARE_VARIABLE');
+   	          argumentType = 'int';
+   	          argumentName = '';
+   	          i += 4;
+   	          continue;
+   	        } else if (char === 'v' && nextChar === 'e' && source[i + 2] === 'c' && source[i + 3] === '2' && source[i + 4] === ' ') {
+   	          states.push('DECLARE_VARIABLE');
+   	          argumentType = 'vec2';
+   	          argumentName = '';
+   	          i += 5;
+   	          continue;
+   	        } else if (char === 'v' && nextChar === 'e' && source[i + 2] === 'c' && source[i + 3] === '3' && source[i + 4] === ' ') {
+   	          states.push('DECLARE_VARIABLE');
+   	          argumentType = 'vec3';
+   	          argumentName = '';
+   	          i += 5;
+   	          continue;
+   	        } else if (char === 'v' && nextChar === 'e' && source[i + 2] === 'c' && source[i + 3] === '4' && source[i + 4] === ' ') {
+   	          states.push('DECLARE_VARIABLE');
+   	          argumentType = 'vec4';
+   	          argumentName = '';
+   	          i += 5;
+   	          continue;
+   	        }
+   	      }
+
+   	      else if (state === 'DECLARE_VARIABLE') {
+   	        if (argumentName === '') {
+   	          if (char === ' ') {
+   	            i++;
+   	            continue;
+   	          }
+   	          if (!isStartingVariableName.test(char)) {
+   	            throw new Error('variable name is not expected string');
+   	          }
+   	        }
+   	        argumentName += char;
+   	        if (!isVariableChar.test(nextChar)) {
+   	          states.pop();
+   	          argumentNames.push(argumentName);
+   	          argumentTypes.push(typeMap[argumentType]);
+   	        }
+   	      }
+
+   	      i++;
+   	    }
+   	    if (states.length > 0) {
+   	      throw new Error('GLSL function was not parsable');
+   	    }
+   	    return {
+   	      argumentNames,
+   	      argumentTypes,
+   	    };
+   	  }
+
+   	  static nativeFunctionReturnType(source) {
+   	    return typeMap[source.match(/int|float|vec[2-4]/)[0]];
+   	  }
+
+   	  static combineKernels(combinedKernel, lastKernel) {
+   	    combinedKernel.apply(null, arguments);
+   	    const {
+   	      texSize,
+   	      context,
+   	      threadDim
+   	    } = lastKernel.texSize;
+   	    let result;
+   	    if (lastKernel.precision === 'single') {
+   	      const w = texSize[0];
+   	      const h = Math.ceil(texSize[1] / 4);
+   	      result = new Float32Array(w * h * 4 * 4);
+   	      context.readPixels(0, 0, w, h * 4, context.RGBA, context.FLOAT, result);
+   	    } else {
+   	      const bytes = new Uint8Array(texSize[0] * texSize[1] * 4);
+   	      context.readPixels(0, 0, texSize[0], texSize[1], context.RGBA, context.UNSIGNED_BYTE, bytes);
+   	      result = new Float32Array(bytes.buffer);
+   	    }
+
+   	    result = result.subarray(0, threadDim[0] * threadDim[1] * threadDim[2]);
+
+   	    if (lastKernel.output.length === 1) {
+   	      return result;
+   	    } else if (lastKernel.output.length === 2) {
+   	      return utils.splitArray(result, lastKernel.output[0]);
+   	    } else if (lastKernel.output.length === 3) {
+   	      const cube = utils.splitArray(result, lastKernel.output[0] * lastKernel.output[1]);
+   	      return cube.map(function(x) {
+   	        return utils.splitArray(x, lastKernel.output[0]);
+   	      });
+   	    }
+   	  }
+
+   	  constructor(source, settings) {
+   	    super(source, settings);
+   	    this.transferValues = null;
+   	    this.formatValues = null;
+   	    this.TextureConstructor = null;
+   	    this.renderOutput = null;
+   	    this.renderRawOutput = null;
+   	    this.texSize = null;
+   	    this.translatedSource = null;
+   	    this.compiledFragmentShader = null;
+   	    this.compiledVertexShader = null;
+   	    this.switchingKernels = null;
+   	    this._textureSwitched = null;
+   	    this._mappedTextureSwitched = null;
+   	  }
+
+   	  checkTextureSize() {
+   	    const { features } = this.constructor;
+   	    if (this.texSize[0] > features.maxTextureSize || this.texSize[1] > features.maxTextureSize) {
+   	      throw new Error(`Texture size [${this.texSize[0]},${this.texSize[1]}] generated by kernel is larger than supported size [${features.maxTextureSize},${features.maxTextureSize}]`);
+   	    }
+   	  }
+
+   	  translateSource() {
+   	    throw new Error(`"translateSource" not defined on ${this.constructor.name}`);
+   	  }
+
+   	  pickRenderStrategy(args) {
+   	    if (this.graphical) {
+   	      this.renderRawOutput = this.readPackedPixelsToUint8Array;
+   	      this.transferValues = (pixels) => pixels;
+   	      this.TextureConstructor = GLTextureGraphical;
+   	      return null;
+   	    }
+   	    if (this.precision === 'unsigned') {
+   	      this.renderRawOutput = this.readPackedPixelsToUint8Array;
+   	      this.transferValues = this.readPackedPixelsToFloat32Array;
+   	      if (this.pipeline) {
+   	        this.renderOutput = this.renderTexture;
+   	        if (this.subKernels !== null) {
+   	          this.renderKernels = this.renderKernelsToTextures;
+   	        }
+   	        switch (this.returnType) {
+   	          case 'LiteralInteger':
+   	          case 'Float':
+   	          case 'Number':
+   	          case 'Integer':
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureUnsigned3D;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureUnsigned2D;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureUnsigned;
+   	              return null;
+   	            }
+   	            case 'Array(2)':
+   	            case 'Array(3)':
+   	            case 'Array(4)':
+   	              return this.requestFallback(args);
+   	        }
+   	      } else {
+   	        if (this.subKernels !== null) {
+   	          this.renderKernels = this.renderKernelsToArrays;
+   	        }
+   	        switch (this.returnType) {
+   	          case 'LiteralInteger':
+   	          case 'Float':
+   	          case 'Number':
+   	          case 'Integer':
+   	            this.renderOutput = this.renderValues;
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureUnsigned3D;
+   	              this.formatValues = utils.erect3DPackedFloat;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureUnsigned2D;
+   	              this.formatValues = utils.erect2DPackedFloat;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureUnsigned;
+   	              this.formatValues = utils.erectPackedFloat;
+   	              return null;
+   	            }
+   	            case 'Array(2)':
+   	            case 'Array(3)':
+   	            case 'Array(4)':
+   	              return this.requestFallback(args);
+   	        }
+   	      }
+   	    } else if (this.precision === 'single') {
+   	      this.renderRawOutput = this.readFloatPixelsToFloat32Array;
+   	      this.transferValues = this.readFloatPixelsToFloat32Array;
+   	      if (this.pipeline) {
+   	        this.renderOutput = this.renderTexture;
+   	        if (this.subKernels !== null) {
+   	          this.renderKernels = this.renderKernelsToTextures;
+   	        }
+   	        switch (this.returnType) {
+   	          case 'LiteralInteger':
+   	          case 'Float':
+   	          case 'Number':
+   	          case 'Integer': {
+   	            if (this.optimizeFloatMemory) {
+   	              if (this.output[2] > 0) {
+   	                this.TextureConstructor = GLTextureMemoryOptimized3D;
+   	                return null;
+   	              } else if (this.output[1] > 0) {
+   	                this.TextureConstructor = GLTextureMemoryOptimized2D;
+   	                return null;
+   	              } else {
+   	                this.TextureConstructor = GLTextureMemoryOptimized;
+   	                return null;
+   	              }
+   	            } else {
+   	              if (this.output[2] > 0) {
+   	                this.TextureConstructor = GLTextureFloat3D;
+   	                return null;
+   	              } else if (this.output[1] > 0) {
+   	                this.TextureConstructor = GLTextureFloat2D;
+   	                return null;
+   	              } else {
+   	                this.TextureConstructor = GLTextureFloat;
+   	                return null;
+   	              }
+   	            }
+   	          }
+   	          case 'Array(2)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float3D;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float2D;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray2Float;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(3)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float3D;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float2D;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray3Float;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(4)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float3D;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float2D;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray4Float;
+   	              return null;
+   	            }
+   	          }
+   	        }
+   	      }
+   	      this.renderOutput = this.renderValues;
+   	      if (this.subKernels !== null) {
+   	        this.renderKernels = this.renderKernelsToArrays;
+   	      }
+   	      if (this.optimizeFloatMemory) {
+   	        switch (this.returnType) {
+   	          case 'LiteralInteger':
+   	          case 'Float':
+   	          case 'Number':
+   	          case 'Integer': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureMemoryOptimized3D;
+   	              this.formatValues = utils.erectMemoryOptimized3DFloat;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureMemoryOptimized2D;
+   	              this.formatValues = utils.erectMemoryOptimized2DFloat;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureMemoryOptimized;
+   	              this.formatValues = utils.erectMemoryOptimizedFloat;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(2)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float3D;
+   	              this.formatValues = utils.erect3DArray2;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float2D;
+   	              this.formatValues = utils.erect2DArray2;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray2Float;
+   	              this.formatValues = utils.erectArray2;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(3)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float3D;
+   	              this.formatValues = utils.erect3DArray3;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float2D;
+   	              this.formatValues = utils.erect2DArray3;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray3Float;
+   	              this.formatValues = utils.erectArray3;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(4)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float3D;
+   	              this.formatValues = utils.erect3DArray4;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float2D;
+   	              this.formatValues = utils.erect2DArray4;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray4Float;
+   	              this.formatValues = utils.erectArray4;
+   	              return null;
+   	            }
+   	          }
+   	        }
+   	      } else {
+   	        switch (this.returnType) {
+   	          case 'LiteralInteger':
+   	          case 'Float':
+   	          case 'Number':
+   	          case 'Integer': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureFloat3D;
+   	              this.formatValues = utils.erect3DFloat;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureFloat2D;
+   	              this.formatValues = utils.erect2DFloat;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureFloat;
+   	              this.formatValues = utils.erectFloat;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(2)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float3D;
+   	              this.formatValues = utils.erect3DArray2;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray2Float2D;
+   	              this.formatValues = utils.erect2DArray2;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray2Float;
+   	              this.formatValues = utils.erectArray2;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(3)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float3D;
+   	              this.formatValues = utils.erect3DArray3;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray3Float2D;
+   	              this.formatValues = utils.erect2DArray3;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray3Float;
+   	              this.formatValues = utils.erectArray3;
+   	              return null;
+   	            }
+   	          }
+   	          case 'Array(4)': {
+   	            if (this.output[2] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float3D;
+   	              this.formatValues = utils.erect3DArray4;
+   	              return null;
+   	            } else if (this.output[1] > 0) {
+   	              this.TextureConstructor = GLTextureArray4Float2D;
+   	              this.formatValues = utils.erect2DArray4;
+   	              return null;
+   	            } else {
+   	              this.TextureConstructor = GLTextureArray4Float;
+   	              this.formatValues = utils.erectArray4;
+   	              return null;
+   	            }
+   	          }
+   	        }
+   	      }
+   	    } else {
+   	      throw new Error(`unhandled precision of "${this.precision}"`);
+   	    }
+
+   	    throw new Error(`unhandled return type "${this.returnType}"`);
+   	  }
+
+   	  getKernelString() {
+   	    throw new Error(`abstract method call`);
+   	  }
+
+   	  getMainResultTexture() {
+   	    switch (this.returnType) {
+   	      case 'LiteralInteger':
+   	      case 'Float':
+   	      case 'Integer':
+   	      case 'Number':
+   	        return this.getMainResultNumberTexture();
+   	      case 'Array(2)':
+   	        return this.getMainResultArray2Texture();
+   	      case 'Array(3)':
+   	        return this.getMainResultArray3Texture();
+   	      case 'Array(4)':
+   	        return this.getMainResultArray4Texture();
+   	      default:
+   	        throw new Error(`unhandled returnType type ${ this.returnType }`);
+   	    }
+   	  }
+
+   	  getMainResultKernelNumberTexture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultSubKernelNumberTexture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultKernelArray2Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultSubKernelArray2Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultKernelArray3Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultSubKernelArray3Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultKernelArray4Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultSubKernelArray4Texture() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultGraphical() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultMemoryOptimizedFloats() {
+   	    throw new Error(`abstract method call`);
+   	  }
+   	  getMainResultPackedPixels() {
+   	    throw new Error(`abstract method call`);
+   	  }
+
+   	  getMainResultString() {
+   	    if (this.graphical) {
+   	      return this.getMainResultGraphical();
+   	    } else if (this.precision === 'single') {
+   	      if (this.optimizeFloatMemory) {
+   	        return this.getMainResultMemoryOptimizedFloats();
+   	      }
+   	      return this.getMainResultTexture();
+   	    } else {
+   	      return this.getMainResultPackedPixels();
+   	    }
+   	  }
+
+   	  getMainResultNumberTexture() {
+   	    return utils.linesToString(this.getMainResultKernelNumberTexture()) +
+   	      utils.linesToString(this.getMainResultSubKernelNumberTexture());
+   	  }
+
+   	  getMainResultArray2Texture() {
+   	    return utils.linesToString(this.getMainResultKernelArray2Texture()) +
+   	      utils.linesToString(this.getMainResultSubKernelArray2Texture());
+   	  }
+
+   	  getMainResultArray3Texture() {
+   	    return utils.linesToString(this.getMainResultKernelArray3Texture()) +
+   	      utils.linesToString(this.getMainResultSubKernelArray3Texture());
+   	  }
+
+   	  getMainResultArray4Texture() {
+   	    return utils.linesToString(this.getMainResultKernelArray4Texture()) +
+   	      utils.linesToString(this.getMainResultSubKernelArray4Texture());
+   	  }
+
+   	  getFloatTacticDeclaration() {
+   	    const variablePrecision = this.getVariablePrecisionString(this.texSize, this.tactic);
+   	    return `precision ${variablePrecision} float;\n`;
+   	  }
+
+   	  getIntTacticDeclaration() {
+   	    return `precision ${this.getVariablePrecisionString(this.texSize, this.tactic, true)} int;\n`;
+   	  }
+
+   	  getSampler2DTacticDeclaration() {
+   	    return `precision ${this.getVariablePrecisionString(this.texSize, this.tactic)} sampler2D;\n`;
+   	  }
+
+   	  getSampler2DArrayTacticDeclaration() {
+   	    return `precision ${this.getVariablePrecisionString(this.texSize, this.tactic)} sampler2DArray;\n`;
+   	  }
+
+   	  renderTexture() {
+   	    return this.immutable ? this.texture.clone() : this.texture;
+   	  }
+   	  readPackedPixelsToUint8Array() {
+   	    if (this.precision !== 'unsigned') throw new Error('Requires this.precision to be "unsigned"');
+   	    const {
+   	      texSize,
+   	      context: gl
+   	    } = this;
+   	    const result = new Uint8Array(texSize[0] * texSize[1] * 4);
+   	    gl.readPixels(0, 0, texSize[0], texSize[1], gl.RGBA, gl.UNSIGNED_BYTE, result);
+   	    return result;
+   	  }
+
+   	  readPackedPixelsToFloat32Array() {
+   	    return new Float32Array(this.readPackedPixelsToUint8Array().buffer);
+   	  }
+
+   	  readFloatPixelsToFloat32Array() {
+   	    if (this.precision !== 'single') throw new Error('Requires this.precision to be "single"');
+   	    const {
+   	      texSize,
+   	      context: gl
+   	    } = this;
+   	    const w = texSize[0];
+   	    const h = texSize[1];
+   	    const result = new Float32Array(w * h * 4);
+   	    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, result);
+   	    return result;
+   	  }
+
+   	  getPixels(flip) {
+   	    const {
+   	      context: gl,
+   	      output
+   	    } = this;
+   	    const [width, height] = output;
+   	    const pixels = new Uint8Array(width * height * 4);
+   	    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+   	    return new Uint8ClampedArray((flip ? pixels : utils.flipPixels(pixels, width, height)).buffer);
+   	  }
+
+   	  renderKernelsToArrays() {
+   	    const result = {
+   	      result: this.renderOutput(),
+   	    };
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      result[this.subKernels[i].property] = this.mappedTextures[i].toArray();
+   	    }
+   	    return result;
+   	  }
+
+   	  renderKernelsToTextures() {
+   	    const result = {
+   	      result: this.renderOutput(),
+   	    };
+   	    if (this.immutable) {
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        result[this.subKernels[i].property] = this.mappedTextures[i].clone();
+   	      }
+   	    } else {
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        result[this.subKernels[i].property] = this.mappedTextures[i];
+   	      }
+   	    }
+   	    return result;
+   	  }
+
+   	  resetSwitchingKernels() {
+   	    const existingValue = this.switchingKernels;
+   	    this.switchingKernels = null;
+   	    return existingValue;
+   	  }
+
+   	  setOutput(output) {
+   	    const newOutput = this.toKernelOutput(output);
+   	    if (this.program) {
+   	      if (!this.dynamicOutput) {
+   	        throw new Error('Resizing a kernel with dynamicOutput: false is not possible');
+   	      }
+   	      const newThreadDim = [newOutput[0], newOutput[1] || 1, newOutput[2] || 1];
+   	      const newTexSize = utils.getKernelTextureSize({
+   	        optimizeFloatMemory: this.optimizeFloatMemory,
+   	        precision: this.precision,
+   	      }, newThreadDim);
+   	      const oldTexSize = this.texSize;
+   	      if (oldTexSize) {
+   	        const oldPrecision = this.getVariablePrecisionString(oldTexSize, this.tactic);
+   	        const newPrecision = this.getVariablePrecisionString(newTexSize, this.tactic);
+   	        if (oldPrecision !== newPrecision) {
+   	          if (this.debug) {
+   	            console.warn('Precision requirement changed, asking GPU instance to recompile');
+   	          }
+   	          this.switchKernels({
+   	            type: 'outputPrecisionMismatch',
+   	            precision: newPrecision,
+   	            needed: output
+   	          });
+   	          return;
+   	        }
+   	      }
+   	      this.output = newOutput;
+   	      this.threadDim = newThreadDim;
+   	      this.texSize = newTexSize;
+   	      const { context: gl } = this;
+   	      gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+   	      this.updateMaxTexSize();
+   	      this.framebuffer.width = this.texSize[0];
+   	      this.framebuffer.height = this.texSize[1];
+   	      gl.viewport(0, 0, this.maxTexSize[0], this.maxTexSize[1]);
+   	      this.canvas.width = this.maxTexSize[0];
+   	      this.canvas.height = this.maxTexSize[1];
+   	      if (this.texture) {
+   	        this.texture.delete();
+   	      }
+   	      this.texture = null;
+   	      this._setupOutputTexture();
+   	      if (this.mappedTextures && this.mappedTextures.length > 0) {
+   	        for (let i = 0; i < this.mappedTextures.length; i++) {
+   	          this.mappedTextures[i].delete();
+   	        }
+   	        this.mappedTextures = null;
+   	        this._setupSubOutputTextures();
+   	      }
+   	    } else {
+   	      this.output = newOutput;
+   	    }
+   	    return this;
+   	  }
+   	  renderValues() {
+   	    return this.formatValues(
+   	      this.transferValues(),
+   	      this.output[0],
+   	      this.output[1],
+   	      this.output[2]
+   	    );
+   	  }
+   	  switchKernels(reason) {
+   	    if (this.switchingKernels) {
+   	      this.switchingKernels.push(reason);
+   	    } else {
+   	      this.switchingKernels = [reason];
+   	    }
+   	  }
+   	  getVariablePrecisionString(textureSize = this.texSize, tactic = this.tactic, isInt = false) {
+   	    if (!tactic) {
+   	      if (!this.constructor.features.isSpeedTacticSupported) return 'highp';
+   	      const low = this.constructor.features[isInt ? 'lowIntPrecision' : 'lowFloatPrecision'];
+   	      const medium = this.constructor.features[isInt ? 'mediumIntPrecision' : 'mediumFloatPrecision'];
+   	      const high = this.constructor.features[isInt ? 'highIntPrecision' : 'highFloatPrecision'];
+   	      const requiredSize = Math.log2(textureSize[0] * textureSize[1]);
+   	      if (requiredSize <= low.rangeMax) {
+   	        return 'lowp';
+   	      } else if (requiredSize <= medium.rangeMax) {
+   	        return 'mediump';
+   	      } else if (requiredSize <= high.rangeMax) {
+   	        return 'highp';
+   	      } else {
+   	        throw new Error(`The required size exceeds that of the ability of your system`);
+   	      }
+   	    }
+   	    switch (tactic) {
+   	      case 'speed':
+   	        return 'lowp';
+   	      case 'balanced':
+   	        return 'mediump';
+   	      case 'precision':
+   	        return 'highp';
+   	      default:
+   	        throw new Error(`Unknown tactic "${tactic}" use "speed", "balanced", "precision", or empty for auto`);
+   	    }
+   	  }
+
+   	  updateTextureArgumentRefs(kernelValue, arg) {
+   	    if (!this.immutable) return;
+   	    if (this.texture.texture === arg.texture) {
+   	      const { prevArg } = kernelValue;
+   	      if (prevArg) {
+   	        if (prevArg.texture._refs === 1) {
+   	          this.texture.delete();
+   	          this.texture = prevArg.clone();
+   	          this._textureSwitched = true;
+   	        }
+   	        prevArg.delete();
+   	      }
+   	      kernelValue.prevArg = arg.clone();
+   	    } else if (this.mappedTextures && this.mappedTextures.length > 0) {
+   	      const { mappedTextures } = this;
+   	      for (let i = 0; i < mappedTextures.length; i++) {
+   	        const mappedTexture = mappedTextures[i];
+   	        if (mappedTexture.texture === arg.texture) {
+   	          const { prevArg } = kernelValue;
+   	          if (prevArg) {
+   	            if (prevArg.texture._refs === 1) {
+   	              mappedTexture.delete();
+   	              mappedTextures[i] = prevArg.clone();
+   	              this._mappedTextureSwitched[i] = true;
+   	            }
+   	            prevArg.delete();
+   	          }
+   	          kernelValue.prevArg = arg.clone();
+   	          return;
+   	        }
+   	      }
+   	    }
+   	  }
+
+   	  onActivate(previousKernel) {
+   	    this._textureSwitched = true;
+   	    this.texture = previousKernel.texture;
+   	    if (this.mappedTextures) {
+   	      for (let i = 0; i < this.mappedTextures.length; i++) {
+   	        this._mappedTextureSwitched[i] = true;
+   	      }
+   	      this.mappedTextures = previousKernel.mappedTextures;
+   	    }
+   	  }
+
+   	  initCanvas() {}
+   	}
+
+   	const typeMap = {
+   	  int: 'Integer',
+   	  float: 'Number',
+   	  vec2: 'Array(2)',
+   	  vec3: 'Array(3)',
+   	  vec4: 'Array(4)',
+   	};
+
+   	module.exports = {
+   	  GLKernel
+   	};
+   	},{"../../utils":114,"../kernel":36,"./texture/array-2-float":16,"./texture/array-2-float-2d":14,"./texture/array-2-float-3d":15,"./texture/array-3-float":19,"./texture/array-3-float-2d":17,"./texture/array-3-float-3d":18,"./texture/array-4-float":22,"./texture/array-4-float-2d":20,"./texture/array-4-float-3d":21,"./texture/float":25,"./texture/float-2d":23,"./texture/float-3d":24,"./texture/graphical":26,"./texture/memory-optimized":30,"./texture/memory-optimized-2d":28,"./texture/memory-optimized-3d":29,"./texture/unsigned":33,"./texture/unsigned-2d":31,"./texture/unsigned-3d":32}],14:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray2Float2D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(2)';
+   	  }
+   	  toArray() {
+   	    return utils.erect2DArray2(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray2Float2D
+   	};
+   	},{"../../../utils":114,"./float":25}],15:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray2Float3D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(2)';
+   	  }
+   	  toArray() {
+   	    return utils.erect3DArray2(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray2Float3D
+   	};
+   	},{"../../../utils":114,"./float":25}],16:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray2Float extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(2)';
+   	  }
+   	  toArray() {
+   	    return utils.erectArray2(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray2Float
+   	};
+   	},{"../../../utils":114,"./float":25}],17:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray3Float2D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(3)';
+   	  }
+   	  toArray() {
+   	    return utils.erect2DArray3(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray3Float2D
+   	};
+   	},{"../../../utils":114,"./float":25}],18:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray3Float3D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(3)';
+   	  }
+   	  toArray() {
+   	    return utils.erect3DArray3(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray3Float3D
+   	};
+   	},{"../../../utils":114,"./float":25}],19:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray3Float extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(3)';
+   	  }
+   	  toArray() {
+   	    return utils.erectArray3(this.renderValues(), this.output[0]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray3Float
+   	};
+   	},{"../../../utils":114,"./float":25}],20:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray4Float2D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(4)';
+   	  }
+   	  toArray() {
+   	    return utils.erect2DArray4(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray4Float2D
+   	};
+   	},{"../../../utils":114,"./float":25}],21:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray4Float3D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(4)';
+   	  }
+   	  toArray() {
+   	    return utils.erect3DArray4(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray4Float3D
+   	};
+   	},{"../../../utils":114,"./float":25}],22:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureArray4Float extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(4)';
+   	  }
+   	  toArray() {
+   	    return utils.erectArray4(this.renderValues(), this.output[0]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureArray4Float
+   	};
+   	},{"../../../utils":114,"./float":25}],23:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureFloat2D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(1)';
+   	  }
+   	  toArray() {
+   	    return utils.erect2DFloat(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureFloat2D
+   	};
+   	},{"../../../utils":114,"./float":25}],24:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureFloat3D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(1)';
+   	  }
+   	  toArray() {
+   	    return utils.erect3DFloat(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureFloat3D
+   	};
+   	},{"../../../utils":114,"./float":25}],25:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTexture } = require('./index');
+
+   	class GLTextureFloat extends GLTexture {
+   	  get textureType() {
+   	    return this.context.FLOAT;
+   	  }
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(1)';
+   	  }
+   	  renderRawOutput() {
+   	    const gl = this.context;
+   	    const size = this.size;
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
+   	    gl.framebufferTexture2D(
+   	      gl.FRAMEBUFFER,
+   	      gl.COLOR_ATTACHMENT0,
+   	      gl.TEXTURE_2D,
+   	      this.texture,
+   	      0
+   	    );
+   	    const result = new Float32Array(size[0] * size[1] * 4);
+   	    gl.readPixels(0, 0, size[0], size[1], gl.RGBA, gl.FLOAT, result);
+   	    return result;
+   	  }
+   	  renderValues() {
+   	    if (this._deleted) return null;
+   	    return this.renderRawOutput();
+   	  }
+   	  toArray() {
+   	    return utils.erectFloat(this.renderValues(), this.output[0]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureFloat
+   	};
+   	},{"../../../utils":114,"./index":27}],26:[function(require,module,exports){
+   	const { GLTextureUnsigned } = require('./unsigned');
+
+   	class GLTextureGraphical extends GLTextureUnsigned {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'ArrayTexture(4)';
+   	  }
+   	  toArray() {
+   	    return this.renderValues();
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureGraphical
+   	};
+   	},{"./unsigned":33}],27:[function(require,module,exports){
+   	const { Texture } = require('../../../texture');
+
+   	class GLTexture extends Texture {
+   	  get textureType() {
+   	    throw new Error(`"textureType" not implemented on ${ this.name }`);
+   	  }
+
+   	  clone() {
+   	    return new this.constructor(this);
+   	  }
+
+   	  beforeMutate() {
+   	    if (this.texture._refs > 1) {
+   	      this.newTexture();
+   	      return true;
+   	    }
+   	    return false;
+   	  }
+
+   	  cloneTexture() {
+   	    this.texture._refs--;
+   	    const { context: gl, size, texture, kernel } = this;
+   	    if (kernel.debug) {
+   	      console.warn('cloning internal texture');
+   	    }
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
+   	    selectTexture(gl, texture);
+   	    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+   	    const target = gl.createTexture();
+   	    selectTexture(gl, target);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, this.internalFormat, size[0], size[1], 0, this.textureFormat, this.textureType, null);
+   	    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, size[0], size[1]);
+   	    target._refs = 1;
+   	    this.texture = target;
+   	  }
+
+   	  newTexture() {
+   	    this.texture._refs--;
+   	    const gl = this.context;
+   	    const size = this.size;
+   	    const kernel = this.kernel;
+   	    if (kernel.debug) {
+   	      console.warn('new internal texture');
+   	    }
+   	    const target = gl.createTexture();
+   	    selectTexture(gl, target);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, this.internalFormat, size[0], size[1], 0, this.textureFormat, this.textureType, null);
+   	    target._refs = 1;
+   	    this.texture = target;
+   	  }
+
+   	  clear() {
+   	    if (this.texture._refs) {
+   	      this.texture._refs--;
+   	      const gl = this.context;
+   	      const target = this.texture = gl.createTexture();
+   	      selectTexture(gl, target);
+   	      const size = this.size;
+   	      target._refs = 1;
+   	      gl.texImage2D(gl.TEXTURE_2D, 0, this.internalFormat, size[0], size[1], 0, this.textureFormat, this.textureType, null);
+   	    }
+   	    const { context: gl, texture } = this;
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
+   	    gl.bindTexture(gl.TEXTURE_2D, texture);
+   	    selectTexture(gl, texture);
+   	    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+   	    gl.clearColor(0, 0, 0, 0);
+   	    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+   	  }
+
+   	  delete() {
+   	    if (this._deleted) return;
+   	    this._deleted = true;
+   	    if (this.texture._refs) {
+   	      this.texture._refs--;
+   	      if (this.texture._refs) return;
+   	    }
+   	    this.context.deleteTexture(this.texture);
+   	  }
+
+   	  framebuffer() {
+   	    if (!this._framebuffer) {
+   	      this._framebuffer = this.kernel.getRawValueFramebuffer(this.size[0], this.size[1]);
+   	    }
+   	    return this._framebuffer;
+   	  }
+   	}
+
+   	function selectTexture(gl, texture) {
+   	  gl.activeTexture(gl.TEXTURE15);
+   	  gl.bindTexture(gl.TEXTURE_2D, texture);
+   	  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+   	  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+   	  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	}
+
+   	module.exports = { GLTexture };
+   	},{"../../../texture":113}],28:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureMemoryOptimized2D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'MemoryOptimizedNumberTexture';
+   	  }
+   	  toArray() {
+   	    return utils.erectMemoryOptimized2DFloat(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureMemoryOptimized2D
+   	};
+   	},{"../../../utils":114,"./float":25}],29:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureMemoryOptimized3D extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'MemoryOptimizedNumberTexture';
+   	  }
+   	  toArray() {
+   	    return utils.erectMemoryOptimized3DFloat(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureMemoryOptimized3D
+   	};
+   	},{"../../../utils":114,"./float":25}],30:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureFloat } = require('./float');
+
+   	class GLTextureMemoryOptimized extends GLTextureFloat {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'MemoryOptimizedNumberTexture';
+   	  }
+   	  toArray() {
+   	    return utils.erectMemoryOptimizedFloat(this.renderValues(), this.output[0]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureMemoryOptimized
+   	};
+   	},{"../../../utils":114,"./float":25}],31:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureUnsigned } = require('./unsigned');
+
+   	class GLTextureUnsigned2D extends GLTextureUnsigned {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'NumberTexture';
+   	  }
+   	  toArray() {
+   	    return utils.erect2DPackedFloat(this.renderValues(), this.output[0], this.output[1]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureUnsigned2D
+   	};
+   	},{"../../../utils":114,"./unsigned":33}],32:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTextureUnsigned } = require('./unsigned');
+
+   	class GLTextureUnsigned3D extends GLTextureUnsigned {
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'NumberTexture';
+   	  }
+   	  toArray() {
+   	    return utils.erect3DPackedFloat(this.renderValues(), this.output[0], this.output[1], this.output[2]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureUnsigned3D
+   	};
+   	},{"../../../utils":114,"./unsigned":33}],33:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { GLTexture } = require('./index');
+
+   	class GLTextureUnsigned extends GLTexture {
+   	  get textureType() {
+   	    return this.context.UNSIGNED_BYTE;
+   	  }
+   	  constructor(settings) {
+   	    super(settings);
+   	    this.type = 'NumberTexture';
+   	  }
+   	  renderRawOutput() {
+   	    const { context: gl } = this;
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer());
+   	    gl.framebufferTexture2D(
+   	      gl.FRAMEBUFFER,
+   	      gl.COLOR_ATTACHMENT0,
+   	      gl.TEXTURE_2D,
+   	      this.texture,
+   	      0
+   	    );
+   	    const result = new Uint8Array(this.size[0] * this.size[1] * 4);
+   	    gl.readPixels(0, 0, this.size[0], this.size[1], gl.RGBA, gl.UNSIGNED_BYTE, result);
+   	    return result;
+   	  }
+   	  renderValues() {
+   	    if (this._deleted) return null;
+   	    return new Float32Array(this.renderRawOutput().buffer);
+   	  }
+   	  toArray() {
+   	    return utils.erectPackedFloat(this.renderValues(), this.output[0]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  GLTextureUnsigned
+   	};
+   	},{"../../../utils":114,"./index":27}],34:[function(require,module,exports){
+   	const getContext = require('gl');
+   	const { WebGLKernel } = require('../web-gl/kernel');
+   	const { glKernelString } = require('../gl/kernel-string');
+
+   	let isSupported = null;
+   	let testCanvas = null;
+   	let testContext = null;
+   	let testExtensions = null;
+   	let features = null;
+
+   	class HeadlessGLKernel extends WebGLKernel {
+   	  static get isSupported() {
+   	    if (isSupported !== null) return isSupported;
+   	    this.setupFeatureChecks();
+   	    isSupported = testContext !== null;
+   	    return isSupported;
+   	  }
+
+   	  static setupFeatureChecks() {
+   	    testCanvas = null;
+   	    testExtensions = null;
+   	    if (typeof getContext !== 'function') return;
+   	    try { 
+   	      testContext = getContext(2, 2, {
+   	        preserveDrawingBuffer: true
+   	      });
+   	      if (!testContext || !testContext.getExtension) return;
+   	      testExtensions = {
+   	        STACKGL_resize_drawingbuffer: testContext.getExtension('STACKGL_resize_drawingbuffer'),
+   	        STACKGL_destroy_context: testContext.getExtension('STACKGL_destroy_context'),
+   	        OES_texture_float: testContext.getExtension('OES_texture_float'),
+   	        OES_texture_float_linear: testContext.getExtension('OES_texture_float_linear'),
+   	        OES_element_index_uint: testContext.getExtension('OES_element_index_uint'),
+   	        WEBGL_draw_buffers: testContext.getExtension('WEBGL_draw_buffers'),
+   	        WEBGL_color_buffer_float: testContext.getExtension('WEBGL_color_buffer_float'),
+   	      };
+   	      features = this.getFeatures();
+   	    } catch (e) {
+   	      console.warn(e);
+   	    }
+   	  }
+
+   	  static isContextMatch(context) {
+   	    try {
+   	      return context.getParameter(context.RENDERER) === 'ANGLE';
+   	    } catch (e) {
+   	      return false;
+   	    }
+   	  }
+
+   	  static getIsTextureFloat() {
+   	    return Boolean(testExtensions.OES_texture_float);
+   	  }
+
+   	  static getIsDrawBuffers() {
+   	    return Boolean(testExtensions.WEBGL_draw_buffers);
+   	  }
+
+   	  static getChannelCount() {
+   	    return testExtensions.WEBGL_draw_buffers ?
+   	      testContext.getParameter(testExtensions.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL) :
+   	      1;
+   	  }
+
+   	  static getMaxTextureSize() {
+   	    return testContext.getParameter(testContext.MAX_TEXTURE_SIZE);
+   	  }
+
+   	  static get testCanvas() {
+   	    return testCanvas;
+   	  }
+
+   	  static get testContext() {
+   	    return testContext;
+   	  }
+
+   	  static get features() {
+   	    return features;
+   	  }
+
+   	  initCanvas() {
+   	    return {};
+   	  }
+
+   	  initContext() {
+   	    return getContext(2, 2, {
+   	      preserveDrawingBuffer: true
+   	    });
+   	  }
+
+   	  initExtensions() {
+   	    this.extensions = {
+   	      STACKGL_resize_drawingbuffer: this.context.getExtension('STACKGL_resize_drawingbuffer'),
+   	      STACKGL_destroy_context: this.context.getExtension('STACKGL_destroy_context'),
+   	      OES_texture_float: this.context.getExtension('OES_texture_float'),
+   	      OES_texture_float_linear: this.context.getExtension('OES_texture_float_linear'),
+   	      OES_element_index_uint: this.context.getExtension('OES_element_index_uint'),
+   	      WEBGL_draw_buffers: this.context.getExtension('WEBGL_draw_buffers'),
+   	    };
+   	  }
+
+   	  build() {
+   	    super.build.apply(this, arguments);
+   	    if (!this.fallbackRequested) {
+   	      this.extensions.STACKGL_resize_drawingbuffer.resize(this.maxTexSize[0], this.maxTexSize[1]);
+   	    }
+   	  }
+
+   	  destroyExtensions() {
+   	    this.extensions.STACKGL_resize_drawingbuffer = null;
+   	    this.extensions.STACKGL_destroy_context = null;
+   	    this.extensions.OES_texture_float = null;
+   	    this.extensions.OES_texture_float_linear = null;
+   	    this.extensions.OES_element_index_uint = null;
+   	    this.extensions.WEBGL_draw_buffers = null;
+   	  }
+
+   	  static destroyContext(context) {
+   	    const extension = context.getExtension('STACKGL_destroy_context');
+   	    if (extension && extension.destroy) {
+   	      extension.destroy();
+   	    }
+   	  }
+
+   	  toString() {
+   	    const setupContextString = `const gl = context || require('gl')(1, 1);\n`;
+   	    const destroyContextString = `    if (!context) { gl.getExtension('STACKGL_destroy_context').destroy(); }\n`;
+   	    return glKernelString(this.constructor, arguments, this, setupContextString, destroyContextString);
+   	  }
+
+   	  setOutput(output) {
+   	    super.setOutput(output);
+   	    if (this.graphical && this.extensions.STACKGL_resize_drawingbuffer) {
+   	      this.extensions.STACKGL_resize_drawingbuffer.resize(this.maxTexSize[0], this.maxTexSize[1]);
+   	    }
+   	    return this;
+   	  }
+   	}
+
+   	module.exports = {
+   	  HeadlessGLKernel
+   	};
+   	},{"../gl/kernel-string":12,"../web-gl/kernel":70,"gl":2}],35:[function(require,module,exports){
+   	class KernelValue {
+   	  constructor(value, settings) {
+   	    const {
+   	      name,
+   	      kernel,
+   	      context,
+   	      checkContext,
+   	      onRequestContextHandle,
+   	      onUpdateValueMismatch,
+   	      origin,
+   	      strictIntegers,
+   	      type,
+   	      tactic,
+   	    } = settings;
+   	    if (!name) {
+   	      throw new Error('name not set');
+   	    }
+   	    if (!type) {
+   	      throw new Error('type not set');
+   	    }
+   	    if (!origin) {
+   	      throw new Error('origin not set');
+   	    }
+   	    if (origin !== 'user' && origin !== 'constants') {
+   	      throw new Error(`origin must be "user" or "constants" value is "${ origin }"`);
+   	    }
+   	    if (!onRequestContextHandle) {
+   	      throw new Error('onRequestContextHandle is not set');
+   	    }
+   	    this.name = name;
+   	    this.origin = origin;
+   	    this.tactic = tactic;
+   	    this.varName = origin === 'constants' ? `constants.${name}` : name;
+   	    this.kernel = kernel;
+   	    this.strictIntegers = strictIntegers;
+   	    this.type = value.type || type;
+   	    this.size = value.size || null;
+   	    this.index = null;
+   	    this.context = context;
+   	    this.checkContext = checkContext !== null && checkContext !== undefined ? checkContext : true;
+   	    this.contextHandle = null;
+   	    this.onRequestContextHandle = onRequestContextHandle;
+   	    this.onUpdateValueMismatch = onUpdateValueMismatch;
+   	    this.forceUploadEachRun = null;
+   	  }
+
+   	  get id() {
+   	    return `${this.origin}_${name}`;
+   	  }
+
+   	  getSource() {
+   	    throw new Error(`"getSource" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  updateValue(value) {
+   	    throw new Error(`"updateValue" not defined on ${ this.constructor.name }`);
+   	  }
+   	}
+
+   	module.exports = {
+   	  KernelValue
+   	};
+   	},{}],36:[function(require,module,exports){
+   	const { utils } = require('../utils');
+   	const { Input } = require('../input');
+
+   	class Kernel {
+   	  static get isSupported() {
+   	    throw new Error(`"isSupported" not implemented on ${ this.name }`);
+   	  }
+
+   	  static isContextMatch(context) {
+   	    throw new Error(`"isContextMatch" not implemented on ${ this.name }`);
+   	  }
+
+   	  static getFeatures() {
+   	    throw new Error(`"getFeatures" not implemented on ${ this.name }`);
+   	  }
+
+   	  static destroyContext(context) {
+   	    throw new Error(`"destroyContext" called on ${ this.name }`);
+   	  }
+
+   	  static nativeFunctionArguments() {
+   	    throw new Error(`"nativeFunctionArguments" called on ${ this.name }`);
+   	  }
+
+   	  static nativeFunctionReturnType() {
+   	    throw new Error(`"nativeFunctionReturnType" called on ${ this.name }`);
+   	  }
+
+   	  static combineKernels() {
+   	    throw new Error(`"combineKernels" called on ${ this.name }`);
+   	  }
+
+   	  constructor(source, settings) {
+   	    if (typeof source !== 'object') {
+   	      if (typeof source !== 'string') {
+   	        throw new Error('source not a string');
+   	      }
+   	      if (!utils.isFunctionString(source)) {
+   	        throw new Error('source not a function string');
+   	      }
+   	    }
+   	    this.useLegacyEncoder = false;
+   	    this.fallbackRequested = false;
+   	    this.onRequestFallback = null;
+
+   	    this.argumentNames = typeof source === 'string' ? utils.getArgumentNamesFromString(source) : null;
+   	    this.argumentTypes = null;
+   	    this.argumentSizes = null;
+   	    this.argumentBitRatios = null;
+   	    this.kernelArguments = null;
+   	    this.kernelConstants = null;
+   	    this.forceUploadKernelConstants = null;
+
+
+   	    this.source = source;
+
+   	    this.output = null;
+
+   	    this.debug = false;
+
+   	    this.graphical = false;
+
+   	    this.loopMaxIterations = 0;
+
+   	    this.constants = null;
+
+   	    this.constantTypes = null;
+
+   	    this.constantBitRatios = null;
+
+   	    this.dynamicArguments = false;
+
+   	    this.dynamicOutput = false;
+
+   	    this.canvas = null;
+
+   	    this.context = null;
+
+   	    this.checkContext = null;
+
+   	    this.gpu = null;
+
+   	    this.functions = null;
+
+   	    this.nativeFunctions = null;
+
+   	    this.injectedNative = null;
+
+   	    this.subKernels = null;
+
+   	    this.validate = true;
+
+   	    this.immutable = false;
+
+   	    this.pipeline = false;
+
+   	    this.precision = null;
+
+   	    this.tactic = null;
+
+   	    this.plugins = null;
+
+   	    this.returnType = null;
+   	    this.leadingReturnStatement = null;
+   	    this.followingReturnStatement = null;
+   	    this.optimizeFloatMemory = null;
+   	    this.strictIntegers = false;
+   	    this.fixIntegerDivisionAccuracy = null;
+   	    this.built = false;
+   	    this.signature = null;
+   	  }
+
+   	  mergeSettings(settings) {
+   	    for (let p in settings) {
+   	      if (!settings.hasOwnProperty(p) || !this.hasOwnProperty(p)) continue;
+   	      switch (p) {
+   	        case 'output':
+   	          if (!Array.isArray(settings.output)) {
+   	            this.setOutput(settings.output); 
+   	            continue;
+   	          }
+   	          break;
+   	        case 'functions':
+   	          this.functions = [];
+   	          for (let i = 0; i < settings.functions.length; i++) {
+   	            this.addFunction(settings.functions[i]);
+   	          }
+   	          continue;
+   	        case 'graphical':
+   	          if (settings[p] && !settings.hasOwnProperty('precision')) {
+   	            this.precision = 'unsigned';
+   	          }
+   	          this[p] = settings[p];
+   	          continue;
+   	        case 'nativeFunctions':
+   	          if (!settings.nativeFunctions) continue;
+   	          this.nativeFunctions = [];
+   	          for (let i = 0; i < settings.nativeFunctions.length; i++) {
+   	            const s = settings.nativeFunctions[i];
+   	            const { name, source } = s;
+   	            this.addNativeFunction(name, source, s);
+   	          }
+   	          continue;
+   	      }
+   	      this[p] = settings[p];
+   	    }
+
+   	    if (!this.canvas) this.canvas = this.initCanvas();
+   	    if (!this.context) this.context = this.initContext();
+   	    if (!this.plugins) this.plugins = this.initPlugins(settings);
+   	  }
+   	  build() {
+   	    throw new Error(`"build" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  run() {
+   	    throw new Error(`"run" not defined on ${ this.constructor.name }`)
+   	  }
+
+   	  initCanvas() {
+   	    throw new Error(`"initCanvas" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  initContext() {
+   	    throw new Error(`"initContext" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  initPlugins(settings) {
+   	    throw new Error(`"initPlugins" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  addFunction(source, settings = {}) {
+   	    if (source.name && source.source && source.argumentTypes && 'returnType' in source) {
+   	      this.functions.push(source);
+   	    } else if ('settings' in source && 'source' in source) {
+   	      this.functions.push(this.functionToIGPUFunction(source.source, source.settings));
+   	    } else if (typeof source === 'string' || typeof source === 'function') {
+   	      this.functions.push(this.functionToIGPUFunction(source, settings));
+   	    } else {
+   	      throw new Error(`function not properly defined`);
+   	    }
+   	    return this;
+   	  }
+
+   	  addNativeFunction(name, source, settings = {}) {
+   	    const { argumentTypes, argumentNames } = settings.argumentTypes ?
+   	      splitArgumentTypes(settings.argumentTypes) :
+   	      this.constructor.nativeFunctionArguments(source) || {};
+   	    this.nativeFunctions.push({
+   	      name,
+   	      source,
+   	      settings,
+   	      argumentTypes,
+   	      argumentNames,
+   	      returnType: settings.returnType || this.constructor.nativeFunctionReturnType(source)
+   	    });
+   	    return this;
+   	  }
+
+   	  setupArguments(args) {
+   	    this.kernelArguments = [];
+   	    if (!this.argumentTypes) {
+   	      if (!this.argumentTypes) {
+   	        this.argumentTypes = [];
+   	        for (let i = 0; i < args.length; i++) {
+   	          const argType = utils.getVariableType(args[i], this.strictIntegers);
+   	          const type = argType === 'Integer' ? 'Number' : argType;
+   	          this.argumentTypes.push(type);
+   	          this.kernelArguments.push({
+   	            type
+   	          });
+   	        }
+   	      }
+   	    } else {
+   	      for (let i = 0; i < this.argumentTypes.length; i++) {
+   	        this.kernelArguments.push({
+   	          type: this.argumentTypes[i]
+   	        });
+   	      }
+   	    }
+
+   	    this.argumentSizes = new Array(args.length);
+   	    this.argumentBitRatios = new Int32Array(args.length);
+
+   	    for (let i = 0; i < args.length; i++) {
+   	      const arg = args[i];
+   	      this.argumentSizes[i] = arg.constructor === Input ? arg.size : null;
+   	      this.argumentBitRatios[i] = this.getBitRatio(arg);
+   	    }
+
+   	    if (this.argumentNames.length !== args.length) {
+   	      throw new Error(`arguments are miss-aligned`);
+   	    }
+   	  }
+
+   	  setupConstants() {
+   	    this.kernelConstants = [];
+   	    let needsConstantTypes = this.constantTypes === null;
+   	    if (needsConstantTypes) {
+   	      this.constantTypes = {};
+   	    }
+   	    this.constantBitRatios = {};
+   	    if (this.constants) {
+   	      for (let name in this.constants) {
+   	        if (needsConstantTypes) {
+   	          const type = utils.getVariableType(this.constants[name], this.strictIntegers);
+   	          this.constantTypes[name] = type;
+   	          this.kernelConstants.push({
+   	            name,
+   	            type
+   	          });
+   	        } else {
+   	          this.kernelConstants.push({
+   	            name,
+   	            type: this.constantTypes[name]
+   	          });
+   	        }
+   	        this.constantBitRatios[name] = this.getBitRatio(this.constants[name]);
+   	      }
+   	    }
+   	  }
+
+   	  setOptimizeFloatMemory(flag) {
+   	    this.optimizeFloatMemory = flag;
+   	    return this;
+   	  }
+
+   	  toKernelOutput(output) {
+   	    if (output.hasOwnProperty('x')) {
+   	      if (output.hasOwnProperty('y')) {
+   	        if (output.hasOwnProperty('z')) {
+   	          return [output.x, output.y, output.z];
+   	        } else {
+   	          return [output.x, output.y];
+   	        }
+   	      } else {
+   	        return [output.x];
+   	      }
+   	    } else {
+   	      return output;
+   	    }
+   	  }
+
+   	  setOutput(output) {
+   	    this.output = this.toKernelOutput(output);
+   	    return this;
+   	  }
+
+   	  setDebug(flag) {
+   	    this.debug = flag;
+   	    return this;
+   	  }
+
+   	  setGraphical(flag) {
+   	    this.graphical = flag;
+   	    this.precision = 'unsigned';
+   	    return this;
+   	  }
+
+   	  setLoopMaxIterations(max) {
+   	    this.loopMaxIterations = max;
+   	    return this;
+   	  }
+
+   	  setConstants(constants) {
+   	    this.constants = constants;
+   	    return this;
+   	  }
+
+   	  setConstantTypes(constantTypes) {
+   	    this.constantTypes = constantTypes;
+   	    return this;
+   	  }
+
+   	  setFunctions(functions) {
+   	    for (let i = 0; i < functions.length; i++) {
+   	      this.addFunction(functions[i]);
+   	    }
+   	    return this;
+   	  }
+
+   	  setNativeFunctions(nativeFunctions) {
+   	    for (let i = 0; i < nativeFunctions.length; i++) {
+   	      const settings = nativeFunctions[i];
+   	      const { name, source } = settings;
+   	      this.addNativeFunction(name, source, settings);
+   	    }
+   	    return this;
+   	  }
+
+   	  setInjectedNative(injectedNative) {
+   	    this.injectedNative = injectedNative;
+   	    return this;
+   	  }
+
+   	  setPipeline(flag) {
+   	    this.pipeline = flag;
+   	    return this;
+   	  }
+
+   	  setPrecision(flag) {
+   	    this.precision = flag;
+   	    return this;
+   	  }
+
+   	  setDimensions(flag) {
+   	    utils.warnDeprecated('method', 'setDimensions', 'setOutput');
+   	    this.output = flag;
+   	    return this;
+   	  }
+
+   	  setOutputToTexture(flag) {
+   	    utils.warnDeprecated('method', 'setOutputToTexture', 'setPipeline');
+   	    this.pipeline = flag;
+   	    return this;
+   	  }
+
+   	  setImmutable(flag) {
+   	    this.immutable = flag;
+   	    return this;
+   	  }
+
+   	  setCanvas(canvas) {
+   	    this.canvas = canvas;
+   	    return this;
+   	  }
+
+   	  setStrictIntegers(flag) {
+   	    this.strictIntegers = flag;
+   	    return this;
+   	  }
+
+   	  setDynamicOutput(flag) {
+   	    this.dynamicOutput = flag;
+   	    return this;
+   	  }
+
+   	  setHardcodeConstants(flag) {
+   	    utils.warnDeprecated('method', 'setHardcodeConstants');
+   	    this.setDynamicOutput(flag);
+   	    this.setDynamicArguments(flag);
+   	    return this;
+   	  }
+
+   	  setDynamicArguments(flag) {
+   	    this.dynamicArguments = flag;
+   	    return this;
+   	  }
+
+   	  setUseLegacyEncoder(flag) {
+   	    this.useLegacyEncoder = flag;
+   	    return this;
+   	  }
+
+   	  setWarnVarUsage(flag) {
+   	    utils.warnDeprecated('method', 'setWarnVarUsage');
+   	    return this;
+   	  }
+
+   	  getCanvas() {
+   	    utils.warnDeprecated('method', 'getCanvas');
+   	    return this.canvas;
+   	  }
+
+   	  getWebGl() {
+   	    utils.warnDeprecated('method', 'getWebGl');
+   	    return this.context;
+   	  }
+
+   	  setContext(context) {
+   	    this.context = context;
+   	    return this;
+   	  }
+
+   	  setArgumentTypes(argumentTypes) {
+   	    if (Array.isArray(argumentTypes)) {
+   	      this.argumentTypes = argumentTypes;
+   	    } else {
+   	      this.argumentTypes = [];
+   	      for (const p in argumentTypes) {
+   	        if (!argumentTypes.hasOwnProperty(p)) continue;
+   	        const argumentIndex = this.argumentNames.indexOf(p);
+   	        if (argumentIndex === -1) throw new Error(`unable to find argument ${ p }`);
+   	        this.argumentTypes[argumentIndex] = argumentTypes[p];
+   	      }
+   	    }
+   	    return this;
+   	  }
+
+   	  setTactic(tactic) {
+   	    this.tactic = tactic;
+   	    return this;
+   	  }
+
+   	  requestFallback(args) {
+   	    if (!this.onRequestFallback) {
+   	      throw new Error(`"onRequestFallback" not defined on ${ this.constructor.name }`);
+   	    }
+   	    this.fallbackRequested = true;
+   	    return this.onRequestFallback(args);
+   	  }
+
+   	  validateSettings() {
+   	    throw new Error(`"validateSettings" not defined on ${ this.constructor.name }`);
+   	  }
+
+   	  addSubKernel(subKernel) {
+   	    if (this.subKernels === null) {
+   	      this.subKernels = [];
+   	    }
+   	    if (!subKernel.source) throw new Error('subKernel missing "source" property');
+   	    if (!subKernel.property && isNaN(subKernel.property)) throw new Error('subKernel missing "property" property');
+   	    if (!subKernel.name) throw new Error('subKernel missing "name" property');
+   	    this.subKernels.push(subKernel);
+   	    return this;
+   	  }
+
+   	  destroy(removeCanvasReferences) {
+   	    throw new Error(`"destroy" called on ${ this.constructor.name }`);
+   	  }
+
+   	  getBitRatio(value) {
+   	    if (this.precision === 'single') {
+   	      return 4;
+   	    } else if (Array.isArray(value[0])) {
+   	      return this.getBitRatio(value[0]);
+   	    } else if (value.constructor === Input) {
+   	      return this.getBitRatio(value.value);
+   	    }
+   	    switch (value.constructor) {
+   	      case Uint8ClampedArray:
+   	      case Uint8Array:
+   	      case Int8Array:
+   	        return 1;
+   	      case Uint16Array:
+   	      case Int16Array:
+   	        return 2;
+   	      case Float32Array:
+   	      case Int32Array:
+   	      default:
+   	        return 4;
+   	    }
+   	  }
+
+   	  getPixels(flip) {
+   	    throw new Error(`"getPixels" called on ${ this.constructor.name }`);
+   	  }
+
+   	  checkOutput() {
+   	    if (!this.output || !utils.isArray(this.output)) throw new Error('kernel.output not an array');
+   	    if (this.output.length < 1) throw new Error('kernel.output is empty, needs at least 1 value');
+   	    for (let i = 0; i < this.output.length; i++) {
+   	      if (isNaN(this.output[i]) || this.output[i] < 1) {
+   	        throw new Error(`${ this.constructor.name }.output[${ i }] incorrectly defined as \`${ this.output[i] }\`, needs to be numeric, and greater than 0`);
+   	      }
+   	    }
+   	  }
+
+   	  prependString(value) {
+   	    throw new Error(`"prependString" called on ${ this.constructor.name }`);
+   	  }
+
+   	  hasPrependString(value) {
+   	    throw new Error(`"hasPrependString" called on ${ this.constructor.name }`);
+   	  }
+
+   	  toJSON() {
+   	    return {
+   	      settings: {
+   	        output: this.output,
+   	        pipeline: this.pipeline,
+   	        argumentNames: this.argumentNames,
+   	        argumentsTypes: this.argumentTypes,
+   	        constants: this.constants,
+   	        pluginNames: this.plugins ? this.plugins.map(plugin => plugin.name) : null,
+   	        returnType: this.returnType,
+   	      }
+   	    };
+   	  }
+
+   	  buildSignature(args) {
+   	    const Constructor = this.constructor;
+   	    this.signature = Constructor.getSignature(this, Constructor.getArgumentTypes(this, args));
+   	  }
+
+   	  static getArgumentTypes(kernel, args) {
+   	    const argumentTypes = new Array(args.length);
+   	    for (let i = 0; i < args.length; i++) {
+   	      const arg = args[i];
+   	      const type = kernel.argumentTypes[i];
+   	      if (arg.type) {
+   	        argumentTypes[i] = arg.type;
+   	      } else {
+   	        switch (type) {
+   	          case 'Number':
+   	          case 'Integer':
+   	          case 'Float':
+   	          case 'ArrayTexture(1)':
+   	            argumentTypes[i] = utils.getVariableType(arg);
+   	            break;
+   	          default:
+   	            argumentTypes[i] = type;
+   	        }
+   	      }
+   	    }
+   	    return argumentTypes;
+   	  }
+
+   	  static getSignature(kernel, argumentTypes) {
+   	    throw new Error(`"getSignature" not implemented on ${ this.name }`);
+   	  }
+
+   	  functionToIGPUFunction(source, settings = {}) {
+   	    if (typeof source !== 'string' && typeof source !== 'function') throw new Error('source not a string or function');
+   	    const sourceString = typeof source === 'string' ? source : source.toString();
+   	    let argumentTypes = [];
+
+   	    if (Array.isArray(settings.argumentTypes)) {
+   	      argumentTypes = settings.argumentTypes;
+   	    } else if (typeof settings.argumentTypes === 'object') {
+   	      argumentTypes = utils.getArgumentNamesFromString(sourceString)
+   	        .map(name => settings.argumentTypes[name]) || [];
+   	    } else {
+   	      argumentTypes = settings.argumentTypes || [];
+   	    }
+
+   	    return {
+   	      name: utils.getFunctionNameFromString(sourceString) || null,
+   	      source: sourceString,
+   	      argumentTypes,
+   	      returnType: settings.returnType || null,
+   	    };
+   	  }
+
+   	  onActivate(previousKernel) {}
+   	}
+
+   	function splitArgumentTypes(argumentTypesObject) {
+   	  const argumentNames = Object.keys(argumentTypesObject);
+   	  const argumentTypes = [];
+   	  for (let i = 0; i < argumentNames.length; i++) {
+   	    const argumentName = argumentNames[i];
+   	    argumentTypes.push(argumentTypesObject[argumentName]);
+   	  }
+   	  return { argumentTypes, argumentNames };
+   	}
+
+   	module.exports = {
+   	  Kernel
+   	};
+   	},{"../input":110,"../utils":114}],37:[function(require,module,exports){
+   	const fragmentShader = `__HEADER__;
+__FLOAT_TACTIC_DECLARATION__;
+__INT_TACTIC_DECLARATION__;
+__SAMPLER_2D_TACTIC_DECLARATION__;
+
+const int LOOP_MAX = __LOOP_MAX__;
+
+__PLUGINS__;
+__CONSTANTS__;
+
+varying vec2 vTexCoord;
+
+float acosh(float x) {
+  return log(x + sqrt(x * x - 1.0));
+}
+
+float sinh(float x) {
+  return (pow(${Math.E}, x) - pow(${Math.E}, -x)) / 2.0;
+}
+
+float asinh(float x) {
+  return log(x + sqrt(x * x + 1.0));
+}
+
+float atan2(float v1, float v2) {
+  if (v1 == 0.0 || v2 == 0.0) return 0.0;
+  return atan(v1 / v2);
+}
+
+float atanh(float x) {
+  x = (x + 1.0) / (x - 1.0);
+  if (x < 0.0) {
+    return 0.5 * log(-x);
+  }
+  return 0.5 * log(x);
+}
+
+float cbrt(float x) {
+  if (x >= 0.0) {
+    return pow(x, 1.0 / 3.0);
+  } else {
+    return -pow(x, 1.0 / 3.0);
+  }
+}
+
+float cosh(float x) {
+  return (pow(${Math.E}, x) + pow(${Math.E}, -x)) / 2.0; 
+}
+
+float expm1(float x) {
+  return pow(${Math.E}, x) - 1.0; 
+}
+
+float fround(highp float x) {
+  return x;
+}
+
+float imul(float v1, float v2) {
+  return float(int(v1) * int(v2));
+}
+
+float log10(float x) {
+  return log2(x) * (1.0 / log2(10.0));
+}
+
+float log1p(float x) {
+  return log(1.0 + x);
+}
+
+float _pow(float v1, float v2) {
+  if (v2 == 0.0) return 1.0;
+  return pow(v1, v2);
+}
+
+float tanh(float x) {
+  float e = exp(2.0 * x);
+  return (e - 1.0) / (e + 1.0);
+}
+
+float trunc(float x) {
+  if (x >= 0.0) {
+    return floor(x); 
+  } else {
+    return ceil(x);
+  }
+}
+
+vec4 _round(vec4 x) {
+  return floor(x + 0.5);
+}
+
+float _round(float x) {
+  return floor(x + 0.5);
+}
+
+const int BIT_COUNT = 32;
+int modi(int x, int y) {
+  return x - y * (x / y);
+}
+
+int bitwiseOr(int a, int b) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) || (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 || b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseXOR(int a, int b) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) != (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 || b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseAnd(int a, int b) {
+  int result = 0;
+  int n = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) && (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 && b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseNot(int a) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (modi(a, 2) == 0) {
+      result += n;    
+    }
+    a = a / 2;
+    n = n * 2;
+  }
+  return result;
+}
+int bitwiseZeroFillLeftShift(int n, int shift) {
+  int maxBytes = BIT_COUNT;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (maxBytes >= n) {
+      break;
+    }
+    maxBytes *= 2;
+  }
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= shift) {
+      break;
+    }
+    n *= 2;
+  }
+
+  int result = 0;
+  int byteVal = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= maxBytes) break;
+    if (modi(n, 2) > 0) { result += byteVal; }
+    n = int(n / 2);
+    byteVal *= 2;
+  }
+  return result;
+}
+
+int bitwiseSignedRightShift(int num, int shifts) {
+  return int(floor(float(num) / pow(2.0, float(shifts))));
+}
+
+int bitwiseZeroFillRightShift(int n, int shift) {
+  int maxBytes = BIT_COUNT;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (maxBytes >= n) {
+      break;
+    }
+    maxBytes *= 2;
+  }
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= shift) {
+      break;
+    }
+    n /= 2;
+  }
+  int result = 0;
+  int byteVal = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= maxBytes) break;
+    if (modi(n, 2) > 0) { result += byteVal; }
+    n = int(n / 2);
+    byteVal *= 2;
+  }
+  return result;
+}
+
+vec2 integerMod(vec2 x, float y) {
+  vec2 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+vec3 integerMod(vec3 x, float y) {
+  vec3 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+vec4 integerMod(vec4 x, vec4 y) {
+  vec4 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+float integerMod(float x, float y) {
+  float res = floor(mod(x, y));
+  return res * (res > floor(y) - 1.0 ? 0.0 : 1.0);
+}
+
+int integerMod(int x, int y) {
+  return x - (y * int(x / y));
+}
+
+__DIVIDE_WITH_INTEGER_CHECK__;
+
+// Here be dragons!
+// DO NOT OPTIMIZE THIS CODE
+// YOU WILL BREAK SOMETHING ON SOMEBODY\'S MACHINE
+// LEAVE IT AS IT IS, LEST YOU WASTE YOUR OWN TIME
+const vec2 MAGIC_VEC = vec2(1.0, -256.0);
+const vec4 SCALE_FACTOR = vec4(1.0, 256.0, 65536.0, 0.0);
+const vec4 SCALE_FACTOR_INV = vec4(1.0, 0.00390625, 0.0000152587890625, 0.0); // 1, 1/256, 1/65536
+float decode32(vec4 texel) {
+  __DECODE32_ENDIANNESS__;
+  texel *= 255.0;
+  vec2 gte128;
+  gte128.x = texel.b >= 128.0 ? 1.0 : 0.0;
+  gte128.y = texel.a >= 128.0 ? 1.0 : 0.0;
+  float exponent = 2.0 * texel.a - 127.0 + dot(gte128, MAGIC_VEC);
+  float res = exp2(_round(exponent));
+  texel.b = texel.b - 128.0 * gte128.x;
+  res = dot(texel, SCALE_FACTOR) * exp2(_round(exponent-23.0)) + res;
+  res *= gte128.y * -2.0 + 1.0;
+  return res;
+}
+
+float decode16(vec4 texel, int index) {
+  int channel = integerMod(index, 2);
+  if (channel == 0) return texel.r * 255.0 + texel.g * 65280.0;
+  if (channel == 1) return texel.b * 255.0 + texel.a * 65280.0;
+  return 0.0;
+}
+
+float decode8(vec4 texel, int index) {
+  int channel = integerMod(index, 4);
+  if (channel == 0) return texel.r * 255.0;
+  if (channel == 1) return texel.g * 255.0;
+  if (channel == 2) return texel.b * 255.0;
+  if (channel == 3) return texel.a * 255.0;
+  return 0.0;
+}
+
+vec4 legacyEncode32(float f) {
+  float F = abs(f);
+  float sign = f < 0.0 ? 1.0 : 0.0;
+  float exponent = floor(log2(F));
+  float mantissa = (exp2(-exponent) * F);
+  // exponent += floor(log2(mantissa));
+  vec4 texel = vec4(F * exp2(23.0-exponent)) * SCALE_FACTOR_INV;
+  texel.rg = integerMod(texel.rg, 256.0);
+  texel.b = integerMod(texel.b, 128.0);
+  texel.a = exponent*0.5 + 63.5;
+  texel.ba += vec2(integerMod(exponent+127.0, 2.0), sign) * 128.0;
+  texel = floor(texel);
+  texel *= 0.003921569; // 1/255
+  __ENCODE32_ENDIANNESS__;
+  return texel;
+}
+
+// https://github.com/gpujs/gpu.js/wiki/Encoder-details
+vec4 encode32(float value) {
+  if (value == 0.0) return vec4(0, 0, 0, 0);
+
+  float exponent;
+  float mantissa;
+  vec4  result;
+  float sgn;
+
+  sgn = step(0.0, -value);
+  value = abs(value);
+
+  exponent = floor(log2(value));
+
+  mantissa = value*pow(2.0, -exponent)-1.0;
+  exponent = exponent+127.0;
+  result   = vec4(0,0,0,0);
+
+  result.a = floor(exponent/2.0);
+  exponent = exponent - result.a*2.0;
+  result.a = result.a + 128.0*sgn;
+
+  result.b = floor(mantissa * 128.0);
+  mantissa = mantissa - result.b / 128.0;
+  result.b = result.b + exponent*128.0;
+
+  result.g = floor(mantissa*32768.0);
+  mantissa = mantissa - result.g/32768.0;
+
+  result.r = floor(mantissa*8388608.0);
+  return result/255.0;
+}
+// Dragons end here
+
+int index;
+ivec3 threadId;
+
+ivec3 indexTo3D(int idx, ivec3 texDim) {
+  int z = int(idx / (texDim.x * texDim.y));
+  idx -= z * int(texDim.x * texDim.y);
+  int y = int(idx / texDim.x);
+  int x = int(integerMod(idx, texDim.x));
+  return ivec3(x, y, z);
+}
+
+float get32(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize));
+  return decode32(texel);
+}
+
+float get16(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x * 2;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize.x * 2, texSize.y));
+  return decode16(texel, index);
+}
+
+float get8(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x * 4;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize.x * 4, texSize.y));
+  return decode8(texel, index);
+}
+
+float getMemoryOptimized32(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int channel = integerMod(index, 4);
+  index = index / 4;
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize));
+  if (channel == 0) return texel.r;
+  if (channel == 1) return texel.g;
+  if (channel == 2) return texel.b;
+  if (channel == 3) return texel.a;
+  return 0.0;
+}
+
+vec4 getImage2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  return texture2D(tex, st / vec2(texSize));
+}
+
+float getFloatFromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return result[0];
+}
+
+vec2 getVec2FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return vec2(result[0], result[1]);
+}
+
+vec2 getMemoryOptimizedVec2(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + (texDim.x * (y + (texDim.y * z)));
+  int channel = integerMod(index, 2);
+  index = index / 2;
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize));
+  if (channel == 0) return vec2(texel.r, texel.g);
+  if (channel == 1) return vec2(texel.b, texel.a);
+  return vec2(0.0, 0.0);
+}
+
+vec3 getVec3FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return vec3(result[0], result[1], result[2]);
+}
+
+vec3 getMemoryOptimizedVec3(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int fieldIndex = 3 * (x + texDim.x * (y + texDim.y * z));
+  int vectorIndex = fieldIndex / 4;
+  int vectorOffset = fieldIndex - vectorIndex * 4;
+  int readY = vectorIndex / texSize.x;
+  int readX = vectorIndex - readY * texSize.x;
+  vec4 tex1 = texture2D(tex, (vec2(readX, readY) + 0.5) / vec2(texSize));
+  
+  if (vectorOffset == 0) {
+    return tex1.xyz;
+  } else if (vectorOffset == 1) {
+    return tex1.yzw;
+  } else {
+    readX++;
+    if (readX >= texSize.x) {
+      readX = 0;
+      readY++;
+    }
+    vec4 tex2 = texture2D(tex, vec2(readX, readY) / vec2(texSize));
+    if (vectorOffset == 2) {
+      return vec3(tex1.z, tex1.w, tex2.x);
+    } else {
+      return vec3(tex1.w, tex2.x, tex2.y);
+    }
+  }
+}
+
+vec4 getVec4FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  return getImage2D(tex, texSize, texDim, z, y, x);
+}
+
+vec4 getMemoryOptimizedVec4(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int channel = integerMod(index, 2);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture2D(tex, st / vec2(texSize));
+  return vec4(texel.r, texel.g, texel.b, texel.a);
+}
+
+vec4 actualColor;
+void color(float r, float g, float b, float a) {
+  actualColor = vec4(r,g,b,a);
+}
+
+void color(float r, float g, float b) {
+  color(r,g,b,1.0);
+}
+
+void color(sampler2D image) {
+  actualColor = texture2D(image, vTexCoord);
+}
+
+float modulo(float number, float divisor) {
+  if (number < 0.0) {
+    number = abs(number);
+    if (divisor < 0.0) {
+      divisor = abs(divisor);
+    }
+    return -mod(number, divisor);
+  }
+  if (divisor < 0.0) {
+    divisor = abs(divisor);
+  }
+  return mod(number, divisor);
+}
+
+__INJECTED_NATIVE__;
+__MAIN_CONSTANTS__;
+__MAIN_ARGUMENTS__;
+__KERNEL__;
+
+void main(void) {
+  index = int(vTexCoord.s * float(uTexSize.x)) + int(vTexCoord.t * float(uTexSize.y)) * uTexSize.x;
+  __MAIN_RESULT__;
+}`;
+
+   	module.exports = {
+   	  fragmentShader
+   	};
+   	},{}],38:[function(require,module,exports){
+   	const { utils } = require('../../utils');
+   	const { FunctionNode } = require('../function-node');
+
+   	class WebGLFunctionNode extends FunctionNode {
+   	  constructor(source, settings) {
+   	    super(source, settings);
+   	    if (settings && settings.hasOwnProperty('fixIntegerDivisionAccuracy')) {
+   	      this.fixIntegerDivisionAccuracy = settings.fixIntegerDivisionAccuracy;
+   	    }
+   	  }
+
+   	  astConditionalExpression(ast, retArr) {
+   	    if (ast.type !== 'ConditionalExpression') {
+   	      throw this.astErrorOutput('Not a conditional expression', ast);
+   	    }
+   	    const consequentType = this.getType(ast.consequent);
+   	    const alternateType = this.getType(ast.alternate);
+   	    if (consequentType === null && alternateType === null) {
+   	      retArr.push('if (');
+   	      this.astGeneric(ast.test, retArr);
+   	      retArr.push(') {');
+   	      this.astGeneric(ast.consequent, retArr);
+   	      retArr.push(';');
+   	      retArr.push('} else {');
+   	      this.astGeneric(ast.alternate, retArr);
+   	      retArr.push(';');
+   	      retArr.push('}');
+   	      return retArr;
+   	    }
+   	    retArr.push('(');
+   	    this.astGeneric(ast.test, retArr);
+   	    retArr.push('?');
+   	    this.astGeneric(ast.consequent, retArr);
+   	    retArr.push(':');
+   	    this.astGeneric(ast.alternate, retArr);
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  astFunction(ast, retArr) {
+   	    if (this.isRootKernel) {
+   	      retArr.push('void');
+   	    } else {
+   	      if (!this.returnType) {
+   	        const lastReturn = this.findLastReturn();
+   	        if (lastReturn) {
+   	          this.returnType = this.getType(ast.body);
+   	          if (this.returnType === 'LiteralInteger') {
+   	            this.returnType = 'Number';
+   	          }
+   	        }
+   	      }
+
+   	      const { returnType } = this;
+   	      if (!returnType) {
+   	        retArr.push('void');
+   	      } else {
+   	        const type = typeMap[returnType];
+   	        if (!type) {
+   	          throw new Error(`unknown type ${returnType}`);
+   	        }
+   	        retArr.push(type);
+   	      }
+   	    }
+   	    retArr.push(' ');
+   	    retArr.push(this.name);
+   	    retArr.push('(');
+
+   	    if (!this.isRootKernel) {
+   	      for (let i = 0; i < this.argumentNames.length; ++i) {
+   	        const argumentName = this.argumentNames[i];
+
+   	        if (i > 0) {
+   	          retArr.push(', ');
+   	        }
+   	        let argumentType = this.argumentTypes[this.argumentNames.indexOf(argumentName)];
+   	        if (!argumentType) {
+   	          throw this.astErrorOutput(`Unknown argument ${argumentName} type`, ast);
+   	        }
+   	        if (argumentType === 'LiteralInteger') {
+   	          this.argumentTypes[i] = argumentType = 'Number';
+   	        }
+   	        const type = typeMap[argumentType];
+   	        if (!type) {
+   	          throw this.astErrorOutput('Unexpected expression', ast);
+   	        }
+   	        const name = utils.sanitizeName(argumentName);
+   	        if (type === 'sampler2D' || type === 'sampler2DArray') {
+   	          retArr.push(`${type} user_${name},ivec2 user_${name}Size,ivec3 user_${name}Dim`);
+   	        } else {
+   	          retArr.push(`${type} user_${name}`);
+   	        }
+   	      }
+   	    }
+
+   	    retArr.push(') {\n');
+
+   	    for (let i = 0; i < ast.body.body.length; ++i) {
+   	      this.astGeneric(ast.body.body[i], retArr);
+   	      retArr.push('\n');
+   	    }
+
+   	    retArr.push('}\n');
+   	    return retArr;
+   	  }
+
+   	  astReturnStatement(ast, retArr) {
+   	    if (!ast.argument) throw this.astErrorOutput('Unexpected return statement', ast);
+   	    this.pushState('skip-literal-correction');
+   	    const type = this.getType(ast.argument);
+   	    this.popState('skip-literal-correction');
+
+   	    const result = [];
+
+   	    if (!this.returnType) {
+   	      if (type === 'LiteralInteger' || type === 'Integer') {
+   	        this.returnType = 'Number';
+   	      } else {
+   	        this.returnType = type;
+   	      }
+   	    }
+
+   	    switch (this.returnType) {
+   	      case 'LiteralInteger':
+   	      case 'Number':
+   	      case 'Float':
+   	        switch (type) {
+   	          case 'Integer':
+   	            result.push('float(');
+   	            this.astGeneric(ast.argument, result);
+   	            result.push(')');
+   	            break;
+   	          case 'LiteralInteger':
+   	            this.castLiteralToFloat(ast.argument, result);
+
+   	            if (this.getType(ast) === 'Integer') {
+   	              result.unshift('float(');
+   	              result.push(')');
+   	            }
+   	            break;
+   	          default:
+   	            this.astGeneric(ast.argument, result);
+   	        }
+   	        break;
+   	      case 'Integer':
+   	        switch (type) {
+   	          case 'Float':
+   	          case 'Number':
+   	            this.castValueToInteger(ast.argument, result);
+   	            break;
+   	          case 'LiteralInteger':
+   	            this.castLiteralToInteger(ast.argument, result);
+   	            break;
+   	          default:
+   	            this.astGeneric(ast.argument, result);
+   	        }
+   	        break;
+   	      case 'Array(4)':
+   	      case 'Array(3)':
+   	      case 'Array(2)':
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	      case 'Input':
+   	        this.astGeneric(ast.argument, result);
+   	        break;
+   	      default:
+   	        throw this.astErrorOutput(`unhandled return type ${this.returnType}`, ast);
+   	    }
+
+   	    if (this.isRootKernel) {
+   	      retArr.push(`kernelResult = ${ result.join('') };`);
+   	      retArr.push('return;');
+   	    } else if (this.isSubKernel) {
+   	      retArr.push(`subKernelResult_${ this.name } = ${ result.join('') };`);
+   	      retArr.push(`return subKernelResult_${ this.name };`);
+   	    } else {
+   	      retArr.push(`return ${ result.join('') };`);
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astLiteral(ast, retArr) {
+   	    if (isNaN(ast.value)) {
+   	      throw this.astErrorOutput(
+   	        'Non-numeric literal not supported : ' + ast.value,
+   	        ast
+   	      );
+   	    }
+
+   	    const key = this.astKey(ast);
+   	    if (Number.isInteger(ast.value)) {
+   	      if (this.isState('casting-to-integer') || this.isState('building-integer')) {
+   	        this.literalTypes[key] = 'Integer';
+   	        retArr.push(`${ast.value}`);
+   	      } else if (this.isState('casting-to-float') || this.isState('building-float')) {
+   	        this.literalTypes[key] = 'Number';
+   	        retArr.push(`${ast.value}.0`);
+   	      } else {
+   	        this.literalTypes[key] = 'Number';
+   	        retArr.push(`${ast.value}.0`);
+   	      }
+   	    } else if (this.isState('casting-to-integer') || this.isState('building-integer')) {
+   	      this.literalTypes[key] = 'Integer';
+   	      retArr.push(Math.round(ast.value));
+   	    } else {
+   	      this.literalTypes[key] = 'Number';
+   	      retArr.push(`${ast.value}`);
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astBinaryExpression(ast, retArr) {
+   	    if (this.checkAndUpconvertOperator(ast, retArr)) {
+   	      return retArr;
+   	    }
+
+   	    if (this.fixIntegerDivisionAccuracy && ast.operator === '/') {
+   	      retArr.push('divWithIntCheck(');
+   	      this.pushState('building-float');
+   	      switch (this.getType(ast.left)) {
+   	        case 'Integer':
+   	          this.castValueToFloat(ast.left, retArr);
+   	          break;
+   	        case 'LiteralInteger':
+   	          this.castLiteralToFloat(ast.left, retArr);
+   	          break;
+   	        default:
+   	          this.astGeneric(ast.left, retArr);
+   	      }
+   	      retArr.push(', ');
+   	      switch (this.getType(ast.right)) {
+   	        case 'Integer':
+   	          this.castValueToFloat(ast.right, retArr);
+   	          break;
+   	        case 'LiteralInteger':
+   	          this.castLiteralToFloat(ast.right, retArr);
+   	          break;
+   	        default:
+   	          this.astGeneric(ast.right, retArr);
+   	      }
+   	      this.popState('building-float');
+   	      retArr.push(')');
+   	      return retArr;
+   	    }
+
+   	    retArr.push('(');
+   	    const leftType = this.getType(ast.left) || 'Number';
+   	    const rightType = this.getType(ast.right) || 'Number';
+   	    if (!leftType || !rightType) {
+   	      throw this.astErrorOutput(`Unhandled binary expression`, ast);
+   	    }
+   	    const key = leftType + ' & ' + rightType;
+   	    switch (key) {
+   	      case 'Integer & Integer':
+   	        this.pushState('building-integer');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.astGeneric(ast.right, retArr);
+   	        this.popState('building-integer');
+   	        break;
+   	      case 'Number & Float':
+   	      case 'Float & Number':
+   	      case 'Float & Float':
+   	      case 'Number & Number':
+   	        this.pushState('building-float');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.astGeneric(ast.right, retArr);
+   	        this.popState('building-float');
+   	        break;
+   	      case 'LiteralInteger & LiteralInteger':
+   	        if (this.isState('casting-to-integer') || this.isState('building-integer')) {
+   	          this.pushState('building-integer');
+   	          this.astGeneric(ast.left, retArr);
+   	          retArr.push(operatorMap[ast.operator] || ast.operator);
+   	          this.astGeneric(ast.right, retArr);
+   	          this.popState('building-integer');
+   	        } else {
+   	          this.pushState('building-float');
+   	          this.castLiteralToFloat(ast.left, retArr);
+   	          retArr.push(operatorMap[ast.operator] || ast.operator);
+   	          this.castLiteralToFloat(ast.right, retArr);
+   	          this.popState('building-float');
+   	        }
+   	        break;
+
+   	      case 'Integer & Float':
+   	      case 'Integer & Number':
+   	        if (ast.operator === '>' || ast.operator === '<' && ast.right.type === 'Literal') {
+   	          if (!Number.isInteger(ast.right.value)) {
+   	            this.pushState('building-float');
+   	            this.castValueToFloat(ast.left, retArr);
+   	            retArr.push(operatorMap[ast.operator] || ast.operator);
+   	            this.astGeneric(ast.right, retArr);
+   	            this.popState('building-float');
+   	            break;
+   	          }
+   	        }
+   	        this.pushState('building-integer');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.pushState('casting-to-integer');
+   	        if (ast.right.type === 'Literal') {
+   	          const literalResult = [];
+   	          this.astGeneric(ast.right, literalResult);
+   	          const literalType = this.getType(ast.right);
+   	          if (literalType === 'Integer') {
+   	            retArr.push(literalResult.join(''));
+   	          } else {
+   	            throw this.astErrorOutput(`Unhandled binary expression with literal`, ast);
+   	          }
+   	        } else {
+   	          retArr.push('int(');
+   	          this.astGeneric(ast.right, retArr);
+   	          retArr.push(')');
+   	        }
+   	        this.popState('casting-to-integer');
+   	        this.popState('building-integer');
+   	        break;
+   	      case 'Integer & LiteralInteger':
+   	        this.pushState('building-integer');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.castLiteralToInteger(ast.right, retArr);
+   	        this.popState('building-integer');
+   	        break;
+
+   	      case 'Number & Integer':
+   	        this.pushState('building-float');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.castValueToFloat(ast.right, retArr);
+   	        this.popState('building-float');
+   	        break;
+   	      case 'Float & LiteralInteger':
+   	      case 'Number & LiteralInteger':
+   	        this.pushState('building-float');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.castLiteralToFloat(ast.right, retArr);
+   	        this.popState('building-float');
+   	        break;
+   	      case 'LiteralInteger & Float':
+   	      case 'LiteralInteger & Number':
+   	        if (this.isState('casting-to-integer')) {
+   	          this.pushState('building-integer');
+   	          this.castLiteralToInteger(ast.left, retArr);
+   	          retArr.push(operatorMap[ast.operator] || ast.operator);
+   	          this.castValueToInteger(ast.right, retArr);
+   	          this.popState('building-integer');
+   	        } else {
+   	          this.pushState('building-float');
+   	          this.astGeneric(ast.left, retArr);
+   	          retArr.push(operatorMap[ast.operator] || ast.operator);
+   	          this.pushState('casting-to-float');
+   	          this.astGeneric(ast.right, retArr);
+   	          this.popState('casting-to-float');
+   	          this.popState('building-float');
+   	        }
+   	        break;
+   	      case 'LiteralInteger & Integer':
+   	        this.pushState('building-integer');
+   	        this.castLiteralToInteger(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.astGeneric(ast.right, retArr);
+   	        this.popState('building-integer');
+   	        break;
+
+   	      case 'Boolean & Boolean':
+   	        this.pushState('building-boolean');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.astGeneric(ast.right, retArr);
+   	        this.popState('building-boolean');
+   	        break;
+
+   	      case 'Float & Integer':
+   	        this.pushState('building-float');
+   	        this.astGeneric(ast.left, retArr);
+   	        retArr.push(operatorMap[ast.operator] || ast.operator);
+   	        this.castValueToFloat(ast.right, retArr);
+   	        this.popState('building-float');
+   	        break;
+
+   	      default:
+   	        throw this.astErrorOutput(`Unhandled binary expression between ${key}`, ast);
+   	    }
+   	    retArr.push(')');
+
+   	    return retArr;
+   	  }
+
+   	  checkAndUpconvertOperator(ast, retArr) {
+   	    const bitwiseResult = this.checkAndUpconvertBitwiseOperators(ast, retArr);
+   	    if (bitwiseResult) {
+   	      return bitwiseResult;
+   	    }
+   	    const upconvertableOperators = {
+   	      '%': this.fixIntegerDivisionAccuracy ? 'integerCorrectionModulo' : 'modulo',
+   	      '**': 'pow',
+   	    };
+   	    const foundOperator = upconvertableOperators[ast.operator];
+   	    if (!foundOperator) return null;
+   	    retArr.push(foundOperator);
+   	    retArr.push('(');
+   	    switch (this.getType(ast.left)) {
+   	      case 'Integer':
+   	        this.castValueToFloat(ast.left, retArr);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToFloat(ast.left, retArr);
+   	        break;
+   	      default:
+   	        this.astGeneric(ast.left, retArr);
+   	    }
+   	    retArr.push(',');
+   	    switch (this.getType(ast.right)) {
+   	      case 'Integer':
+   	        this.castValueToFloat(ast.right, retArr);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToFloat(ast.right, retArr);
+   	        break;
+   	      default:
+   	        this.astGeneric(ast.right, retArr);
+   	    }
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  checkAndUpconvertBitwiseOperators(ast, retArr) {
+   	    const upconvertableOperators = {
+   	      '&': 'bitwiseAnd',
+   	      '|': 'bitwiseOr',
+   	      '^': 'bitwiseXOR',
+   	      '<<': 'bitwiseZeroFillLeftShift',
+   	      '>>': 'bitwiseSignedRightShift',
+   	      '>>>': 'bitwiseZeroFillRightShift',
+   	    };
+   	    const foundOperator = upconvertableOperators[ast.operator];
+   	    if (!foundOperator) return null;
+   	    retArr.push(foundOperator);
+   	    retArr.push('(');
+   	    const leftType = this.getType(ast.left);
+   	    switch (leftType) {
+   	      case 'Number':
+   	      case 'Float':
+   	        this.castValueToInteger(ast.left, retArr);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToInteger(ast.left, retArr);
+   	        break;
+   	      default:
+   	        this.astGeneric(ast.left, retArr);
+   	    }
+   	    retArr.push(',');
+   	    const rightType = this.getType(ast.right);
+   	    switch (rightType) {
+   	      case 'Number':
+   	      case 'Float':
+   	        this.castValueToInteger(ast.right, retArr);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToInteger(ast.right, retArr);
+   	        break;
+   	      default:
+   	        this.astGeneric(ast.right, retArr);
+   	    }
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  checkAndUpconvertBitwiseUnary(ast, retArr) {
+   	    const upconvertableOperators = {
+   	      '~': 'bitwiseNot',
+   	    };
+   	    const foundOperator = upconvertableOperators[ast.operator];
+   	    if (!foundOperator) return null;
+   	    retArr.push(foundOperator);
+   	    retArr.push('(');
+   	    switch (this.getType(ast.argument)) {
+   	      case 'Number':
+   	      case 'Float':
+   	        this.castValueToInteger(ast.argument, retArr);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToInteger(ast.argument, retArr);
+   	        break;
+   	      default:
+   	        this.astGeneric(ast.argument, retArr);
+   	    }
+   	    retArr.push(')');
+   	    return retArr;
+   	  }
+
+   	  castLiteralToInteger(ast, retArr) {
+   	    this.pushState('casting-to-integer');
+   	    this.astGeneric(ast, retArr);
+   	    this.popState('casting-to-integer');
+   	    return retArr;
+   	  }
+
+   	  castLiteralToFloat(ast, retArr) {
+   	    this.pushState('casting-to-float');
+   	    this.astGeneric(ast, retArr);
+   	    this.popState('casting-to-float');
+   	    return retArr;
+   	  }
+
+   	  castValueToInteger(ast, retArr) {
+   	    this.pushState('casting-to-integer');
+   	    retArr.push('int(');
+   	    this.astGeneric(ast, retArr);
+   	    retArr.push(')');
+   	    this.popState('casting-to-integer');
+   	    return retArr;
+   	  }
+
+   	  castValueToFloat(ast, retArr) {
+   	    this.pushState('casting-to-float');
+   	    retArr.push('float(');
+   	    this.astGeneric(ast, retArr);
+   	    retArr.push(')');
+   	    this.popState('casting-to-float');
+   	    return retArr;
+   	  }
+
+   	  astIdentifierExpression(idtNode, retArr) {
+   	    if (idtNode.type !== 'Identifier') {
+   	      throw this.astErrorOutput('IdentifierExpression - not an Identifier', idtNode);
+   	    }
+
+   	    const type = this.getType(idtNode);
+
+   	    const name = utils.sanitizeName(idtNode.name);
+   	    if (idtNode.name === 'Infinity') {
+   	      retArr.push('3.402823466e+38');
+   	    } else if (type === 'Boolean') {
+   	      if (this.argumentNames.indexOf(name) > -1) {
+   	        retArr.push(`bool(user_${name})`);
+   	      } else {
+   	        retArr.push(`user_${name}`);
+   	      }
+   	    } else {
+   	      retArr.push(`user_${name}`);
+   	    }
+
+   	    return retArr;
+   	  }
+
+   	  astForStatement(forNode, retArr) {
+   	    if (forNode.type !== 'ForStatement') {
+   	      throw this.astErrorOutput('Invalid for statement', forNode);
+   	    }
+
+   	    const initArr = [];
+   	    const testArr = [];
+   	    const updateArr = [];
+   	    const bodyArr = [];
+   	    let isSafe = null;
+
+   	    if (forNode.init) {
+   	      const { declarations } = forNode.init;
+   	      if (declarations.length > 1) {
+   	        isSafe = false;
+   	      }
+   	      this.astGeneric(forNode.init, initArr);
+   	      for (let i = 0; i < declarations.length; i++) {
+   	        if (declarations[i].init && declarations[i].init.type !== 'Literal') {
+   	          isSafe = false;
+   	        }
+   	      }
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.test) {
+   	      this.astGeneric(forNode.test, testArr);
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.update) {
+   	      this.astGeneric(forNode.update, updateArr);
+   	    } else {
+   	      isSafe = false;
+   	    }
+
+   	    if (forNode.body) {
+   	      this.pushState('loop-body');
+   	      this.astGeneric(forNode.body, bodyArr);
+   	      this.popState('loop-body');
+   	    }
+
+   	    if (isSafe === null) {
+   	      isSafe = this.isSafe(forNode.init) && this.isSafe(forNode.test);
+   	    }
+
+   	    if (isSafe) {
+   	      const initString = initArr.join('');
+   	      const initNeedsSemiColon = initString[initString.length - 1] !== ';';
+   	      retArr.push(`for (${initString}${initNeedsSemiColon ? ';' : ''}${testArr.join('')};${updateArr.join('')}){\n`);
+   	      retArr.push(bodyArr.join(''));
+   	      retArr.push('}\n');
+   	    } else {
+   	      const iVariableName = this.getInternalVariableName('safeI');
+   	      if (initArr.length > 0) {
+   	        retArr.push(initArr.join(''), '\n');
+   	      }
+   	      retArr.push(`for (int ${iVariableName}=0;${iVariableName}<LOOP_MAX;${iVariableName}++){\n`);
+   	      if (testArr.length > 0) {
+   	        retArr.push(`if (!${testArr.join('')}) break;\n`);
+   	      }
+   	      retArr.push(bodyArr.join(''));
+   	      retArr.push(`\n${updateArr.join('')};`);
+   	      retArr.push('}\n');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astWhileStatement(whileNode, retArr) {
+   	    if (whileNode.type !== 'WhileStatement') {
+   	      throw this.astErrorOutput('Invalid while statement', whileNode);
+   	    }
+
+   	    const iVariableName = this.getInternalVariableName('safeI');
+   	    retArr.push(`for (int ${iVariableName}=0;${iVariableName}<LOOP_MAX;${iVariableName}++){\n`);
+   	    retArr.push('if (!');
+   	    this.astGeneric(whileNode.test, retArr);
+   	    retArr.push(') break;\n');
+   	    this.astGeneric(whileNode.body, retArr);
+   	    retArr.push('}\n');
+
+   	    return retArr;
+   	  }
+
+   	  astDoWhileStatement(doWhileNode, retArr) {
+   	    if (doWhileNode.type !== 'DoWhileStatement') {
+   	      throw this.astErrorOutput('Invalid while statement', doWhileNode);
+   	    }
+
+   	    const iVariableName = this.getInternalVariableName('safeI');
+   	    retArr.push(`for (int ${iVariableName}=0;${iVariableName}<LOOP_MAX;${iVariableName}++){\n`);
+   	    this.astGeneric(doWhileNode.body, retArr);
+   	    retArr.push('if (!');
+   	    this.astGeneric(doWhileNode.test, retArr);
+   	    retArr.push(') break;\n');
+   	    retArr.push('}\n');
+
+   	    return retArr;
+   	  }
+
+
+   	  astAssignmentExpression(assNode, retArr) {
+   	    if (assNode.operator === '%=') {
+   	      this.astGeneric(assNode.left, retArr);
+   	      retArr.push('=');
+   	      retArr.push('mod(');
+   	      this.astGeneric(assNode.left, retArr);
+   	      retArr.push(',');
+   	      this.astGeneric(assNode.right, retArr);
+   	      retArr.push(')');
+   	    } else if (assNode.operator === '**=') {
+   	      this.astGeneric(assNode.left, retArr);
+   	      retArr.push('=');
+   	      retArr.push('pow(');
+   	      this.astGeneric(assNode.left, retArr);
+   	      retArr.push(',');
+   	      this.astGeneric(assNode.right, retArr);
+   	      retArr.push(')');
+   	    } else {
+   	      const leftType = this.getType(assNode.left);
+   	      const rightType = this.getType(assNode.right);
+   	      this.astGeneric(assNode.left, retArr);
+   	      retArr.push(assNode.operator);
+   	      if (leftType !== 'Integer' && rightType === 'Integer') {
+   	        retArr.push('float(');
+   	        this.astGeneric(assNode.right, retArr);
+   	        retArr.push(')');
+   	      } else {
+   	        this.astGeneric(assNode.right, retArr);
+   	      }
+   	      return retArr;
+   	    }
+   	  }
+
+   	  astBlockStatement(bNode, retArr) {
+   	    if (this.isState('loop-body')) {
+   	      this.pushState('block-body'); 
+   	      for (let i = 0; i < bNode.body.length; i++) {
+   	        this.astGeneric(bNode.body[i], retArr);
+   	      }
+   	      this.popState('block-body');
+   	    } else {
+   	      retArr.push('{\n');
+   	      for (let i = 0; i < bNode.body.length; i++) {
+   	        this.astGeneric(bNode.body[i], retArr);
+   	      }
+   	      retArr.push('}\n');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astVariableDeclaration(varDecNode, retArr) {
+   	    const declarations = varDecNode.declarations;
+   	    if (!declarations || !declarations[0] || !declarations[0].init) {
+   	      throw this.astErrorOutput('Unexpected expression', varDecNode);
+   	    }
+   	    const result = [];
+   	    let lastType = null;
+   	    const declarationSets = [];
+   	    let declarationSet = [];
+   	    for (let i = 0; i < declarations.length; i++) {
+   	      const declaration = declarations[i];
+   	      const init = declaration.init;
+   	      const info = this.getDeclaration(declaration.id);
+   	      const actualType = this.getType(declaration.init);
+   	      let type = actualType;
+   	      if (type === 'LiteralInteger') {
+   	        if (info.suggestedType === 'Integer') {
+   	          type = 'Integer';
+   	        } else {
+   	          type = 'Number';
+   	        }
+   	      }
+   	      const markupType = typeMap[type];
+   	      if (!markupType) {
+   	        throw this.astErrorOutput(`Markup type ${ type } not handled`, varDecNode);
+   	      }
+   	      const declarationResult = [];
+   	      if (actualType === 'Integer' && type === 'Integer') {
+   	        info.valueType = 'Number';
+   	        if (i === 0 || lastType === null) {
+   	          declarationResult.push('float ');
+   	        } else if (type !== lastType) {
+   	          throw new Error('Unhandled declaration');
+   	        }
+   	        lastType = type;
+   	        declarationResult.push(`user_${utils.sanitizeName(declaration.id.name)}=`);
+   	        declarationResult.push('float(');
+   	        this.astGeneric(init, declarationResult);
+   	        declarationResult.push(')');
+   	      } else {
+   	        info.valueType = type;
+   	        if (i === 0 || lastType === null) {
+   	          declarationResult.push(`${markupType} `);
+   	        } else if (type !== lastType) {
+   	          declarationSets.push(declarationSet.join(','));
+   	          declarationSet = [];
+   	          declarationResult.push(`${markupType} `);
+   	        }
+   	        lastType = type;
+   	        declarationResult.push(`user_${utils.sanitizeName(declaration.id.name)}=`);
+   	        if (actualType === 'Number' && type === 'Integer') {
+   	          if (init.left && init.left.type === 'Literal') {
+   	            this.astGeneric(init, declarationResult);
+   	          } else {
+   	            declarationResult.push('int(');
+   	            this.astGeneric(init, declarationResult);
+   	            declarationResult.push(')');
+   	          }
+   	        } else if (actualType === 'LiteralInteger' && type === 'Integer') {
+   	          this.castLiteralToInteger(init, declarationResult);
+   	        } else {
+   	          this.astGeneric(init, declarationResult);
+   	        }
+   	      }
+   	      declarationSet.push(declarationResult.join(''));
+   	    }
+
+   	    if (declarationSet.length > 0) {
+   	      declarationSets.push(declarationSet.join(','));
+   	    }
+
+   	    result.push(declarationSets.join(';'));
+
+   	    retArr.push(result.join(''));
+   	    retArr.push(';');
+   	    return retArr;
+   	  }
+
+   	  astIfStatement(ifNode, retArr) {
+   	    retArr.push('if (');
+   	    this.astGeneric(ifNode.test, retArr);
+   	    retArr.push(')');
+   	    if (ifNode.consequent.type === 'BlockStatement') {
+   	      this.astGeneric(ifNode.consequent, retArr);
+   	    } else {
+   	      retArr.push(' {\n');
+   	      this.astGeneric(ifNode.consequent, retArr);
+   	      retArr.push('\n}\n');
+   	    }
+
+   	    if (ifNode.alternate) {
+   	      retArr.push('else ');
+   	      if (ifNode.alternate.type === 'BlockStatement' || ifNode.alternate.type === 'IfStatement') {
+   	        this.astGeneric(ifNode.alternate, retArr);
+   	      } else {
+   	        retArr.push(' {\n');
+   	        this.astGeneric(ifNode.alternate, retArr);
+   	        retArr.push('\n}\n');
+   	      }
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astSwitchStatement(ast, retArr) {
+   	    if (ast.type !== 'SwitchStatement') {
+   	      throw this.astErrorOutput('Invalid switch statement', ast);
+   	    }
+   	    const { discriminant, cases } = ast;
+   	    const type = this.getType(discriminant);
+   	    const varName = `switchDiscriminant${this.astKey(ast, '_')}`;
+   	    switch (type) {
+   	      case 'Float':
+   	      case 'Number':
+   	        retArr.push(`float ${varName} = `);
+   	        this.astGeneric(discriminant, retArr);
+   	        retArr.push(';\n');
+   	        break;
+   	      case 'Integer':
+   	        retArr.push(`int ${varName} = `);
+   	        this.astGeneric(discriminant, retArr);
+   	        retArr.push(';\n');
+   	        break;
+   	    }
+   	    if (cases.length === 1 && !cases[0].test) {
+   	      this.astGeneric(cases[0].consequent, retArr);
+   	      return retArr;
+   	    }
+
+   	    let fallingThrough = false;
+   	    let defaultResult = [];
+   	    let movingDefaultToEnd = false;
+   	    let pastFirstIf = false;
+   	    for (let i = 0; i < cases.length; i++) {
+   	      if (!cases[i].test) {
+   	        if (cases.length > i + 1) {
+   	          movingDefaultToEnd = true;
+   	          this.astGeneric(cases[i].consequent, defaultResult);
+   	          continue;
+   	        } else {
+   	          retArr.push(' else {\n');
+   	        }
+   	      } else {
+   	        if (i === 0 || !pastFirstIf) {
+   	          pastFirstIf = true;
+   	          retArr.push(`if (${varName} == `);
+   	        } else {
+   	          if (fallingThrough) {
+   	            retArr.push(`${varName} == `);
+   	            fallingThrough = false;
+   	          } else {
+   	            retArr.push(` else if (${varName} == `);
+   	          }
+   	        }
+   	        if (type === 'Integer') {
+   	          const testType = this.getType(cases[i].test);
+   	          switch (testType) {
+   	            case 'Number':
+   	            case 'Float':
+   	              this.castValueToInteger(cases[i].test, retArr);
+   	              break;
+   	            case 'LiteralInteger':
+   	              this.castLiteralToInteger(cases[i].test, retArr);
+   	              break;
+   	          }
+   	        } else if (type === 'Float') {
+   	          const testType = this.getType(cases[i].test);
+   	          switch (testType) {
+   	            case 'LiteralInteger':
+   	              this.castLiteralToFloat(cases[i].test, retArr);
+   	              break;
+   	            case 'Integer':
+   	              this.castValueToFloat(cases[i].test, retArr);
+   	              break;
+   	          }
+   	        } else {
+   	          throw new Error('unhanlded');
+   	        }
+   	        if (!cases[i].consequent || cases[i].consequent.length === 0) {
+   	          fallingThrough = true;
+   	          retArr.push(' || ');
+   	          continue;
+   	        }
+   	        retArr.push(`) {\n`);
+   	      }
+   	      this.astGeneric(cases[i].consequent, retArr);
+   	      retArr.push('\n}');
+   	    }
+   	    if (movingDefaultToEnd) {
+   	      retArr.push(' else {');
+   	      retArr.push(defaultResult.join(''));
+   	      retArr.push('}');
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astThisExpression(tNode, retArr) {
+   	    retArr.push('this');
+   	    return retArr;
+   	  }
+
+   	  astMemberExpression(mNode, retArr) {
+   	    const {
+   	      property,
+   	      name,
+   	      signature,
+   	      origin,
+   	      type,
+   	      xProperty,
+   	      yProperty,
+   	      zProperty
+   	    } = this.getMemberExpressionDetails(mNode);
+   	    switch (signature) {
+   	      case 'value.thread.value':
+   	      case 'this.thread.value':
+   	        if (name !== 'x' && name !== 'y' && name !== 'z') {
+   	          throw this.astErrorOutput('Unexpected expression, expected `this.thread.x`, `this.thread.y`, or `this.thread.z`', mNode);
+   	        }
+   	        retArr.push(`threadId.${name}`);
+   	        return retArr;
+   	      case 'this.output.value':
+   	        if (this.dynamicOutput) {
+   	          switch (name) {
+   	            case 'x':
+   	              if (this.isState('casting-to-float')) {
+   	                retArr.push('float(uOutputDim.x)');
+   	              } else {
+   	                retArr.push('uOutputDim.x');
+   	              }
+   	              break;
+   	            case 'y':
+   	              if (this.isState('casting-to-float')) {
+   	                retArr.push('float(uOutputDim.y)');
+   	              } else {
+   	                retArr.push('uOutputDim.y');
+   	              }
+   	              break;
+   	            case 'z':
+   	              if (this.isState('casting-to-float')) {
+   	                retArr.push('float(uOutputDim.z)');
+   	              } else {
+   	                retArr.push('uOutputDim.z');
+   	              }
+   	              break;
+   	            default:
+   	              throw this.astErrorOutput('Unexpected expression', mNode);
+   	          }
+   	        } else {
+   	          switch (name) {
+   	            case 'x':
+   	              if (this.isState('casting-to-integer')) {
+   	                retArr.push(this.output[0]);
+   	              } else {
+   	                retArr.push(this.output[0], '.0');
+   	              }
+   	              break;
+   	            case 'y':
+   	              if (this.isState('casting-to-integer')) {
+   	                retArr.push(this.output[1]);
+   	              } else {
+   	                retArr.push(this.output[1], '.0');
+   	              }
+   	              break;
+   	            case 'z':
+   	              if (this.isState('casting-to-integer')) {
+   	                retArr.push(this.output[2]);
+   	              } else {
+   	                retArr.push(this.output[2], '.0');
+   	              }
+   	              break;
+   	            default:
+   	              throw this.astErrorOutput('Unexpected expression', mNode);
+   	          }
+   	        }
+   	        return retArr;
+   	      case 'value':
+   	        throw this.astErrorOutput('Unexpected expression', mNode);
+   	      case 'value[]':
+   	      case 'value[][]':
+   	      case 'value[][][]':
+   	      case 'value[][][][]':
+   	      case 'value.value':
+   	        if (origin === 'Math') {
+   	          retArr.push(Math[name]);
+   	          return retArr;
+   	        }
+   	        const cleanName = utils.sanitizeName(name);
+   	        switch (property) {
+   	          case 'r':
+   	            retArr.push(`user_${ cleanName }.r`);
+   	            return retArr;
+   	          case 'g':
+   	            retArr.push(`user_${ cleanName }.g`);
+   	            return retArr;
+   	          case 'b':
+   	            retArr.push(`user_${ cleanName }.b`);
+   	            return retArr;
+   	          case 'a':
+   	            retArr.push(`user_${ cleanName }.a`);
+   	            return retArr;
+   	        }
+   	        break;
+   	      case 'this.constants.value':
+   	        if (typeof xProperty === 'undefined') {
+   	          switch (type) {
+   	            case 'Array(2)':
+   	            case 'Array(3)':
+   	            case 'Array(4)':
+   	              retArr.push(`constants_${ utils.sanitizeName(name) }`);
+   	              return retArr;
+   	          }
+   	        }
+   	        case 'this.constants.value[]':
+   	        case 'this.constants.value[][]':
+   	        case 'this.constants.value[][][]':
+   	        case 'this.constants.value[][][][]':
+   	          break;
+   	        case 'fn()[]':
+   	          this.astCallExpression(mNode.object, retArr);
+   	          retArr.push('[');
+   	          retArr.push(this.memberExpressionPropertyMarkup(property));
+   	          retArr.push(']');
+   	          return retArr;
+   	        case 'fn()[][]':
+   	          this.astCallExpression(mNode.object.object, retArr);
+   	          retArr.push('[');
+   	          retArr.push(this.memberExpressionPropertyMarkup(mNode.object.property));
+   	          retArr.push(']');
+   	          retArr.push('[');
+   	          retArr.push(this.memberExpressionPropertyMarkup(mNode.property));
+   	          retArr.push(']');
+   	          return retArr;
+   	        case '[][]':
+   	          this.astArrayExpression(mNode.object, retArr);
+   	          retArr.push('[');
+   	          retArr.push(this.memberExpressionPropertyMarkup(property));
+   	          retArr.push(']');
+   	          return retArr;
+   	        default:
+   	          throw this.astErrorOutput('Unexpected expression', mNode);
+   	    }
+
+   	    if (mNode.computed === false) {
+   	      switch (type) {
+   	        case 'Number':
+   	        case 'Integer':
+   	        case 'Float':
+   	        case 'Boolean':
+   	          retArr.push(`${origin}_${utils.sanitizeName(name)}`);
+   	          return retArr;
+   	      }
+   	    }
+
+   	    const markupName = `${origin}_${utils.sanitizeName(name)}`;
+
+   	    switch (type) {
+   	      case 'Array(2)':
+   	      case 'Array(3)':
+   	      case 'Array(4)':
+   	        this.astGeneric(mNode.object, retArr);
+   	        retArr.push('[');
+   	        retArr.push(this.memberExpressionPropertyMarkup(xProperty));
+   	        retArr.push(']');
+   	        break;
+   	      case 'HTMLImageArray':
+   	        retArr.push(`getImage3D(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'ArrayTexture(1)':
+   	        retArr.push(`getFloatFromSampler2D(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'Array1D(2)':
+   	      case 'Array2D(2)':
+   	      case 'Array3D(2)':
+   	        retArr.push(`getMemoryOptimizedVec2(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'ArrayTexture(2)':
+   	        retArr.push(`getVec2FromSampler2D(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'Array1D(3)':
+   	      case 'Array2D(3)':
+   	      case 'Array3D(3)':
+   	        retArr.push(`getMemoryOptimizedVec3(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'ArrayTexture(3)':
+   	        retArr.push(`getVec3FromSampler2D(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'Array1D(4)':
+   	      case 'Array2D(4)':
+   	      case 'Array3D(4)':
+   	        retArr.push(`getMemoryOptimizedVec4(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'ArrayTexture(4)':
+   	      case 'HTMLCanvas':
+   	      case 'OffscreenCanvas':
+   	      case 'HTMLImage':
+   	      case 'ImageBitmap':
+   	      case 'ImageData':
+   	      case 'HTMLVideo':
+   	        retArr.push(`getVec4FromSampler2D(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'NumberTexture':
+   	      case 'Array':
+   	      case 'Array2D':
+   	      case 'Array3D':
+   	      case 'Array4D':
+   	      case 'Input':
+   	      case 'Number':
+   	      case 'Float':
+   	      case 'Integer':
+   	        if (this.precision === 'single') {
+   	          retArr.push(`getMemoryOptimized32(${markupName}, ${markupName}Size, ${markupName}Dim, `);
+   	          this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	          retArr.push(')');
+   	        } else {
+   	          const bitRatio = (origin === 'user' ?
+   	            this.lookupFunctionArgumentBitRatio(this.name, name) :
+   	            this.constantBitRatios[name]
+   	          );
+   	          switch (bitRatio) {
+   	            case 1:
+   	              retArr.push(`get8(${markupName}, ${markupName}Size, ${markupName}Dim, `);
+   	              break;
+   	            case 2:
+   	              retArr.push(`get16(${markupName}, ${markupName}Size, ${markupName}Dim, `);
+   	              break;
+   	            case 4:
+   	            case 0:
+   	              retArr.push(`get32(${markupName}, ${markupName}Size, ${markupName}Dim, `);
+   	              break;
+   	            default:
+   	              throw new Error(`unhandled bit ratio of ${bitRatio}`);
+   	          }
+   	          this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	          retArr.push(')');
+   	        }
+   	        break;
+   	      case 'MemoryOptimizedNumberTexture':
+   	        retArr.push(`getMemoryOptimized32(${ markupName }, ${ markupName }Size, ${ markupName }Dim, `);
+   	        this.memberExpressionXYZ(xProperty, yProperty, zProperty, retArr);
+   	        retArr.push(')');
+   	        break;
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	        retArr.push(`${markupName}[${this.memberExpressionPropertyMarkup(yProperty)}]`);
+   	        if (yProperty) {
+   	          retArr.push(`[${this.memberExpressionPropertyMarkup(xProperty)}]`);
+   	        }
+   	        break;
+   	      default:
+   	        throw new Error(`unhandled member expression "${ type }"`);
+   	    }
+   	    return retArr;
+   	  }
+
+   	  astCallExpression(ast, retArr) {
+   	    if (!ast.callee) {
+   	      throw this.astErrorOutput('Unknown CallExpression', ast);
+   	    }
+
+   	    let functionName = null;
+   	    const isMathFunction = this.isAstMathFunction(ast);
+
+   	    if (isMathFunction || (ast.callee.object && ast.callee.object.type === 'ThisExpression')) {
+   	      functionName = ast.callee.property.name;
+   	    }
+   	    else if (ast.callee.type === 'SequenceExpression' && ast.callee.expressions[0].type === 'Literal' && !isNaN(ast.callee.expressions[0].raw)) {
+   	      functionName = ast.callee.expressions[1].property.name;
+   	    } else {
+   	      functionName = ast.callee.name;
+   	    }
+
+   	    if (!functionName) {
+   	      throw this.astErrorOutput(`Unhandled function, couldn't find name`, ast);
+   	    }
+
+   	    switch (functionName) {
+   	      case 'pow':
+   	        functionName = '_pow';
+   	        break;
+   	      case 'round':
+   	        functionName = '_round';
+   	        break;
+   	    }
+
+   	    if (this.calledFunctions.indexOf(functionName) < 0) {
+   	      this.calledFunctions.push(functionName);
+   	    }
+
+   	    if (functionName === 'random' && this.plugins && this.plugins.length > 0) {
+   	      for (let i = 0; i < this.plugins.length; i++) {
+   	        const plugin = this.plugins[i];
+   	        if (plugin.functionMatch === 'Math.random()' && plugin.functionReplace) {
+   	          retArr.push(plugin.functionReplace);
+   	          return retArr;
+   	        }
+   	      }
+   	    }
+
+   	    if (this.onFunctionCall) {
+   	      this.onFunctionCall(this.name, functionName, ast.arguments);
+   	    }
+
+   	    retArr.push(functionName);
+
+   	    retArr.push('(');
+
+   	    if (isMathFunction) {
+   	      for (let i = 0; i < ast.arguments.length; ++i) {
+   	        const argument = ast.arguments[i];
+   	        const argumentType = this.getType(argument);
+   	        if (i > 0) {
+   	          retArr.push(', ');
+   	        }
+
+   	        switch (argumentType) {
+   	          case 'Integer':
+   	            this.castValueToFloat(argument, retArr);
+   	            break;
+   	          default:
+   	            this.astGeneric(argument, retArr);
+   	            break;
+   	        }
+   	      }
+   	    } else {
+   	      const targetTypes = this.lookupFunctionArgumentTypes(functionName) || [];
+   	      for (let i = 0; i < ast.arguments.length; ++i) {
+   	        const argument = ast.arguments[i];
+   	        let targetType = targetTypes[i];
+   	        if (i > 0) {
+   	          retArr.push(', ');
+   	        }
+   	        const argumentType = this.getType(argument);
+   	        if (!targetType) {
+   	          this.triggerImplyArgumentType(functionName, i, argumentType, this);
+   	          targetType = argumentType;
+   	        }
+   	        switch (argumentType) {
+   	          case 'Boolean':
+   	            this.astGeneric(argument, retArr);
+   	            continue;
+   	          case 'Number':
+   	          case 'Float':
+   	            if (targetType === 'Integer') {
+   	              retArr.push('int(');
+   	              this.astGeneric(argument, retArr);
+   	              retArr.push(')');
+   	              continue;
+   	            } else if (targetType === 'Number' || targetType === 'Float') {
+   	              this.astGeneric(argument, retArr);
+   	              continue;
+   	            } else if (targetType === 'LiteralInteger') {
+   	              this.castLiteralToFloat(argument, retArr);
+   	              continue;
+   	            }
+   	            break;
+   	          case 'Integer':
+   	            if (targetType === 'Number' || targetType === 'Float') {
+   	              retArr.push('float(');
+   	              this.astGeneric(argument, retArr);
+   	              retArr.push(')');
+   	              continue;
+   	            } else if (targetType === 'Integer') {
+   	              this.astGeneric(argument, retArr);
+   	              continue;
+   	            }
+   	            break;
+   	          case 'LiteralInteger':
+   	            if (targetType === 'Integer') {
+   	              this.castLiteralToInteger(argument, retArr);
+   	              continue;
+   	            } else if (targetType === 'Number' || targetType === 'Float') {
+   	              this.castLiteralToFloat(argument, retArr);
+   	              continue;
+   	            } else if (targetType === 'LiteralInteger') {
+   	              this.astGeneric(argument, retArr);
+   	              continue;
+   	            }
+   	            break;
+   	          case 'Array(2)':
+   	          case 'Array(3)':
+   	          case 'Array(4)':
+   	            if (targetType === argumentType) {
+   	              if (argument.type === 'Identifier') {
+   	                retArr.push(`user_${utils.sanitizeName(argument.name)}`);
+   	              } else if (argument.type === 'ArrayExpression' || argument.type === 'MemberExpression' || argument.type === 'CallExpression') {
+   	                this.astGeneric(argument, retArr);
+   	              } else {
+   	                throw this.astErrorOutput(`Unhandled argument type ${ argument.type }`, ast);
+   	              }
+   	              continue;
+   	            }
+   	            break;
+   	          case 'HTMLCanvas':
+   	          case 'OffscreenCanvas':
+   	          case 'HTMLImage':
+   	          case 'ImageBitmap':
+   	          case 'ImageData':
+   	          case 'HTMLImageArray':
+   	          case 'HTMLVideo':
+   	          case 'ArrayTexture(1)':
+   	          case 'ArrayTexture(2)':
+   	          case 'ArrayTexture(3)':
+   	          case 'ArrayTexture(4)':
+   	          case 'Array':
+   	          case 'Input':
+   	            if (targetType === argumentType) {
+   	              if (argument.type !== 'Identifier') throw this.astErrorOutput(`Unhandled argument type ${ argument.type }`, ast);
+   	              this.triggerImplyArgumentBitRatio(this.name, argument.name, functionName, i);
+   	              const name = utils.sanitizeName(argument.name);
+   	              retArr.push(`user_${name},user_${name}Size,user_${name}Dim`);
+   	              continue;
+   	            }
+   	            break;
+   	        }
+   	        throw this.astErrorOutput(`Unhandled argument combination of ${ argumentType } and ${ targetType } for argument named "${ argument.name }"`, ast);
+   	      }
+   	    }
+   	    retArr.push(')');
+
+   	    return retArr;
+   	  }
+
+   	  astArrayExpression(arrNode, retArr) {
+   	    const returnType = this.getType(arrNode);
+
+   	    const arrLen = arrNode.elements.length;
+
+   	    switch (returnType) {
+   	      case 'Matrix(2)':
+   	      case 'Matrix(3)':
+   	      case 'Matrix(4)':
+   	        retArr.push(`mat${arrLen}(`);
+   	        break;
+   	      default:
+   	        retArr.push(`vec${arrLen}(`);
+   	    }
+   	    for (let i = 0; i < arrLen; ++i) {
+   	      if (i > 0) {
+   	        retArr.push(', ');
+   	      }
+   	      const subNode = arrNode.elements[i];
+   	      this.astGeneric(subNode, retArr);
+   	    }
+   	    retArr.push(')');
+
+   	    return retArr;
+   	  }
+
+   	  memberExpressionXYZ(x, y, z, retArr) {
+   	    if (z) {
+   	      retArr.push(this.memberExpressionPropertyMarkup(z), ', ');
+   	    } else {
+   	      retArr.push('0, ');
+   	    }
+   	    if (y) {
+   	      retArr.push(this.memberExpressionPropertyMarkup(y), ', ');
+   	    } else {
+   	      retArr.push('0, ');
+   	    }
+   	    retArr.push(this.memberExpressionPropertyMarkup(x));
+   	    return retArr;
+   	  }
+
+   	  memberExpressionPropertyMarkup(property) {
+   	    if (!property) {
+   	      throw new Error('Property not set');
+   	    }
+   	    const type = this.getType(property);
+   	    const result = [];
+   	    switch (type) {
+   	      case 'Number':
+   	      case 'Float':
+   	        this.castValueToInteger(property, result);
+   	        break;
+   	      case 'LiteralInteger':
+   	        this.castLiteralToInteger(property, result);
+   	        break;
+   	      default:
+   	        this.astGeneric(property, result);
+   	    }
+   	    return result.join('');
+   	  }
+   	}
+
+   	const typeMap = {
+   	  'Array': 'sampler2D',
+   	  'Array(2)': 'vec2',
+   	  'Array(3)': 'vec3',
+   	  'Array(4)': 'vec4',
+   	  'Matrix(2)': 'mat2',
+   	  'Matrix(3)': 'mat3',
+   	  'Matrix(4)': 'mat4',
+   	  'Array2D': 'sampler2D',
+   	  'Array3D': 'sampler2D',
+   	  'Boolean': 'bool',
+   	  'Float': 'float',
+   	  'Input': 'sampler2D',
+   	  'Integer': 'int',
+   	  'Number': 'float',
+   	  'LiteralInteger': 'float',
+   	  'NumberTexture': 'sampler2D',
+   	  'MemoryOptimizedNumberTexture': 'sampler2D',
+   	  'ArrayTexture(1)': 'sampler2D',
+   	  'ArrayTexture(2)': 'sampler2D',
+   	  'ArrayTexture(3)': 'sampler2D',
+   	  'ArrayTexture(4)': 'sampler2D',
+   	  'HTMLVideo': 'sampler2D',
+   	  'HTMLCanvas': 'sampler2D',
+   	  'OffscreenCanvas': 'sampler2D',
+   	  'HTMLImage': 'sampler2D',
+   	  'ImageBitmap': 'sampler2D',
+   	  'ImageData': 'sampler2D',
+   	  'HTMLImageArray': 'sampler2DArray',
+   	};
+
+   	const operatorMap = {
+   	  '===': '==',
+   	  '!==': '!='
+   	};
+
+   	module.exports = {
+   	  WebGLFunctionNode
+   	};
+   	},{"../../utils":114,"../function-node":10}],39:[function(require,module,exports){
+   	const { WebGLKernelValueBoolean } = require('./kernel-value/boolean');
+   	const { WebGLKernelValueFloat } = require('./kernel-value/float');
+   	const { WebGLKernelValueInteger } = require('./kernel-value/integer');
+
+   	const { WebGLKernelValueHTMLImage } = require('./kernel-value/html-image');
+   	const { WebGLKernelValueDynamicHTMLImage } = require('./kernel-value/dynamic-html-image');
+
+   	const { WebGLKernelValueHTMLVideo } = require('./kernel-value/html-video');
+   	const { WebGLKernelValueDynamicHTMLVideo } = require('./kernel-value/dynamic-html-video');
+
+   	const { WebGLKernelValueSingleInput } = require('./kernel-value/single-input');
+   	const { WebGLKernelValueDynamicSingleInput } = require('./kernel-value/dynamic-single-input');
+
+   	const { WebGLKernelValueUnsignedInput } = require('./kernel-value/unsigned-input');
+   	const { WebGLKernelValueDynamicUnsignedInput } = require('./kernel-value/dynamic-unsigned-input');
+
+   	const { WebGLKernelValueMemoryOptimizedNumberTexture } = require('./kernel-value/memory-optimized-number-texture');
+   	const { WebGLKernelValueDynamicMemoryOptimizedNumberTexture } = require('./kernel-value/dynamic-memory-optimized-number-texture');
+
+   	const { WebGLKernelValueNumberTexture } = require('./kernel-value/number-texture');
+   	const { WebGLKernelValueDynamicNumberTexture } = require('./kernel-value/dynamic-number-texture');
+
+   	const { WebGLKernelValueSingleArray } = require('./kernel-value/single-array');
+   	const { WebGLKernelValueDynamicSingleArray } = require('./kernel-value/dynamic-single-array');
+
+   	const { WebGLKernelValueSingleArray1DI } = require('./kernel-value/single-array1d-i');
+   	const { WebGLKernelValueDynamicSingleArray1DI } = require('./kernel-value/dynamic-single-array1d-i');
+
+   	const { WebGLKernelValueSingleArray2DI } = require('./kernel-value/single-array2d-i');
+   	const { WebGLKernelValueDynamicSingleArray2DI } = require('./kernel-value/dynamic-single-array2d-i');
+
+   	const { WebGLKernelValueSingleArray3DI } = require('./kernel-value/single-array3d-i');
+   	const { WebGLKernelValueDynamicSingleArray3DI } = require('./kernel-value/dynamic-single-array3d-i');
+
+   	const { WebGLKernelValueArray2 } = require('./kernel-value/array2');
+   	const { WebGLKernelValueArray3 } = require('./kernel-value/array3');
+   	const { WebGLKernelValueArray4 } = require('./kernel-value/array4');
+
+   	const { WebGLKernelValueUnsignedArray } = require('./kernel-value/unsigned-array');
+   	const { WebGLKernelValueDynamicUnsignedArray } = require('./kernel-value/dynamic-unsigned-array');
+
+   	const kernelValueMaps = {
+   	  unsigned: {
+   	    dynamic: {
+   	      'Boolean': WebGLKernelValueBoolean,
+   	      'Integer': WebGLKernelValueInteger,
+   	      'Float': WebGLKernelValueFloat,
+   	      'Array': WebGLKernelValueDynamicUnsignedArray,
+   	      'Array(2)': WebGLKernelValueArray2,
+   	      'Array(3)': WebGLKernelValueArray3,
+   	      'Array(4)': WebGLKernelValueArray4,
+   	      'Array1D(2)': false,
+   	      'Array1D(3)': false,
+   	      'Array1D(4)': false,
+   	      'Array2D(2)': false,
+   	      'Array2D(3)': false,
+   	      'Array2D(4)': false,
+   	      'Array3D(2)': false,
+   	      'Array3D(3)': false,
+   	      'Array3D(4)': false,
+   	      'Input': WebGLKernelValueDynamicUnsignedInput,
+   	      'NumberTexture': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(1)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(2)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(3)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(4)': WebGLKernelValueDynamicNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGLKernelValueDynamicMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGLKernelValueDynamicHTMLImage,
+   	      'OffscreenCanvas': WebGLKernelValueDynamicHTMLImage,
+   	      'HTMLImage': WebGLKernelValueDynamicHTMLImage,
+   	      'ImageBitmap': WebGLKernelValueDynamicHTMLImage,
+   	      'ImageData': WebGLKernelValueDynamicHTMLImage,
+   	      'HTMLImageArray': false,
+   	      'HTMLVideo': WebGLKernelValueDynamicHTMLVideo,
+   	    },
+   	    static: {
+   	      'Boolean': WebGLKernelValueBoolean,
+   	      'Float': WebGLKernelValueFloat,
+   	      'Integer': WebGLKernelValueInteger,
+   	      'Array': WebGLKernelValueUnsignedArray,
+   	      'Array(2)': WebGLKernelValueArray2,
+   	      'Array(3)': WebGLKernelValueArray3,
+   	      'Array(4)': WebGLKernelValueArray4,
+   	      'Array1D(2)': false,
+   	      'Array1D(3)': false,
+   	      'Array1D(4)': false,
+   	      'Array2D(2)': false,
+   	      'Array2D(3)': false,
+   	      'Array2D(4)': false,
+   	      'Array3D(2)': false,
+   	      'Array3D(3)': false,
+   	      'Array3D(4)': false,
+   	      'Input': WebGLKernelValueUnsignedInput,
+   	      'NumberTexture': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(1)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(2)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(3)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(4)': WebGLKernelValueNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGLKernelValueMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGLKernelValueHTMLImage,
+   	      'OffscreenCanvas': WebGLKernelValueHTMLImage,
+   	      'HTMLImage': WebGLKernelValueHTMLImage,
+   	      'ImageBitmap': WebGLKernelValueHTMLImage,
+   	      'ImageData': WebGLKernelValueHTMLImage,
+   	      'HTMLImageArray': false,
+   	      'HTMLVideo': WebGLKernelValueHTMLVideo,
+   	    }
+   	  },
+   	  single: {
+   	    dynamic: {
+   	      'Boolean': WebGLKernelValueBoolean,
+   	      'Integer': WebGLKernelValueInteger,
+   	      'Float': WebGLKernelValueFloat,
+   	      'Array': WebGLKernelValueDynamicSingleArray,
+   	      'Array(2)': WebGLKernelValueArray2,
+   	      'Array(3)': WebGLKernelValueArray3,
+   	      'Array(4)': WebGLKernelValueArray4,
+   	      'Array1D(2)': WebGLKernelValueDynamicSingleArray1DI,
+   	      'Array1D(3)': WebGLKernelValueDynamicSingleArray1DI,
+   	      'Array1D(4)': WebGLKernelValueDynamicSingleArray1DI,
+   	      'Array2D(2)': WebGLKernelValueDynamicSingleArray2DI,
+   	      'Array2D(3)': WebGLKernelValueDynamicSingleArray2DI,
+   	      'Array2D(4)': WebGLKernelValueDynamicSingleArray2DI,
+   	      'Array3D(2)': WebGLKernelValueDynamicSingleArray3DI,
+   	      'Array3D(3)': WebGLKernelValueDynamicSingleArray3DI,
+   	      'Array3D(4)': WebGLKernelValueDynamicSingleArray3DI,
+   	      'Input': WebGLKernelValueDynamicSingleInput,
+   	      'NumberTexture': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(1)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(2)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(3)': WebGLKernelValueDynamicNumberTexture,
+   	      'ArrayTexture(4)': WebGLKernelValueDynamicNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGLKernelValueDynamicMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGLKernelValueDynamicHTMLImage,
+   	      'OffscreenCanvas': WebGLKernelValueDynamicHTMLImage,
+   	      'HTMLImage': WebGLKernelValueDynamicHTMLImage,
+   	      'ImageBitmap': WebGLKernelValueDynamicHTMLImage,
+   	      'ImageData': WebGLKernelValueDynamicHTMLImage,
+   	      'HTMLImageArray': false,
+   	      'HTMLVideo': WebGLKernelValueDynamicHTMLVideo,
+   	    },
+   	    static: {
+   	      'Boolean': WebGLKernelValueBoolean,
+   	      'Float': WebGLKernelValueFloat,
+   	      'Integer': WebGLKernelValueInteger,
+   	      'Array': WebGLKernelValueSingleArray,
+   	      'Array(2)': WebGLKernelValueArray2,
+   	      'Array(3)': WebGLKernelValueArray3,
+   	      'Array(4)': WebGLKernelValueArray4,
+   	      'Array1D(2)': WebGLKernelValueSingleArray1DI,
+   	      'Array1D(3)': WebGLKernelValueSingleArray1DI,
+   	      'Array1D(4)': WebGLKernelValueSingleArray1DI,
+   	      'Array2D(2)': WebGLKernelValueSingleArray2DI,
+   	      'Array2D(3)': WebGLKernelValueSingleArray2DI,
+   	      'Array2D(4)': WebGLKernelValueSingleArray2DI,
+   	      'Array3D(2)': WebGLKernelValueSingleArray3DI,
+   	      'Array3D(3)': WebGLKernelValueSingleArray3DI,
+   	      'Array3D(4)': WebGLKernelValueSingleArray3DI,
+   	      'Input': WebGLKernelValueSingleInput,
+   	      'NumberTexture': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(1)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(2)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(3)': WebGLKernelValueNumberTexture,
+   	      'ArrayTexture(4)': WebGLKernelValueNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGLKernelValueMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGLKernelValueHTMLImage,
+   	      'OffscreenCanvas': WebGLKernelValueHTMLImage,
+   	      'HTMLImage': WebGLKernelValueHTMLImage,
+   	      'ImageBitmap': WebGLKernelValueHTMLImage,
+   	      'ImageData': WebGLKernelValueHTMLImage,
+   	      'HTMLImageArray': false,
+   	      'HTMLVideo': WebGLKernelValueHTMLVideo,
+   	    }
+   	  },
+   	};
+
+   	function lookupKernelValueType(type, dynamic, precision, value) {
+   	  if (!type) {
+   	    throw new Error('type missing');
+   	  }
+   	  if (!dynamic) {
+   	    throw new Error('dynamic missing');
+   	  }
+   	  if (!precision) {
+   	    throw new Error('precision missing');
+   	  }
+   	  if (value.type) {
+   	    type = value.type;
+   	  }
+   	  const types = kernelValueMaps[precision][dynamic];
+   	  if (types[type] === false) {
+   	    return null;
+   	  } else if (types[type] === undefined) {
+   	    throw new Error(`Could not find a KernelValue for ${ type }`);
+   	  }
+   	  return types[type];
+   	}
+
+   	module.exports = {
+   	  lookupKernelValueType,
+   	  kernelValueMaps,
+   	};
+   	},{"./kernel-value/array2":41,"./kernel-value/array3":42,"./kernel-value/array4":43,"./kernel-value/boolean":44,"./kernel-value/dynamic-html-image":45,"./kernel-value/dynamic-html-video":46,"./kernel-value/dynamic-memory-optimized-number-texture":47,"./kernel-value/dynamic-number-texture":48,"./kernel-value/dynamic-single-array":49,"./kernel-value/dynamic-single-array1d-i":50,"./kernel-value/dynamic-single-array2d-i":51,"./kernel-value/dynamic-single-array3d-i":52,"./kernel-value/dynamic-single-input":53,"./kernel-value/dynamic-unsigned-array":54,"./kernel-value/dynamic-unsigned-input":55,"./kernel-value/float":56,"./kernel-value/html-image":57,"./kernel-value/html-video":58,"./kernel-value/integer":60,"./kernel-value/memory-optimized-number-texture":61,"./kernel-value/number-texture":62,"./kernel-value/single-array":63,"./kernel-value/single-array1d-i":64,"./kernel-value/single-array2d-i":65,"./kernel-value/single-array3d-i":66,"./kernel-value/single-input":67,"./kernel-value/unsigned-array":68,"./kernel-value/unsigned-input":69}],40:[function(require,module,exports){
+   	const { WebGLKernelValue } = require('./index');
+   	const { Input } = require('../../../input');
+
+   	class WebGLKernelArray extends WebGLKernelValue {
+   	  checkSize(width, height) {
+   	    if (!this.kernel.validate) return;
+   	    const { maxTextureSize } = this.kernel.constructor.features;
+   	    if (width > maxTextureSize || height > maxTextureSize) {
+   	      if (width > height) {
+   	        throw new Error(`Argument texture width of ${width} larger than maximum size of ${maxTextureSize} for your GPU`);
+   	      } else if (width < height) {
+   	        throw new Error(`Argument texture height of ${height} larger than maximum size of ${maxTextureSize} for your GPU`);
+   	      } else {
+   	        throw new Error(`Argument texture height and width of ${height} larger than maximum size of ${maxTextureSize} for your GPU`);
+   	      }
+   	    }
+   	  }
+
+   	  setup() {
+   	    this.requestTexture();
+   	    this.setupTexture();
+   	    this.defineTexture();
+   	  }
+
+   	  requestTexture() {
+   	    this.texture = this.onRequestTexture();
+   	  }
+
+   	  defineTexture() {
+   	    const { context: gl } = this;
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	  }
+
+   	  setupTexture() {
+   	    this.contextHandle = this.onRequestContextHandle();
+   	    this.index = this.onRequestIndex();
+   	    this.dimensionsId = this.id + 'Dim';
+   	    this.sizeId = this.id + 'Size';
+   	  }
+
+   	  getBitRatio(value) {
+   	    if (Array.isArray(value[0])) {
+   	      return this.getBitRatio(value[0]);
+   	    } else if (value.constructor === Input) {
+   	      return this.getBitRatio(value.value);
+   	    }
+   	    switch (value.constructor) {
+   	      case Uint8ClampedArray:
+   	      case Uint8Array:
+   	      case Int8Array:
+   	        return 1;
+   	      case Uint16Array:
+   	      case Int16Array:
+   	        return 2;
+   	      case Float32Array:
+   	      case Int32Array:
+   	      default:
+   	        return 4;
+   	    }
+   	  }
+
+   	  destroy() {
+   	    if (this.prevArg) {
+   	      this.prevArg.delete();
+   	    }
+   	    this.context.deleteTexture(this.texture);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelArray
+   	};
+   	},{"../../../input":110,"./index":59}],41:[function(require,module,exports){
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueArray2 extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      return `const vec2 ${this.id} = vec2(${value[0]},${value[1]});\n`;
+   	    }
+   	    return `uniform vec2 ${this.id};\n`;
+   	  }
+
+   	  getStringValueHandler() {
+   	    if (this.origin === 'constants') return '';
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform2fv(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueArray2
+   	};
+   	},{"./index":59}],42:[function(require,module,exports){
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueArray3 extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      return `const vec3 ${this.id} = vec3(${value[0]},${value[1]},${value[2]});\n`;
+   	    }
+   	    return `uniform vec3 ${this.id};\n`;
+   	  }
+
+   	  getStringValueHandler() {
+   	    if (this.origin === 'constants') return '';
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform3fv(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueArray3
+   	};
+   	},{"./index":59}],43:[function(require,module,exports){
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueArray4 extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      return `const vec4 ${this.id} = vec4(${value[0]},${value[1]},${value[2]},${value[3]});\n`;
+   	    }
+   	    return `uniform vec4 ${this.id};\n`;
+   	  }
+
+   	  getStringValueHandler() {
+   	    if (this.origin === 'constants') return '';
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform4fv(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueArray4
+   	};
+   	},{"./index":59}],44:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueBoolean extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      return `const bool ${this.id} = ${value};\n`;
+   	    }
+   	    return `uniform bool ${this.id};\n`;
+   	  }
+
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform1i(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueBoolean
+   	};
+   	},{"../../../utils":114,"./index":59}],45:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueHTMLImage } = require('./html-image');
+
+   	class WebGLKernelValueDynamicHTMLImage extends WebGLKernelValueHTMLImage {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    const { width, height } = value;
+   	    this.checkSize(width, height);
+   	    this.dimensions = [width, height, 1];
+   	    this.textureSize = [width, height];
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicHTMLImage
+   	};
+   	},{"../../../utils":114,"./html-image":57}],46:[function(require,module,exports){
+   	const { WebGLKernelValueDynamicHTMLImage } = require('./dynamic-html-image');
+
+   	class WebGLKernelValueDynamicHTMLVideo extends WebGLKernelValueDynamicHTMLImage {}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicHTMLVideo
+   	};
+   	},{"./dynamic-html-image":45}],47:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueMemoryOptimizedNumberTexture } = require('./memory-optimized-number-texture');
+
+   	class WebGLKernelValueDynamicMemoryOptimizedNumberTexture extends WebGLKernelValueMemoryOptimizedNumberTexture {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(inputTexture) {
+   	    this.dimensions = inputTexture.dimensions;
+   	    this.checkSize(inputTexture.size[0], inputTexture.size[1]);
+   	    this.textureSize = inputTexture.size;
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(inputTexture);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicMemoryOptimizedNumberTexture
+   	};
+   	},{"../../../utils":114,"./memory-optimized-number-texture":61}],48:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueNumberTexture } = require('./number-texture');
+
+   	class WebGLKernelValueDynamicNumberTexture extends WebGLKernelValueNumberTexture {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.dimensions = value.dimensions;
+   	    this.checkSize(value.size[0], value.size[1]);
+   	    this.textureSize = value.size;
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicNumberTexture
+   	};
+   	},{"../../../utils":114,"./number-texture":62}],49:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray } = require('./single-array');
+
+   	class WebGLKernelValueDynamicSingleArray extends WebGLKernelValueSingleArray {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.dimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicSingleArray
+   	};
+   	},{"../../../utils":114,"./single-array":63}],50:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray1DI } = require('./single-array1d-i');
+
+   	class WebGLKernelValueDynamicSingleArray1DI extends WebGLKernelValueSingleArray1DI {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicSingleArray1DI
+   	};
+   	},{"../../../utils":114,"./single-array1d-i":64}],51:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray2DI } = require('./single-array2d-i');
+
+   	class WebGLKernelValueDynamicSingleArray2DI extends WebGLKernelValueSingleArray2DI {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicSingleArray2DI
+   	};
+   	},{"../../../utils":114,"./single-array2d-i":65}],52:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray3DI } = require('./single-array3d-i');
+
+   	class WebGLKernelValueDynamicSingleArray3DI extends WebGLKernelValueSingleArray3DI {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicSingleArray3DI
+   	};
+   	},{"../../../utils":114,"./single-array3d-i":66}],53:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleInput } = require('./single-input');
+
+   	class WebGLKernelValueDynamicSingleInput extends WebGLKernelValueSingleInput {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    let [w, h, d] = value.size;
+   	    this.dimensions = new Int32Array([w || 1, h || 1, d || 1]);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicSingleInput
+   	};
+   	},{"../../../utils":114,"./single-input":67}],54:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueUnsignedArray } = require('./unsigned-array');
+
+   	class WebGLKernelValueDynamicUnsignedArray extends WebGLKernelValueUnsignedArray {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.dimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedPackedTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * (4 / this.bitRatio);
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    const Type = this.getTransferArrayType(value);
+   	    this.preUploadValue = new Type(this.uploadArrayLength);
+   	    this.uploadValue = new Uint8Array(this.preUploadValue.buffer);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicUnsignedArray
+   	};
+   	},{"../../../utils":114,"./unsigned-array":68}],55:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueUnsignedInput } = require('./unsigned-input');
+
+   	class WebGLKernelValueDynamicUnsignedInput extends WebGLKernelValueUnsignedInput {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    let [w, h, d] = value.size;
+   	    this.dimensions = new Int32Array([w || 1, h || 1, d || 1]);
+   	    this.textureSize = utils.getMemoryOptimizedPackedTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * (4 / this.bitRatio);
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    const Type = this.getTransferArrayType(value.value);
+   	    this.preUploadValue = new Type(this.uploadArrayLength);
+   	    this.uploadValue = new Uint8Array(this.preUploadValue.buffer);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueDynamicUnsignedInput
+   	};
+   	},{"../../../utils":114,"./unsigned-input":69}],56:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueFloat extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      if (Number.isInteger(value)) {
+   	        return `const float ${this.id} = ${value}.0;\n`;
+   	      }
+   	      return `const float ${this.id} = ${value};\n`;
+   	    }
+   	    return `uniform float ${this.id};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform1f(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueFloat
+   	};
+   	},{"../../../utils":114,"./index":59}],57:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueHTMLImage extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    const { width, height } = value;
+   	    this.checkSize(width, height);
+   	    this.dimensions = [width, height, 1];
+   	    this.textureSize = [width, height];
+   	    this.uploadValue = value;
+   	  }
+
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(inputImage) {
+   	    if (inputImage.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(inputImage.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.uploadValue = inputImage);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueHTMLImage
+   	};
+   	},{"../../../utils":114,"./array":40}],58:[function(require,module,exports){
+   	const { WebGLKernelValueHTMLImage } = require('./html-image');
+
+   	class WebGLKernelValueHTMLVideo extends WebGLKernelValueHTMLImage {}
+
+   	module.exports = {
+   	  WebGLKernelValueHTMLVideo
+   	};
+   	},{"./html-image":57}],59:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { KernelValue } = require('../../kernel-value');
+
+   	class WebGLKernelValue extends KernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.dimensionsId = null;
+   	    this.sizeId = null;
+   	    this.initialValueConstructor = value.constructor;
+   	    this.onRequestTexture = settings.onRequestTexture;
+   	    this.onRequestIndex = settings.onRequestIndex;
+   	    this.uploadValue = null;
+   	    this.textureSize = null;
+   	    this.bitRatio = null;
+   	    this.prevArg = null;
+   	  }
+
+   	  get id() {
+   	    return `${this.origin}_${utils.sanitizeName(this.name)}`;
+   	  }
+
+   	  setup() {}
+
+   	  getTransferArrayType(value) {
+   	    if (Array.isArray(value[0])) {
+   	      return this.getTransferArrayType(value[0]);
+   	    }
+   	    switch (value.constructor) {
+   	      case Array:
+   	      case Int32Array:
+   	      case Int16Array:
+   	      case Int8Array:
+   	        return Float32Array;
+   	      case Uint8ClampedArray:
+   	      case Uint8Array:
+   	      case Uint16Array:
+   	      case Uint32Array:
+   	      case Float32Array:
+   	      case Float64Array:
+   	        return value.constructor;
+   	    }
+   	    console.warn('Unfamiliar constructor type.  Will go ahead and use, but likley this may result in a transfer of zeros');
+   	    return value.constructor;
+   	  }
+
+   	  getStringValueHandler() {
+   	    throw new Error(`"getStringValueHandler" not implemented on ${this.constructor.name}`);
+   	  }
+
+   	  getVariablePrecisionString() {
+   	    return this.kernel.getVariablePrecisionString(this.textureSize || undefined, this.tactic || undefined);
+   	  }
+
+   	  destroy() {}
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValue
+   	};
+   	},{"../../../utils":114,"../../kernel-value":35}],60:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGLKernelValue } = require('./index');
+
+   	class WebGLKernelValueInteger extends WebGLKernelValue {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.uploadValue = value;
+   	  }
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+   	  getSource(value) {
+   	    if (this.origin === 'constants') {
+   	      return `const int ${this.id} = ${ parseInt(value) };\n`;
+   	    }
+   	    return `uniform int ${this.id};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform1i(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueInteger
+   	};
+   	},{"../../../utils":114,"./index":59}],61:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	const sameError = `Source and destination textures are the same.  Use immutable = true and manually cleanup kernel output texture memory with texture.delete()`;
+
+   	class WebGLKernelValueMemoryOptimizedNumberTexture extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    const [width, height] = value.size;
+   	    this.checkSize(width, height);
+   	    this.dimensions = value.dimensions;
+   	    this.textureSize = value.size;
+   	    this.uploadValue = value.texture;
+   	    this.forceUploadEachRun = true;
+   	  }
+
+   	  setup() {
+   	    this.setupTexture();
+   	  }
+
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName}.texture;\n`;
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(inputTexture) {
+   	    if (inputTexture.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(inputTexture.constructor);
+   	      return;
+   	    }
+   	    if (this.checkContext && inputTexture.context !== this.context) {
+   	      throw new Error(`Value ${this.name} (${this.type}) must be from same context`);
+   	    }
+
+   	    const { kernel, context: gl } = this;
+   	    if (kernel.pipeline) {
+   	      if (kernel.immutable) {
+   	        kernel.updateTextureArgumentRefs(this, inputTexture);
+   	      } else {
+   	        if (kernel.texture && kernel.texture.texture === inputTexture.texture) {
+   	          throw new Error(sameError);
+   	        } else if (kernel.mappedTextures) {
+   	          const { mappedTextures } = kernel;
+   	          for (let i = 0; i < mappedTextures.length; i++) {
+   	            if (mappedTextures[i].texture === inputTexture.texture) {
+   	              throw new Error(sameError);
+   	            }
+   	          }
+   	        }
+   	      }
+   	    }
+
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.uploadValue = inputTexture.texture);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueMemoryOptimizedNumberTexture,
+   	  sameError
+   	};
+   	},{"../../../utils":114,"./array":40}],62:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+   	const { sameError } = require('./memory-optimized-number-texture');
+
+   	class WebGLKernelValueNumberTexture extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    const [width, height] = value.size;
+   	    this.checkSize(width, height);
+   	    const { size: textureSize, dimensions } = value;
+   	    this.bitRatio = this.getBitRatio(value);
+   	    this.dimensions = dimensions;
+   	    this.textureSize = textureSize;
+   	    this.uploadValue = value.texture;
+   	    this.forceUploadEachRun = true;
+   	  }
+
+   	  setup() {
+   	    this.setupTexture();
+   	  }
+
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName}.texture;\n`;
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(inputTexture) {
+   	    if (inputTexture.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(inputTexture.constructor);
+   	      return;
+   	    }
+   	    if (this.checkContext && inputTexture.context !== this.context) {
+   	      throw new Error(`Value ${this.name} (${this.type}) must be from same context`);
+   	    }
+
+   	    const { kernel, context: gl } = this;
+   	    if (kernel.pipeline) {
+   	      if (kernel.immutable) {
+   	        kernel.updateTextureArgumentRefs(this, inputTexture);
+   	      } else {
+   	        if (kernel.texture && kernel.texture.texture === inputTexture.texture) {
+   	          throw new Error(sameError);
+   	        } else if (kernel.mappedTextures) {
+   	          const { mappedTextures } = kernel;
+   	          for (let i = 0; i < mappedTextures.length; i++) {
+   	            if (mappedTextures[i].texture === inputTexture.texture) {
+   	              throw new Error(sameError);
+   	            }
+   	          }
+   	        }
+   	      }
+   	    }
+
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.uploadValue = inputTexture.texture);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueNumberTexture
+   	};
+   	},{"../../../utils":114,"./array":40,"./memory-optimized-number-texture":61}],63:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueSingleArray extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = 4;
+   	    this.dimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const uploadValue_${this.name} = new Float32Array(${this.uploadArrayLength})`,
+   	      `flattenTo(${this.varName}, uploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueSingleArray
+   	};
+   	},{"../../../utils":114,"./array":40}],64:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueSingleArray1DI extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = 4;
+   	    this.setShape(value);
+   	  }
+
+   	  setShape(value) {
+   	    const valueDimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(valueDimensions, this.bitRatio);
+   	    this.dimensions = new Int32Array([valueDimensions[1], 1, 1]);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const uploadValue_${this.name} = new Float32Array(${this.uploadArrayLength})`,
+   	      `flattenTo(${this.varName}, uploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flatten2dArrayTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueSingleArray1DI
+   	};
+   	},{"../../../utils":114,"./array":40}],65:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueSingleArray2DI extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = 4;
+   	    this.setShape(value);
+   	  }
+
+   	  setShape(value) {
+   	    const valueDimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(valueDimensions, this.bitRatio);
+   	    this.dimensions = new Int32Array([valueDimensions[1], valueDimensions[2], 1]);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const uploadValue_${this.name} = new Float32Array(${this.uploadArrayLength})`,
+   	      `flattenTo(${this.varName}, uploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flatten3dArrayTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueSingleArray2DI
+   	};
+   	},{"../../../utils":114,"./array":40}],66:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueSingleArray3DI extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = 4;
+   	    this.setShape(value);
+   	  }
+
+   	  setShape(value) {
+   	    const valueDimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(valueDimensions, this.bitRatio);
+   	    this.dimensions = new Int32Array([valueDimensions[1], valueDimensions[2], valueDimensions[3]]);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const uploadValue_${this.name} = new Float32Array(${this.uploadArrayLength})`,
+   	      `flattenTo(${this.varName}, uploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flatten4dArrayTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueSingleArray3DI
+   	};
+   	},{"../../../utils":114,"./array":40}],67:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueSingleInput extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = 4;
+   	    let [w, h, d] = value.size;
+   	    this.dimensions = new Int32Array([w || 1, h || 1, d || 1]);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const uploadValue_${this.name} = new Float32Array(${this.uploadArrayLength})`,
+   	      `flattenTo(${this.varName}.value, uploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(input) {
+   	    if (input.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(input.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(input.value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueSingleInput
+   	};
+   	},{"../../../utils":114,"./array":40}],68:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueUnsignedArray extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = this.getBitRatio(value);
+   	    this.dimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedPackedTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * (4 / this.bitRatio);
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.TranserArrayType = this.getTransferArrayType(value);
+   	    this.preUploadValue = new this.TranserArrayType(this.uploadArrayLength);
+   	    this.uploadValue = new Uint8Array(this.preUploadValue.buffer);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const preUploadValue_${this.name} = new ${this.TranserArrayType.name}(${this.uploadArrayLength})`,
+   	      `const uploadValue_${this.name} = new Uint8Array(preUploadValue_${this.name}.buffer)`,
+   	      `flattenTo(${this.varName}, preUploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.preUploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueUnsignedArray
+   	};
+   	},{"../../../utils":114,"./array":40}],69:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('./array');
+
+   	class WebGLKernelValueUnsignedInput extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.bitRatio = this.getBitRatio(value);
+   	    const [w, h, d] = value.size;
+   	    this.dimensions = new Int32Array([w || 1, h || 1, d || 1]);
+   	    this.textureSize = utils.getMemoryOptimizedPackedTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * (4 / this.bitRatio);
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.TranserArrayType = this.getTransferArrayType(value.value);
+   	    this.preUploadValue = new this.TranserArrayType(this.uploadArrayLength);
+   	    this.uploadValue = new Uint8Array(this.preUploadValue.buffer);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return utils.linesToString([
+   	      `const preUploadValue_${this.name} = new ${this.TranserArrayType.name}(${this.uploadArrayLength})`,
+   	      `const uploadValue_${this.name} = new Uint8Array(preUploadValue_${this.name}.buffer)`,
+   	      `flattenTo(${this.varName}.value, preUploadValue_${this.name})`,
+   	    ]);
+   	  }
+
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(input) {
+   	    if (input.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(input.value, this.preUploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernelValueUnsignedInput
+   	};
+   	},{"../../../utils":114,"./array":40}],70:[function(require,module,exports){
+   	const { GLKernel } = require('../gl/kernel');
+   	const { FunctionBuilder } = require('../function-builder');
+   	const { WebGLFunctionNode } = require('./function-node');
+   	const { utils } = require('../../utils');
+   	const mrud = require('../../plugins/math-random-uniformly-distributed');
+   	const { fragmentShader } = require('./fragment-shader');
+   	const { vertexShader } = require('./vertex-shader');
+   	const { glKernelString } = require('../gl/kernel-string');
+   	const { lookupKernelValueType } = require('./kernel-value-maps');
+
+   	let isSupported = null;
+   	let testCanvas = null;
+   	let testContext = null;
+   	let testExtensions = null;
+   	let features = null;
+
+   	const plugins = [mrud];
+   	const canvases = [];
+   	const maxTexSizes = {};
+
+
+   	class WebGLKernel extends GLKernel {
+   	  static get isSupported() {
+   	    if (isSupported !== null) {
+   	      return isSupported;
+   	    }
+   	    this.setupFeatureChecks();
+   	    isSupported = this.isContextMatch(testContext);
+   	    return isSupported;
+   	  }
+
+   	  static setupFeatureChecks() {
+   	    if (typeof document !== 'undefined') {
+   	      testCanvas = document.createElement('canvas');
+   	    } else if (typeof OffscreenCanvas !== 'undefined') {
+   	      testCanvas = new OffscreenCanvas(0, 0);
+   	    }
+   	    if (!testCanvas) return;
+   	    testContext = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+   	    if (!testContext || !testContext.getExtension) return;
+   	    testExtensions = {
+   	      OES_texture_float: testContext.getExtension('OES_texture_float'),
+   	      OES_texture_float_linear: testContext.getExtension('OES_texture_float_linear'),
+   	      OES_element_index_uint: testContext.getExtension('OES_element_index_uint'),
+   	      WEBGL_draw_buffers: testContext.getExtension('WEBGL_draw_buffers'),
+   	    };
+   	    features = this.getFeatures();
+   	  }
+
+   	  static isContextMatch(context) {
+   	    if (typeof WebGLRenderingContext !== 'undefined') {
+   	      return context instanceof WebGLRenderingContext;
+   	    }
+   	    return false;
+   	  }
+
+   	  static getIsTextureFloat() {
+   	    return Boolean(testExtensions.OES_texture_float);
+   	  }
+
+   	  static getIsDrawBuffers() {
+   	    return Boolean(testExtensions.WEBGL_draw_buffers);
+   	  }
+
+   	  static getChannelCount() {
+   	    return testExtensions.WEBGL_draw_buffers ?
+   	      testContext.getParameter(testExtensions.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL) :
+   	      1;
+   	  }
+
+   	  static getMaxTextureSize() {
+   	    return testContext.getParameter(testContext.MAX_TEXTURE_SIZE);
+   	  }
+
+   	  static lookupKernelValueType(type, dynamic, precision, value) {
+   	    return lookupKernelValueType(type, dynamic, precision, value);
+   	  }
+
+   	  static get testCanvas() {
+   	    return testCanvas;
+   	  }
+
+   	  static get testContext() {
+   	    return testContext;
+   	  }
+
+   	  static get features() {
+   	    return features;
+   	  }
+
+   	  static get fragmentShader() {
+   	    return fragmentShader;
+   	  }
+
+   	  static get vertexShader() {
+   	    return vertexShader;
+   	  }
+
+   	  constructor(source, settings) {
+   	    super(source, settings);
+   	    this.program = null;
+   	    this.pipeline = settings.pipeline;
+   	    this.endianness = utils.systemEndianness();
+   	    this.extensions = {};
+   	    this.argumentTextureCount = 0;
+   	    this.constantTextureCount = 0;
+   	    this.fragShader = null;
+   	    this.vertShader = null;
+   	    this.drawBuffersMap = null;
+
+   	    this.maxTexSize = null;
+   	    this.onRequestSwitchKernel = null;
+
+   	    this.texture = null;
+   	    this.mappedTextures = null;
+   	    this.mergeSettings(source.settings || settings);
+
+   	    this.threadDim = null;
+   	    this.framebuffer = null;
+   	    this.buffer = null;
+
+   	    this.textureCache = [];
+   	    this.programUniformLocationCache = {};
+   	    this.uniform1fCache = {};
+   	    this.uniform1iCache = {};
+   	    this.uniform2fCache = {};
+   	    this.uniform2fvCache = {};
+   	    this.uniform2ivCache = {};
+   	    this.uniform3fvCache = {};
+   	    this.uniform3ivCache = {};
+   	    this.uniform4fvCache = {};
+   	    this.uniform4ivCache = {};
+   	  }
+
+   	  initCanvas() {
+   	    if (typeof document !== 'undefined') {
+   	      const canvas = document.createElement('canvas');
+   	      canvas.width = 2;
+   	      canvas.height = 2;
+   	      return canvas;
+   	    } else if (typeof OffscreenCanvas !== 'undefined') {
+   	      return new OffscreenCanvas(0, 0);
+   	    }
+   	  }
+
+   	  initContext() {
+   	    const settings = {
+   	      alpha: false,
+   	      depth: false,
+   	      antialias: false
+   	    };
+   	    return this.canvas.getContext('webgl', settings) || this.canvas.getContext('experimental-webgl', settings);
+   	  }
+
+   	  initPlugins(settings) {
+   	    const pluginsToUse = [];
+   	    const { source } = this;
+   	    if (typeof source === 'string') {
+   	      for (let i = 0; i < plugins.length; i++) {
+   	        const plugin = plugins[i];
+   	        if (source.match(plugin.functionMatch)) {
+   	          pluginsToUse.push(plugin);
+   	        }
+   	      }
+   	    } else if (typeof source === 'object') {
+   	      if (settings.pluginNames) { 
+   	        for (let i = 0; i < plugins.length; i++) {
+   	          const plugin = plugins[i];
+   	          const usePlugin = settings.pluginNames.some(pluginName => pluginName === plugin.name);
+   	          if (usePlugin) {
+   	            pluginsToUse.push(plugin);
+   	          }
+   	        }
+   	      }
+   	    }
+   	    return pluginsToUse;
+   	  }
+
+   	  initExtensions() {
+   	    this.extensions = {
+   	      OES_texture_float: this.context.getExtension('OES_texture_float'),
+   	      OES_texture_float_linear: this.context.getExtension('OES_texture_float_linear'),
+   	      OES_element_index_uint: this.context.getExtension('OES_element_index_uint'),
+   	      WEBGL_draw_buffers: this.context.getExtension('WEBGL_draw_buffers'),
+   	      WEBGL_color_buffer_float: this.context.getExtension('WEBGL_color_buffer_float'),
+   	    };
+   	  }
+
+   	  validateSettings(args) {
+   	    if (!this.validate) {
+   	      this.texSize = utils.getKernelTextureSize({
+   	        optimizeFloatMemory: this.optimizeFloatMemory,
+   	        precision: this.precision,
+   	      }, this.output);
+   	      return;
+   	    }
+
+   	    const { features } = this.constructor;
+
+   	    if (this.optimizeFloatMemory === true && !features.isTextureFloat) {
+   	      throw new Error('Float textures are not supported');
+   	    } else if (this.precision === 'single' && !features.isFloatRead) {
+   	      throw new Error('Single precision not supported');
+   	    } else if (!this.graphical && this.precision === null && features.isTextureFloat) {
+   	      this.precision = features.isFloatRead ? 'single' : 'unsigned';
+   	    }
+
+   	    if (this.subKernels && this.subKernels.length > 0 && !this.extensions.WEBGL_draw_buffers) {
+   	      throw new Error('could not instantiate draw buffers extension');
+   	    }
+
+   	    if (this.fixIntegerDivisionAccuracy === null) {
+   	      this.fixIntegerDivisionAccuracy = !features.isIntegerDivisionAccurate;
+   	    } else if (this.fixIntegerDivisionAccuracy && features.isIntegerDivisionAccurate) {
+   	      this.fixIntegerDivisionAccuracy = false;
+   	    }
+
+   	    this.checkOutput();
+
+   	    if (!this.output || this.output.length === 0) {
+   	      if (args.length !== 1) {
+   	        throw new Error('Auto output only supported for kernels with only one input');
+   	      }
+
+   	      const argType = utils.getVariableType(args[0], this.strictIntegers);
+   	      switch (argType) {
+   	        case 'Array':
+   	          this.output = utils.getDimensions(argType);
+   	          break;
+   	        case 'NumberTexture':
+   	        case 'MemoryOptimizedNumberTexture':
+   	        case 'ArrayTexture(1)':
+   	        case 'ArrayTexture(2)':
+   	        case 'ArrayTexture(3)':
+   	        case 'ArrayTexture(4)':
+   	          this.output = args[0].output;
+   	          break;
+   	        default:
+   	          throw new Error('Auto output not supported for input type: ' + argType);
+   	      }
+   	    }
+
+   	    if (this.graphical) {
+   	      if (this.output.length !== 2) {
+   	        throw new Error('Output must have 2 dimensions on graphical mode');
+   	      }
+
+   	      if (this.precision === 'precision') {
+   	        this.precision = 'unsigned';
+   	        console.warn('Cannot use graphical mode and single precision at the same time');
+   	      }
+
+   	      this.texSize = utils.clone(this.output);
+   	      return;
+   	    } else if (this.precision === null && features.isTextureFloat) {
+   	      this.precision = 'single';
+   	    }
+
+   	    this.texSize = utils.getKernelTextureSize({
+   	      optimizeFloatMemory: this.optimizeFloatMemory,
+   	      precision: this.precision,
+   	    }, this.output);
+
+   	    this.checkTextureSize();
+   	  }
+
+   	  updateMaxTexSize() {
+   	    const { texSize, canvas } = this;
+   	    if (this.maxTexSize === null) {
+   	      let canvasIndex = canvases.indexOf(canvas);
+   	      if (canvasIndex === -1) {
+   	        canvasIndex = canvases.length;
+   	        canvases.push(canvas);
+   	        maxTexSizes[canvasIndex] = [texSize[0], texSize[1]];
+   	      }
+   	      this.maxTexSize = maxTexSizes[canvasIndex];
+   	    }
+   	    if (this.maxTexSize[0] < texSize[0]) {
+   	      this.maxTexSize[0] = texSize[0];
+   	    }
+   	    if (this.maxTexSize[1] < texSize[1]) {
+   	      this.maxTexSize[1] = texSize[1];
+   	    }
+   	  }
+
+   	  setupArguments(args) {
+   	    this.kernelArguments = [];
+   	    this.argumentTextureCount = 0;
+   	    const needsArgumentTypes = this.argumentTypes === null;
+   	    if (needsArgumentTypes) {
+   	      this.argumentTypes = [];
+   	    }
+   	    this.argumentSizes = [];
+   	    this.argumentBitRatios = [];
+
+   	    if (args.length < this.argumentNames.length) {
+   	      throw new Error('not enough arguments for kernel');
+   	    } else if (args.length > this.argumentNames.length) {
+   	      throw new Error('too many arguments for kernel');
+   	    }
+
+   	    const { context: gl } = this;
+   	    let textureIndexes = 0;
+
+   	    const onRequestTexture = () => {
+   	      return this.createTexture();
+   	    };
+   	    const onRequestIndex = () => {
+   	      return this.constantTextureCount + textureIndexes++;
+   	    };
+   	    const onUpdateValueMismatch = (constructor) => {
+   	      this.switchKernels({
+   	        type: 'argumentMismatch',
+   	        needed: constructor
+   	      });
+   	    };
+   	    const onRequestContextHandle = () => {
+   	      return gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount++;
+   	    };
+
+   	    for (let index = 0; index < args.length; index++) {
+   	      const value = args[index];
+   	      const name = this.argumentNames[index];
+   	      let type;
+   	      if (needsArgumentTypes) {
+   	        type = utils.getVariableType(value, this.strictIntegers);
+   	        this.argumentTypes.push(type);
+   	      } else {
+   	        type = this.argumentTypes[index];
+   	      }
+   	      const KernelValue = this.constructor.lookupKernelValueType(type, this.dynamicArguments ? 'dynamic' : 'static', this.precision, args[index]);
+   	      if (KernelValue === null) {
+   	        return this.requestFallback(args);
+   	      }
+   	      const kernelArgument = new KernelValue(value, {
+   	        name,
+   	        type,
+   	        tactic: this.tactic,
+   	        origin: 'user',
+   	        context: gl,
+   	        checkContext: this.checkContext,
+   	        kernel: this,
+   	        strictIntegers: this.strictIntegers,
+   	        onRequestTexture,
+   	        onRequestIndex,
+   	        onUpdateValueMismatch,
+   	        onRequestContextHandle,
+   	      });
+   	      this.kernelArguments.push(kernelArgument);
+   	      kernelArgument.setup();
+   	      this.argumentSizes.push(kernelArgument.textureSize);
+   	      this.argumentBitRatios[index] = kernelArgument.bitRatio;
+   	    }
+   	  }
+
+   	  createTexture() {
+   	    const texture = this.context.createTexture();
+   	    this.textureCache.push(texture);
+   	    return texture;
+   	  }
+
+   	  setupConstants(args) {
+   	    const { context: gl } = this;
+   	    this.kernelConstants = [];
+   	    this.forceUploadKernelConstants = [];
+   	    let needsConstantTypes = this.constantTypes === null;
+   	    if (needsConstantTypes) {
+   	      this.constantTypes = {};
+   	    }
+   	    this.constantBitRatios = {};
+   	    let textureIndexes = 0;
+   	    for (const name in this.constants) {
+   	      const value = this.constants[name];
+   	      let type;
+   	      if (needsConstantTypes) {
+   	        type = utils.getVariableType(value, this.strictIntegers);
+   	        this.constantTypes[name] = type;
+   	      } else {
+   	        type = this.constantTypes[name];
+   	      }
+   	      const KernelValue = this.constructor.lookupKernelValueType(type, 'static', this.precision, value);
+   	      if (KernelValue === null) {
+   	        return this.requestFallback(args);
+   	      }
+   	      const kernelValue = new KernelValue(value, {
+   	        name,
+   	        type,
+   	        tactic: this.tactic,
+   	        origin: 'constants',
+   	        context: this.context,
+   	        checkContext: this.checkContext,
+   	        kernel: this,
+   	        strictIntegers: this.strictIntegers,
+   	        onRequestTexture: () => {
+   	          return this.createTexture();
+   	        },
+   	        onRequestIndex: () => {
+   	          return textureIndexes++;
+   	        },
+   	        onRequestContextHandle: () => {
+   	          return gl.TEXTURE0 + this.constantTextureCount++;
+   	        }
+   	      });
+   	      this.constantBitRatios[name] = kernelValue.bitRatio;
+   	      this.kernelConstants.push(kernelValue);
+   	      kernelValue.setup();
+   	      if (kernelValue.forceUploadEachRun) {
+   	        this.forceUploadKernelConstants.push(kernelValue);
+   	      }
+   	    }
+   	  }
+
+   	  build() {
+   	    if (this.built) return;
+   	    this.initExtensions();
+   	    this.validateSettings(arguments);
+   	    this.setupConstants(arguments);
+   	    if (this.fallbackRequested) return;
+   	    this.setupArguments(arguments);
+   	    if (this.fallbackRequested) return;
+   	    this.updateMaxTexSize();
+   	    this.translateSource();
+   	    const failureResult = this.pickRenderStrategy(arguments);
+   	    if (failureResult) {
+   	      return failureResult;
+   	    }
+   	    const { texSize, context: gl, canvas } = this;
+   	    gl.enable(gl.SCISSOR_TEST);
+   	    if (this.pipeline && this.precision === 'single') {
+   	      gl.viewport(0, 0, this.maxTexSize[0], this.maxTexSize[1]);
+   	      canvas.width = this.maxTexSize[0];
+   	      canvas.height = this.maxTexSize[1];
+   	    } else {
+   	      gl.viewport(0, 0, this.maxTexSize[0], this.maxTexSize[1]);
+   	      canvas.width = this.maxTexSize[0];
+   	      canvas.height = this.maxTexSize[1];
+   	    }
+   	    const threadDim = this.threadDim = Array.from(this.output);
+   	    while (threadDim.length < 3) {
+   	      threadDim.push(1);
+   	    }
+
+   	    const compiledVertexShader = this.getVertexShader(arguments);
+   	    const vertShader = gl.createShader(gl.VERTEX_SHADER);
+   	    gl.shaderSource(vertShader, compiledVertexShader);
+   	    gl.compileShader(vertShader);
+   	    this.vertShader = vertShader;
+
+   	    const compiledFragmentShader = this.getFragmentShader(arguments);
+   	    const fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+   	    gl.shaderSource(fragShader, compiledFragmentShader);
+   	    gl.compileShader(fragShader);
+   	    this.fragShader = fragShader;
+
+   	    if (this.debug) {
+   	      console.log('GLSL Shader Output:');
+   	      console.log(compiledFragmentShader);
+   	    }
+
+   	    if (!gl.getShaderParameter(vertShader, gl.COMPILE_STATUS)) {
+   	      throw new Error('Error compiling vertex shader: ' + gl.getShaderInfoLog(vertShader));
+   	    }
+   	    if (!gl.getShaderParameter(fragShader, gl.COMPILE_STATUS)) {
+   	      throw new Error('Error compiling fragment shader: ' + gl.getShaderInfoLog(fragShader));
+   	    }
+
+   	    const program = this.program = gl.createProgram();
+   	    gl.attachShader(program, vertShader);
+   	    gl.attachShader(program, fragShader);
+   	    gl.linkProgram(program);
+   	    this.framebuffer = gl.createFramebuffer();
+   	    this.framebuffer.width = texSize[0];
+   	    this.framebuffer.height = texSize[1];
+   	    this.rawValueFramebuffers = {};
+
+   	    const vertices = new Float32Array([-1, -1,
+   	      1, -1, -1, 1,
+   	      1, 1
+   	    ]);
+   	    const texCoords = new Float32Array([
+   	      0, 0,
+   	      1, 0,
+   	      0, 1,
+   	      1, 1
+   	    ]);
+
+   	    const texCoordOffset = vertices.byteLength;
+
+   	    let buffer = this.buffer;
+   	    if (!buffer) {
+   	      buffer = this.buffer = gl.createBuffer();
+   	      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+   	      gl.bufferData(gl.ARRAY_BUFFER, vertices.byteLength + texCoords.byteLength, gl.STATIC_DRAW);
+   	    } else {
+   	      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+   	    }
+
+   	    gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices);
+   	    gl.bufferSubData(gl.ARRAY_BUFFER, texCoordOffset, texCoords);
+
+   	    const aPosLoc = gl.getAttribLocation(this.program, 'aPos');
+   	    gl.enableVertexAttribArray(aPosLoc);
+   	    gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
+   	    const aTexCoordLoc = gl.getAttribLocation(this.program, 'aTexCoord');
+   	    gl.enableVertexAttribArray(aTexCoordLoc);
+   	    gl.vertexAttribPointer(aTexCoordLoc, 2, gl.FLOAT, false, 0, texCoordOffset);
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+
+   	    let i = 0;
+   	    gl.useProgram(this.program);
+   	    for (let p in this.constants) {
+   	      this.kernelConstants[i++].updateValue(this.constants[p]);
+   	    }
+
+   	    this._setupOutputTexture();
+   	    if (
+   	      this.subKernels !== null &&
+   	      this.subKernels.length > 0
+   	    ) {
+   	      this._mappedTextureSwitched = {};
+   	      this._setupSubOutputTextures();
+   	    }
+   	    this.buildSignature(arguments);
+   	    this.built = true;
+   	  }
+
+   	  translateSource() {
+   	    const functionBuilder = FunctionBuilder.fromKernel(this, WebGLFunctionNode, {
+   	      fixIntegerDivisionAccuracy: this.fixIntegerDivisionAccuracy
+   	    });
+   	    this.translatedSource = functionBuilder.getPrototypeString('kernel');
+   	    this.setupReturnTypes(functionBuilder);
+   	  }
+
+   	  setupReturnTypes(functionBuilder) {
+   	    if (!this.graphical && !this.returnType) {
+   	      this.returnType = functionBuilder.getKernelResultType();
+   	    }
+
+   	    if (this.subKernels && this.subKernels.length > 0) {
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        const subKernel = this.subKernels[i];
+   	        if (!subKernel.returnType) {
+   	          subKernel.returnType = functionBuilder.getSubKernelResultType(i);
+   	        }
+   	      }
+   	    }
+   	  }
+
+   	  run() {
+   	    const { kernelArguments, texSize, forceUploadKernelConstants, context: gl } = this;
+
+   	    gl.useProgram(this.program);
+   	    gl.scissor(0, 0, texSize[0], texSize[1]);
+   	    if (this.dynamicOutput) {
+   	      this.setUniform3iv('uOutputDim', new Int32Array(this.threadDim));
+   	      this.setUniform2iv('uTexSize', texSize);
+   	    }
+
+   	    this.setUniform2f('ratio', texSize[0] / this.maxTexSize[0], texSize[1] / this.maxTexSize[1]);
+
+   	    for (let i = 0; i < forceUploadKernelConstants.length; i++) {
+   	      const constant = forceUploadKernelConstants[i];
+   	      constant.updateValue(this.constants[constant.name]);
+   	      if (this.switchingKernels) return;
+   	    }
+   	    for (let i = 0; i < kernelArguments.length; i++) {
+   	      kernelArguments[i].updateValue(arguments[i]);
+   	      if (this.switchingKernels) return;
+   	    }
+
+   	    if (this.plugins) {
+   	      for (let i = 0; i < this.plugins.length; i++) {
+   	        const plugin = this.plugins[i];
+   	        if (plugin.onBeforeRun) {
+   	          plugin.onBeforeRun(this);
+   	        }
+   	      }
+   	    }
+
+   	    if (this.graphical) {
+   	      if (this.pipeline) {
+   	        gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+   	        gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+   	        if (this.immutable) {
+   	          this._replaceOutputTexture();
+   	        }
+   	        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+   	        return this.immutable ? this.texture.clone() : this.texture;
+   	      }
+   	      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+   	      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+   	      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+   	      return;
+   	    }
+
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+   	    if (this.immutable) {
+   	      this._replaceOutputTexture();
+   	    }
+
+   	    if (this.subKernels !== null) {
+   	      if (this.immutable) {
+   	        this._replaceSubOutputTextures();
+   	      }
+   	      this.drawBuffers();
+   	    }
+
+   	    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+   	  }
+
+   	  drawBuffers() {
+   	    this.extensions.WEBGL_draw_buffers.drawBuffersWEBGL(this.drawBuffersMap);
+   	  }
+
+   	  getInternalFormat() {
+   	    return this.context.RGBA;
+   	  }
+   	  getTextureFormat() {
+   	    const { context: gl } = this;
+   	    switch (this.getInternalFormat()) {
+   	      case gl.RGBA:
+   	        return gl.RGBA;
+   	      default:
+   	        throw new Error('Unknown internal format');
+   	    }
+   	  }
+
+   	  _replaceOutputTexture() {
+   	    if (this.texture.beforeMutate() || this._textureSwitched) {
+   	      const gl = this.context;
+   	      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
+   	      this._textureSwitched = false;
+   	    }
+   	  }
+
+   	  _setupOutputTexture() {
+   	    const gl = this.context;
+   	    const texSize = this.texSize;
+   	    if (this.texture) {
+   	      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
+   	      return;
+   	    }
+   	    const texture = this.createTexture();
+   	    gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount);
+   	    gl.bindTexture(gl.TEXTURE_2D, texture);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	    const format = this.getInternalFormat();
+   	    if (this.precision === 'single') {
+   	      gl.texImage2D(gl.TEXTURE_2D, 0, format, texSize[0], texSize[1], 0, gl.RGBA, gl.FLOAT, null);
+   	    } else {
+   	      gl.texImage2D(gl.TEXTURE_2D, 0, format, texSize[0], texSize[1], 0, format, gl.UNSIGNED_BYTE, null);
+   	    }
+   	    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+   	    this.texture = new this.TextureConstructor({
+   	      texture,
+   	      size: texSize,
+   	      dimensions: this.threadDim,
+   	      output: this.output,
+   	      context: this.context,
+   	      internalFormat: this.getInternalFormat(),
+   	      textureFormat: this.getTextureFormat(),
+   	      kernel: this,
+   	    });
+   	  }
+
+   	  _replaceSubOutputTextures() {
+   	    const gl = this.context;
+   	    for (let i = 0; i < this.mappedTextures.length; i++) {
+   	      const mappedTexture = this.mappedTextures[i];
+   	      if (mappedTexture.beforeMutate() || this._mappedTextureSwitched[i]) {
+   	        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, mappedTexture.texture, 0);
+   	        this._mappedTextureSwitched[i] = false;
+   	      }
+   	    }
+   	  }
+
+   	  _setupSubOutputTextures() {
+   	    const gl = this.context;
+   	    if (this.mappedTextures) {
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
+   	      }
+   	      return;
+   	    }
+   	    const texSize = this.texSize;
+   	    this.drawBuffersMap = [gl.COLOR_ATTACHMENT0];
+   	    this.mappedTextures = [];
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const texture = this.createTexture();
+   	      this.drawBuffersMap.push(gl.COLOR_ATTACHMENT0 + i + 1);
+   	      gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount + i);
+   	      gl.bindTexture(gl.TEXTURE_2D, texture);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	      if (this.precision === 'single') {
+   	        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, texSize[0], texSize[1], 0, gl.RGBA, gl.FLOAT, null);
+   	      } else {
+   	        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, texSize[0], texSize[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+   	      }
+   	      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, texture, 0);
+
+   	      this.mappedTextures.push(new this.TextureConstructor({
+   	        texture,
+   	        size: texSize,
+   	        dimensions: this.threadDim,
+   	        output: this.output,
+   	        context: this.context,
+   	        internalFormat: this.getInternalFormat(),
+   	        textureFormat: this.getTextureFormat(),
+   	        kernel: this,
+   	      }));
+   	    }
+   	  }
+
+   	  setUniform1f(name, value) {
+   	    if (this.uniform1fCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform1fCache[name];
+   	      if (value === cache) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform1fCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform1f(loc, value);
+   	  }
+
+   	  setUniform1i(name, value) {
+   	    if (this.uniform1iCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform1iCache[name];
+   	      if (value === cache) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform1iCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform1i(loc, value);
+   	  }
+
+   	  setUniform2f(name, value1, value2) {
+   	    if (this.uniform2fCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform2fCache[name];
+   	      if (
+   	        value1 === cache[0] &&
+   	        value2 === cache[1]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform2fCache[name] = [value1, value2];
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform2f(loc, value1, value2);
+   	  }
+
+   	  setUniform2fv(name, value) {
+   	    if (this.uniform2fvCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform2fvCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform2fvCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform2fv(loc, value);
+   	  }
+
+   	  setUniform2iv(name, value) {
+   	    if (this.uniform2ivCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform2ivCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform2ivCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform2iv(loc, value);
+   	  }
+
+   	  setUniform3fv(name, value) {
+   	    if (this.uniform3fvCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform3fvCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1] &&
+   	        value[2] === cache[2]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform3fvCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform3fv(loc, value);
+   	  }
+
+   	  setUniform3iv(name, value) {
+   	    if (this.uniform3ivCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform3ivCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1] &&
+   	        value[2] === cache[2]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform3ivCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform3iv(loc, value);
+   	  }
+
+   	  setUniform4fv(name, value) {
+   	    if (this.uniform4fvCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform4fvCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1] &&
+   	        value[2] === cache[2] &&
+   	        value[3] === cache[3]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform4fvCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform4fv(loc, value);
+   	  }
+
+   	  setUniform4iv(name, value) {
+   	    if (this.uniform4ivCache.hasOwnProperty(name)) {
+   	      const cache = this.uniform4ivCache[name];
+   	      if (
+   	        value[0] === cache[0] &&
+   	        value[1] === cache[1] &&
+   	        value[2] === cache[2] &&
+   	        value[3] === cache[3]
+   	      ) {
+   	        return;
+   	      }
+   	    }
+   	    this.uniform4ivCache[name] = value;
+   	    const loc = this.getUniformLocation(name);
+   	    this.context.uniform4iv(loc, value);
+   	  }
+
+   	  getUniformLocation(name) {
+   	    if (this.programUniformLocationCache.hasOwnProperty(name)) {
+   	      return this.programUniformLocationCache[name];
+   	    }
+   	    return this.programUniformLocationCache[name] = this.context.getUniformLocation(this.program, name);
+   	  }
+
+   	  _getFragShaderArtifactMap(args) {
+   	    return {
+   	      HEADER: this._getHeaderString(),
+   	      LOOP_MAX: this._getLoopMaxString(),
+   	      PLUGINS: this._getPluginsString(),
+   	      CONSTANTS: this._getConstantsString(),
+   	      DECODE32_ENDIANNESS: this._getDecode32EndiannessString(),
+   	      ENCODE32_ENDIANNESS: this._getEncode32EndiannessString(),
+   	      DIVIDE_WITH_INTEGER_CHECK: this._getDivideWithIntegerCheckString(),
+   	      INJECTED_NATIVE: this._getInjectedNative(),
+   	      MAIN_CONSTANTS: this._getMainConstantsString(),
+   	      MAIN_ARGUMENTS: this._getMainArgumentsString(args),
+   	      KERNEL: this.getKernelString(),
+   	      MAIN_RESULT: this.getMainResultString(),
+   	      FLOAT_TACTIC_DECLARATION: this.getFloatTacticDeclaration(),
+   	      INT_TACTIC_DECLARATION: this.getIntTacticDeclaration(),
+   	      SAMPLER_2D_TACTIC_DECLARATION: this.getSampler2DTacticDeclaration(),
+   	      SAMPLER_2D_ARRAY_TACTIC_DECLARATION: this.getSampler2DArrayTacticDeclaration(),
+   	    };
+   	  }
+
+   	  _getVertShaderArtifactMap(args) {
+   	    return {
+   	      FLOAT_TACTIC_DECLARATION: this.getFloatTacticDeclaration(),
+   	      INT_TACTIC_DECLARATION: this.getIntTacticDeclaration(),
+   	      SAMPLER_2D_TACTIC_DECLARATION: this.getSampler2DTacticDeclaration(),
+   	      SAMPLER_2D_ARRAY_TACTIC_DECLARATION: this.getSampler2DArrayTacticDeclaration(),
+   	    };
+   	  }
+
+   	  _getHeaderString() {
+   	    return (
+   	      this.subKernels !== null ?
+   	      '#extension GL_EXT_draw_buffers : require\n' :
+   	      ''
+   	    );
+   	  }
+
+   	  _getLoopMaxString() {
+   	    return (
+   	      this.loopMaxIterations ?
+   	      ` ${parseInt(this.loopMaxIterations)};\n` :
+   	      ' 1000;\n'
+   	    );
+   	  }
+
+   	  _getPluginsString() {
+   	    if (!this.plugins) return '\n';
+   	    return this.plugins.map(plugin => plugin.source && this.source.match(plugin.functionMatch) ? plugin.source : '').join('\n');
+   	  }
+
+   	  _getConstantsString() {
+   	    const result = [];
+   	    const { threadDim, texSize } = this;
+   	    if (this.dynamicOutput) {
+   	      result.push(
+   	        'uniform ivec3 uOutputDim',
+   	        'uniform ivec2 uTexSize'
+   	      );
+   	    } else {
+   	      result.push(
+   	        `ivec3 uOutputDim = ivec3(${threadDim[0]}, ${threadDim[1]}, ${threadDim[2]})`,
+   	        `ivec2 uTexSize = ivec2(${texSize[0]}, ${texSize[1]})`
+   	      );
+   	    }
+   	    return utils.linesToString(result);
+   	  }
+
+   	  _getTextureCoordinate() {
+   	    const subKernels = this.subKernels;
+   	    if (subKernels === null || subKernels.length < 1) {
+   	      return 'varying vec2 vTexCoord;\n';
+   	    } else {
+   	      return 'out vec2 vTexCoord;\n';
+   	    }
+   	  }
+
+   	  _getDecode32EndiannessString() {
+   	    return (
+   	      this.endianness === 'LE' ?
+   	      '' :
+   	      '  texel.rgba = texel.abgr;\n'
+   	    );
+   	  }
+
+   	  _getEncode32EndiannessString() {
+   	    return (
+   	      this.endianness === 'LE' ?
+   	      '' :
+   	      '  texel.rgba = texel.abgr;\n'
+   	    );
+   	  }
+
+   	  _getDivideWithIntegerCheckString() {
+   	    return this.fixIntegerDivisionAccuracy ?
+   	      `float divWithIntCheck(float x, float y) {
+  if (floor(x) == x && floor(y) == y && integerMod(x, y) == 0.0) {
+    return float(int(x) / int(y));
+  }
+  return x / y;
+}
+
+float integerCorrectionModulo(float number, float divisor) {
+  if (number < 0.0) {
+    number = abs(number);
+    if (divisor < 0.0) {
+      divisor = abs(divisor);
+    }
+    return -(number - (divisor * floor(divWithIntCheck(number, divisor))));
+  }
+  if (divisor < 0.0) {
+    divisor = abs(divisor);
+  }
+  return number - (divisor * floor(divWithIntCheck(number, divisor)));
+}` :
+   	      '';
+   	  }
+
+   	  _getMainArgumentsString(args) {
+   	    const results = [];
+   	    const { argumentNames } = this;
+   	    for (let i = 0; i < argumentNames.length; i++) {
+   	      results.push(this.kernelArguments[i].getSource(args[i]));
+   	    }
+   	    return results.join('');
+   	  }
+
+   	  _getInjectedNative() {
+   	    return this.injectedNative || '';
+   	  }
+
+   	  _getMainConstantsString() {
+   	    const result = [];
+   	    const { constants } = this;
+   	    if (constants) {
+   	      let i = 0;
+   	      for (const name in constants) {
+   	        if (!this.constants.hasOwnProperty(name)) continue;
+   	        result.push(this.kernelConstants[i++].getSource(this.constants[name]));
+   	      }
+   	    }
+   	    return result.join('');
+   	  }
+
+   	  getRawValueFramebuffer(width, height) {
+   	    if (!this.rawValueFramebuffers[width]) {
+   	      this.rawValueFramebuffers[width] = {};
+   	    }
+   	    if (!this.rawValueFramebuffers[width][height]) {
+   	      const framebuffer = this.context.createFramebuffer();
+   	      framebuffer.width = width;
+   	      framebuffer.height = height;
+   	      this.rawValueFramebuffers[width][height] = framebuffer;
+   	    }
+   	    return this.rawValueFramebuffers[width][height];
+   	  }
+
+   	  getKernelResultDeclaration() {
+   	    switch (this.returnType) {
+   	      case 'Array(2)':
+   	        return 'vec2 kernelResult';
+   	      case 'Array(3)':
+   	        return 'vec3 kernelResult';
+   	      case 'Array(4)':
+   	        return 'vec4 kernelResult';
+   	      case 'LiteralInteger':
+   	      case 'Float':
+   	      case 'Number':
+   	      case 'Integer':
+   	        return 'float kernelResult';
+   	      default:
+   	        if (this.graphical) {
+   	          return 'float kernelResult';
+   	        } else {
+   	          throw new Error(`unrecognized output type "${ this.returnType }"`);
+   	        }
+   	    }
+   	  }
+   	  getKernelString() {
+   	    const result = [this.getKernelResultDeclaration()];
+   	    const { subKernels } = this;
+   	    if (subKernels !== null) {
+   	      switch (this.returnType) {
+   	        case 'Number':
+   	        case 'Float':
+   	        case 'Integer':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            const subKernel = subKernels[i];
+   	            result.push(
+   	              subKernel.returnType === 'Integer' ?
+   	              `int subKernelResult_${ subKernel.name } = 0` :
+   	              `float subKernelResult_${ subKernel.name } = 0.0`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(2)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec2 subKernelResult_${ subKernels[i].name }`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(3)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec3 subKernelResult_${ subKernels[i].name }`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(4)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec4 subKernelResult_${ subKernels[i].name }`
+   	            );
+   	          }
+   	          break;
+   	      }
+   	    }
+
+   	    return utils.linesToString(result) + this.translatedSource;
+   	  }
+
+   	  getMainResultGraphical() {
+   	    return utils.linesToString([
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  gl_FragColor = actualColor',
+   	    ]);
+   	  }
+
+   	  getMainResultPackedPixels() {
+   	    switch (this.returnType) {
+   	      case 'LiteralInteger':
+   	      case 'Number':
+   	      case 'Integer':
+   	      case 'Float':
+   	        return this.getMainResultKernelPackedPixels() +
+   	          this.getMainResultSubKernelPackedPixels();
+   	      default:
+   	        throw new Error(`packed output only usable with Numbers, "${this.returnType}" specified`);
+   	    }
+   	  }
+
+   	  getMainResultKernelPackedPixels() {
+   	    return utils.linesToString([
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      `  gl_FragData[0] = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(kernelResult)`
+   	    ]);
+   	  }
+
+   	  getMainResultSubKernelPackedPixels() {
+   	    const result = [];
+   	    if (!this.subKernels) return '';
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}] = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(float(subKernelResult_${this.subKernels[i].name}))`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}] = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(subKernelResult_${this.subKernels[i].name})`
+   	        );
+   	      }
+   	    }
+   	    return utils.linesToString(result);
+   	  }
+
+   	  getMainResultMemoryOptimizedFloats() {
+   	    const result = [
+   	      '  index *= 4',
+   	    ];
+
+   	    switch (this.returnType) {
+   	      case 'Number':
+   	      case 'Integer':
+   	      case 'Float':
+   	        const channels = ['r', 'g', 'b', 'a'];
+   	        for (let i = 0; i < channels.length; i++) {
+   	          const channel = channels[i];
+   	          this.getMainResultKernelMemoryOptimizedFloats(result, channel);
+   	          this.getMainResultSubKernelMemoryOptimizedFloats(result, channel);
+   	          if (i + 1 < channels.length) {
+   	            result.push('  index += 1');
+   	          }
+   	        }
+   	        break;
+   	      default:
+   	        throw new Error(`optimized output only usable with Numbers, ${this.returnType} specified`);
+   	    }
+
+   	    return utils.linesToString(result);
+   	  }
+
+   	  getMainResultKernelMemoryOptimizedFloats(result, channel) {
+   	    result.push(
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      `  gl_FragData[0].${channel} = kernelResult`
+   	    );
+   	  }
+
+   	  getMainResultSubKernelMemoryOptimizedFloats(result, channel) {
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}].${channel} = float(subKernelResult_${this.subKernels[i].name})`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}].${channel} = subKernelResult_${this.subKernels[i].name}`
+   	        );
+   	      }
+   	    }
+   	  }
+
+   	  getMainResultKernelNumberTexture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  gl_FragData[0][0] = kernelResult',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelNumberTexture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}][0] = float(subKernelResult_${subKernel.name})`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  gl_FragData[${i + 1}][0] = subKernelResult_${subKernel.name}`
+   	        );
+   	      }
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray2Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  gl_FragData[0][0] = kernelResult[0]',
+   	      '  gl_FragData[0][1] = kernelResult[1]',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray2Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      result.push(
+   	        `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
+   	        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
+   	      );
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray3Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  gl_FragData[0][0] = kernelResult[0]',
+   	      '  gl_FragData[0][1] = kernelResult[1]',
+   	      '  gl_FragData[0][2] = kernelResult[2]',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray3Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      result.push(
+   	        `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
+   	        `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+   	        `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
+   	      );
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray4Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  gl_FragData[0] = kernelResult',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray4Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    switch (this.returnType) {
+   	      case 'Number':
+   	      case 'Float':
+   	      case 'Integer':
+   	        for (let i = 0; i < this.subKernels.length; ++i) {
+   	          const subKernel = this.subKernels[i];
+   	          if (subKernel.returnType === 'Integer') {
+   	            result.push(
+   	              `  gl_FragData[${i + 1}] = float(subKernelResult_${this.subKernels[i].name})`
+   	            );
+   	          } else {
+   	            result.push(
+   	              `  gl_FragData[${i + 1}] = subKernelResult_${this.subKernels[i].name}`
+   	            );
+   	          }
+   	        }
+   	        break;
+   	      case 'Array(2)':
+   	        for (let i = 0; i < this.subKernels.length; ++i) {
+   	          result.push(
+   	            `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
+   	            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`
+   	          );
+   	        }
+   	        break;
+   	      case 'Array(3)':
+   	        for (let i = 0; i < this.subKernels.length; ++i) {
+   	          result.push(
+   	            `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
+   	            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+   	            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`
+   	          );
+   	        }
+   	        break;
+   	      case 'Array(4)':
+   	        for (let i = 0; i < this.subKernels.length; ++i) {
+   	          result.push(
+   	            `  gl_FragData[${i + 1}][0] = subKernelResult_${this.subKernels[i].name}[0]`,
+   	            `  gl_FragData[${i + 1}][1] = subKernelResult_${this.subKernels[i].name}[1]`,
+   	            `  gl_FragData[${i + 1}][2] = subKernelResult_${this.subKernels[i].name}[2]`,
+   	            `  gl_FragData[${i + 1}][3] = subKernelResult_${this.subKernels[i].name}[3]`
+   	          );
+   	        }
+   	        break;
+   	    }
+
+   	    return result;
+   	  }
+
+   	  replaceArtifacts(src, map) {
+   	    return src.replace(/[ ]*__([A-Z]+[0-9]*([_]?[A-Z]*[0-9]?)*)__;\n/g, (match, artifact) => {
+   	      if (map.hasOwnProperty(artifact)) {
+   	        return map[artifact];
+   	      }
+   	      throw `unhandled artifact ${artifact}`;
+   	    });
+   	  }
+
+   	  getFragmentShader(args) {
+   	    if (this.compiledFragmentShader !== null) {
+   	      return this.compiledFragmentShader;
+   	    }
+   	    return this.compiledFragmentShader = this.replaceArtifacts(this.constructor.fragmentShader, this._getFragShaderArtifactMap(args));
+   	  }
+
+   	  getVertexShader(args) {
+   	    if (this.compiledVertexShader !== null) {
+   	      return this.compiledVertexShader;
+   	    }
+   	    return this.compiledVertexShader = this.replaceArtifacts(this.constructor.vertexShader, this._getVertShaderArtifactMap(args));
+   	  }
+
+   	  toString() {
+   	    const setupContextString = utils.linesToString([
+   	      `const gl = context`,
+   	    ]);
+   	    return glKernelString(this.constructor, arguments, this, setupContextString);
+   	  }
+
+   	  destroy(removeCanvasReferences) {
+   	    if (!this.context) return;
+   	    if (this.buffer) {
+   	      this.context.deleteBuffer(this.buffer);
+   	    }
+   	    if (this.framebuffer) {
+   	      this.context.deleteFramebuffer(this.framebuffer);
+   	    }
+   	    for (const width in this.rawValueFramebuffers) {
+   	      for (const height in this.rawValueFramebuffers[width]) {
+   	        this.context.deleteFramebuffer(this.rawValueFramebuffers[width][height]);
+   	        delete this.rawValueFramebuffers[width][height];
+   	      }
+   	      delete this.rawValueFramebuffers[width];
+   	    }
+   	    if (this.vertShader) {
+   	      this.context.deleteShader(this.vertShader);
+   	    }
+   	    if (this.fragShader) {
+   	      this.context.deleteShader(this.fragShader);
+   	    }
+   	    if (this.program) {
+   	      this.context.deleteProgram(this.program);
+   	    }
+   	    if (this.texture) {
+   	      this.texture.delete();
+   	      const textureCacheIndex = this.textureCache.indexOf(this.texture.texture);
+   	      if (textureCacheIndex > -1) {
+   	        this.textureCache.splice(textureCacheIndex, 1);
+   	      }
+   	      this.texture = null;
+   	    }
+   	    if (this.mappedTextures && this.mappedTextures.length) {
+   	      for (let i = 0; i < this.mappedTextures.length; i++) {
+   	        const mappedTexture = this.mappedTextures[i];
+   	        mappedTexture.delete();
+   	        const textureCacheIndex = this.textureCache.indexOf(mappedTexture.texture);
+   	        if (textureCacheIndex > -1) {
+   	          this.textureCache.splice(textureCacheIndex, 1);
+   	        }
+   	      }
+   	      this.mappedTextures = null;
+   	    }
+   	    if (this.kernelArguments) {
+   	      for (let i = 0; i < this.kernelArguments.length; i++) {
+   	        this.kernelArguments[i].destroy();
+   	      }
+   	    }
+   	    if (this.kernelConstants) {
+   	      for (let i = 0; i < this.kernelConstants.length; i++) {
+   	        this.kernelConstants[i].destroy();
+   	      }
+   	    }
+   	    while (this.textureCache.length > 0) {
+   	      const texture = this.textureCache.pop();
+   	      this.context.deleteTexture(texture);
+   	    }
+   	    if (removeCanvasReferences) {
+   	      const idx = canvases.indexOf(this.canvas);
+   	      if (idx >= 0) {
+   	        canvases[idx] = null;
+   	        maxTexSizes[idx] = null;
+   	      }
+   	    }
+   	    this.destroyExtensions();
+   	    delete this.context;
+   	    delete this.canvas;
+   	    if (!this.gpu) return;
+   	    const i = this.gpu.kernels.indexOf(this);
+   	    if (i === -1) return;
+   	    this.gpu.kernels.splice(i, 1);
+   	  }
+
+   	  destroyExtensions() {
+   	    this.extensions.OES_texture_float = null;
+   	    this.extensions.OES_texture_float_linear = null;
+   	    this.extensions.OES_element_index_uint = null;
+   	    this.extensions.WEBGL_draw_buffers = null;
+   	  }
+
+   	  static destroyContext(context) {
+   	    const extension = context.getExtension('WEBGL_lose_context');
+   	    if (extension) {
+   	      extension.loseContext();
+   	    }
+   	  }
+
+   	  toJSON() {
+   	    const json = super.toJSON();
+   	    json.functionNodes = FunctionBuilder.fromKernel(this, WebGLFunctionNode).toJSON();
+   	    json.settings.threadDim = this.threadDim;
+   	    return json;
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGLKernel
+   	};
+   	},{"../../plugins/math-random-uniformly-distributed":112,"../../utils":114,"../function-builder":9,"../gl/kernel":13,"../gl/kernel-string":12,"./fragment-shader":37,"./function-node":38,"./kernel-value-maps":39,"./vertex-shader":71}],71:[function(require,module,exports){
+   	const vertexShader = `__FLOAT_TACTIC_DECLARATION__;
+__INT_TACTIC_DECLARATION__;
+__SAMPLER_2D_TACTIC_DECLARATION__;
+
+attribute vec2 aPos;
+attribute vec2 aTexCoord;
+
+varying vec2 vTexCoord;
+uniform vec2 ratio;
+
+void main(void) {
+  gl_Position = vec4((aPos + vec2(1)) * ratio + vec2(-1), 0, 1);
+  vTexCoord = aTexCoord;
+}`;
+
+   	module.exports = {
+   	  vertexShader
+   	};
+   	},{}],72:[function(require,module,exports){
+   	const fragmentShader = `#version 300 es
+__HEADER__;
+__FLOAT_TACTIC_DECLARATION__;
+__INT_TACTIC_DECLARATION__;
+__SAMPLER_2D_TACTIC_DECLARATION__;
+__SAMPLER_2D_ARRAY_TACTIC_DECLARATION__;
+
+const int LOOP_MAX = __LOOP_MAX__;
+
+__PLUGINS__;
+__CONSTANTS__;
+
+in vec2 vTexCoord;
+
+float atan2(float v1, float v2) {
+  if (v1 == 0.0 || v2 == 0.0) return 0.0;
+  return atan(v1 / v2);
+}
+
+float cbrt(float x) {
+  if (x >= 0.0) {
+    return pow(x, 1.0 / 3.0);
+  } else {
+    return -pow(x, 1.0 / 3.0);
+  }
+}
+
+float expm1(float x) {
+  return pow(${Math.E}, x) - 1.0; 
+}
+
+float fround(highp float x) {
+  return x;
+}
+
+float imul(float v1, float v2) {
+  return float(int(v1) * int(v2));
+}
+
+float log10(float x) {
+  return log2(x) * (1.0 / log2(10.0));
+}
+
+float log1p(float x) {
+  return log(1.0 + x);
+}
+
+float _pow(float v1, float v2) {
+  if (v2 == 0.0) return 1.0;
+  return pow(v1, v2);
+}
+
+float _round(float x) {
+  return floor(x + 0.5);
+}
+
+
+const int BIT_COUNT = 32;
+int modi(int x, int y) {
+  return x - y * (x / y);
+}
+
+int bitwiseOr(int a, int b) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) || (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 || b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseXOR(int a, int b) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) != (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 || b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseAnd(int a, int b) {
+  int result = 0;
+  int n = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if ((modi(a, 2) == 1) && (modi(b, 2) == 1)) {
+      result += n;
+    }
+    a = a / 2;
+    b = b / 2;
+    n = n * 2;
+    if(!(a > 0 && b > 0)) {
+      break;
+    }
+  }
+  return result;
+}
+int bitwiseNot(int a) {
+  int result = 0;
+  int n = 1;
+  
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (modi(a, 2) == 0) {
+      result += n;    
+    }
+    a = a / 2;
+    n = n * 2;
+  }
+  return result;
+}
+int bitwiseZeroFillLeftShift(int n, int shift) {
+  int maxBytes = BIT_COUNT;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (maxBytes >= n) {
+      break;
+    }
+    maxBytes *= 2;
+  }
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= shift) {
+      break;
+    }
+    n *= 2;
+  }
+
+  int result = 0;
+  int byteVal = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= maxBytes) break;
+    if (modi(n, 2) > 0) { result += byteVal; }
+    n = int(n / 2);
+    byteVal *= 2;
+  }
+  return result;
+}
+
+int bitwiseSignedRightShift(int num, int shifts) {
+  return int(floor(float(num) / pow(2.0, float(shifts))));
+}
+
+int bitwiseZeroFillRightShift(int n, int shift) {
+  int maxBytes = BIT_COUNT;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (maxBytes >= n) {
+      break;
+    }
+    maxBytes *= 2;
+  }
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= shift) {
+      break;
+    }
+    n /= 2;
+  }
+  int result = 0;
+  int byteVal = 1;
+  for (int i = 0; i < BIT_COUNT; i++) {
+    if (i >= maxBytes) break;
+    if (modi(n, 2) > 0) { result += byteVal; }
+    n = int(n / 2);
+    byteVal *= 2;
+  }
+  return result;
+}
+
+vec2 integerMod(vec2 x, float y) {
+  vec2 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+vec3 integerMod(vec3 x, float y) {
+  vec3 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+vec4 integerMod(vec4 x, vec4 y) {
+  vec4 res = floor(mod(x, y));
+  return res * step(1.0 - floor(y), -res);
+}
+
+float integerMod(float x, float y) {
+  float res = floor(mod(x, y));
+  return res * (res > floor(y) - 1.0 ? 0.0 : 1.0);
+}
+
+int integerMod(int x, int y) {
+  return x - (y * int(x/y));
+}
+
+__DIVIDE_WITH_INTEGER_CHECK__;
+
+// Here be dragons!
+// DO NOT OPTIMIZE THIS CODE
+// YOU WILL BREAK SOMETHING ON SOMEBODY\'S MACHINE
+// LEAVE IT AS IT IS, LEST YOU WASTE YOUR OWN TIME
+const vec2 MAGIC_VEC = vec2(1.0, -256.0);
+const vec4 SCALE_FACTOR = vec4(1.0, 256.0, 65536.0, 0.0);
+const vec4 SCALE_FACTOR_INV = vec4(1.0, 0.00390625, 0.0000152587890625, 0.0); // 1, 1/256, 1/65536
+float decode32(vec4 texel) {
+  __DECODE32_ENDIANNESS__;
+  texel *= 255.0;
+  vec2 gte128;
+  gte128.x = texel.b >= 128.0 ? 1.0 : 0.0;
+  gte128.y = texel.a >= 128.0 ? 1.0 : 0.0;
+  float exponent = 2.0 * texel.a - 127.0 + dot(gte128, MAGIC_VEC);
+  float res = exp2(round(exponent));
+  texel.b = texel.b - 128.0 * gte128.x;
+  res = dot(texel, SCALE_FACTOR) * exp2(round(exponent-23.0)) + res;
+  res *= gte128.y * -2.0 + 1.0;
+  return res;
+}
+
+float decode16(vec4 texel, int index) {
+  int channel = integerMod(index, 2);
+  return texel[channel*2] * 255.0 + texel[channel*2 + 1] * 65280.0;
+}
+
+float decode8(vec4 texel, int index) {
+  int channel = integerMod(index, 4);
+  return texel[channel] * 255.0;
+}
+
+vec4 legacyEncode32(float f) {
+  float F = abs(f);
+  float sign = f < 0.0 ? 1.0 : 0.0;
+  float exponent = floor(log2(F));
+  float mantissa = (exp2(-exponent) * F);
+  // exponent += floor(log2(mantissa));
+  vec4 texel = vec4(F * exp2(23.0-exponent)) * SCALE_FACTOR_INV;
+  texel.rg = integerMod(texel.rg, 256.0);
+  texel.b = integerMod(texel.b, 128.0);
+  texel.a = exponent*0.5 + 63.5;
+  texel.ba += vec2(integerMod(exponent+127.0, 2.0), sign) * 128.0;
+  texel = floor(texel);
+  texel *= 0.003921569; // 1/255
+  __ENCODE32_ENDIANNESS__;
+  return texel;
+}
+
+// https://github.com/gpujs/gpu.js/wiki/Encoder-details
+vec4 encode32(float value) {
+  if (value == 0.0) return vec4(0, 0, 0, 0);
+
+  float exponent;
+  float mantissa;
+  vec4  result;
+  float sgn;
+
+  sgn = step(0.0, -value);
+  value = abs(value);
+
+  exponent = floor(log2(value));
+
+  mantissa = value*pow(2.0, -exponent)-1.0;
+  exponent = exponent+127.0;
+  result   = vec4(0,0,0,0);
+
+  result.a = floor(exponent/2.0);
+  exponent = exponent - result.a*2.0;
+  result.a = result.a + 128.0*sgn;
+
+  result.b = floor(mantissa * 128.0);
+  mantissa = mantissa - result.b / 128.0;
+  result.b = result.b + exponent*128.0;
+
+  result.g = floor(mantissa*32768.0);
+  mantissa = mantissa - result.g/32768.0;
+
+  result.r = floor(mantissa*8388608.0);
+  return result/255.0;
+}
+// Dragons end here
+
+int index;
+ivec3 threadId;
+
+ivec3 indexTo3D(int idx, ivec3 texDim) {
+  int z = int(idx / (texDim.x * texDim.y));
+  idx -= z * int(texDim.x * texDim.y);
+  int y = int(idx / texDim.x);
+  int x = int(integerMod(idx, texDim.x));
+  return ivec3(x, y, z);
+}
+
+float get32(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture(tex, st / vec2(texSize));
+  return decode32(texel);
+}
+
+float get16(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + (texDim.x * (y + (texDim.y * z)));
+  int w = texSize.x * 2;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture(tex, st / vec2(texSize.x * 2, texSize.y));
+  return decode16(texel, index);
+}
+
+float get8(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + (texDim.x * (y + (texDim.y * z)));
+  int w = texSize.x * 4;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture(tex, st / vec2(texSize.x * 4, texSize.y));
+  return decode8(texel, index);
+}
+
+float getMemoryOptimized32(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + (texDim.x * (y + (texDim.y * z)));
+  int channel = integerMod(index, 4);
+  index = index / 4;
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  index = index / 4;
+  vec4 texel = texture(tex, st / vec2(texSize));
+  return texel[channel];
+}
+
+vec4 getImage2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  return texture(tex, st / vec2(texSize));
+}
+
+vec4 getImage3D(sampler2DArray tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  return texture(tex, vec3(st / vec2(texSize), z));
+}
+
+float getFloatFromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return result[0];
+}
+
+vec2 getVec2FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return vec2(result[0], result[1]);
+}
+
+vec2 getMemoryOptimizedVec2(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int channel = integerMod(index, 2);
+  index = index / 2;
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture(tex, st / vec2(texSize));
+  if (channel == 0) return vec2(texel.r, texel.g);
+  if (channel == 1) return vec2(texel.b, texel.a);
+  return vec2(0.0, 0.0);
+}
+
+vec3 getVec3FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  vec4 result = getImage2D(tex, texSize, texDim, z, y, x);
+  return vec3(result[0], result[1], result[2]);
+}
+
+vec3 getMemoryOptimizedVec3(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int fieldIndex = 3 * (x + texDim.x * (y + texDim.y * z));
+  int vectorIndex = fieldIndex / 4;
+  int vectorOffset = fieldIndex - vectorIndex * 4;
+  int readY = vectorIndex / texSize.x;
+  int readX = vectorIndex - readY * texSize.x;
+  vec4 tex1 = texture(tex, (vec2(readX, readY) + 0.5) / vec2(texSize));
+
+  if (vectorOffset == 0) {
+    return tex1.xyz;
+  } else if (vectorOffset == 1) {
+    return tex1.yzw;
+  } else {
+    readX++;
+    if (readX >= texSize.x) {
+      readX = 0;
+      readY++;
+    }
+    vec4 tex2 = texture(tex, vec2(readX, readY) / vec2(texSize));
+    if (vectorOffset == 2) {
+      return vec3(tex1.z, tex1.w, tex2.x);
+    } else {
+      return vec3(tex1.w, tex2.x, tex2.y);
+    }
+  }
+}
+
+vec4 getVec4FromSampler2D(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  return getImage2D(tex, texSize, texDim, z, y, x);
+}
+
+vec4 getMemoryOptimizedVec4(sampler2D tex, ivec2 texSize, ivec3 texDim, int z, int y, int x) {
+  int index = x + texDim.x * (y + texDim.y * z);
+  int channel = integerMod(index, 2);
+  int w = texSize.x;
+  vec2 st = vec2(float(integerMod(index, w)), float(index / w)) + 0.5;
+  vec4 texel = texture(tex, st / vec2(texSize));
+  return vec4(texel.r, texel.g, texel.b, texel.a);
+}
+
+vec4 actualColor;
+void color(float r, float g, float b, float a) {
+  actualColor = vec4(r,g,b,a);
+}
+
+void color(float r, float g, float b) {
+  color(r,g,b,1.0);
+}
+
+float modulo(float number, float divisor) {
+  if (number < 0.0) {
+    number = abs(number);
+    if (divisor < 0.0) {
+      divisor = abs(divisor);
+    }
+    return -mod(number, divisor);
+  }
+  if (divisor < 0.0) {
+    divisor = abs(divisor);
+  }
+  return mod(number, divisor);
+}
+
+__INJECTED_NATIVE__;
+__MAIN_CONSTANTS__;
+__MAIN_ARGUMENTS__;
+__KERNEL__;
+
+void main(void) {
+  index = int(vTexCoord.s * float(uTexSize.x)) + int(vTexCoord.t * float(uTexSize.y)) * uTexSize.x;
+  __MAIN_RESULT__;
+}`;
+
+   	module.exports = {
+   	  fragmentShader
+   	};
+   	},{}],73:[function(require,module,exports){
+   	const { utils } = require('../../utils');
+   	const { WebGLFunctionNode } = require('../web-gl/function-node');
+
+   	class WebGL2FunctionNode extends WebGLFunctionNode {
+
+   	  astIdentifierExpression(idtNode, retArr) {
+   	    if (idtNode.type !== 'Identifier') {
+   	      throw this.astErrorOutput(
+   	        'IdentifierExpression - not an Identifier',
+   	        idtNode
+   	      );
+   	    }
+
+   	    const type = this.getType(idtNode);
+
+   	    const name = utils.sanitizeName(idtNode.name);
+   	    if (idtNode.name === 'Infinity') {
+   	      retArr.push('intBitsToFloat(2139095039)');
+   	    } else if (type === 'Boolean') {
+   	      if (this.argumentNames.indexOf(name) > -1) {
+   	        retArr.push(`bool(user_${name})`);
+   	      } else {
+   	        retArr.push(`user_${name}`);
+   	      }
+   	    } else {
+   	      retArr.push(`user_${name}`);
+   	    }
+
+   	    return retArr;
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2FunctionNode
+   	};
+   	},{"../../utils":114,"../web-gl/function-node":38}],74:[function(require,module,exports){
+   	const { WebGL2KernelValueBoolean } = require('./kernel-value/boolean');
+   	const { WebGL2KernelValueFloat } = require('./kernel-value/float');
+   	const { WebGL2KernelValueInteger } = require('./kernel-value/integer');
+
+   	const { WebGL2KernelValueHTMLImage } = require('./kernel-value/html-image');
+   	const { WebGL2KernelValueDynamicHTMLImage } = require('./kernel-value/dynamic-html-image');
+
+   	const { WebGL2KernelValueHTMLImageArray } = require('./kernel-value/html-image-array');
+   	const { WebGL2KernelValueDynamicHTMLImageArray } = require('./kernel-value/dynamic-html-image-array');
+
+   	const { WebGL2KernelValueHTMLVideo } = require('./kernel-value/html-video');
+   	const { WebGL2KernelValueDynamicHTMLVideo } = require('./kernel-value/dynamic-html-video');
+
+   	const { WebGL2KernelValueSingleInput } = require('./kernel-value/single-input');
+   	const { WebGL2KernelValueDynamicSingleInput } = require('./kernel-value/dynamic-single-input');
+
+   	const { WebGL2KernelValueUnsignedInput } = require('./kernel-value/unsigned-input');
+   	const { WebGL2KernelValueDynamicUnsignedInput } = require('./kernel-value/dynamic-unsigned-input');
+
+   	const { WebGL2KernelValueMemoryOptimizedNumberTexture } = require('./kernel-value/memory-optimized-number-texture');
+   	const { WebGL2KernelValueDynamicMemoryOptimizedNumberTexture } = require('./kernel-value/dynamic-memory-optimized-number-texture');
+
+   	const { WebGL2KernelValueNumberTexture } = require('./kernel-value/number-texture');
+   	const { WebGL2KernelValueDynamicNumberTexture } = require('./kernel-value/dynamic-number-texture');
+
+   	const { WebGL2KernelValueSingleArray } = require('./kernel-value/single-array');
+   	const { WebGL2KernelValueDynamicSingleArray } = require('./kernel-value/dynamic-single-array');
+
+   	const { WebGL2KernelValueSingleArray1DI } = require('./kernel-value/single-array1d-i');
+   	const { WebGL2KernelValueDynamicSingleArray1DI } = require('./kernel-value/dynamic-single-array1d-i');
+
+   	const { WebGL2KernelValueSingleArray2DI } = require('./kernel-value/single-array2d-i');
+   	const { WebGL2KernelValueDynamicSingleArray2DI } = require('./kernel-value/dynamic-single-array2d-i');
+
+   	const { WebGL2KernelValueSingleArray3DI } = require('./kernel-value/single-array3d-i');
+   	const { WebGL2KernelValueDynamicSingleArray3DI } = require('./kernel-value/dynamic-single-array3d-i');
+
+   	const { WebGL2KernelValueArray2 } = require('./kernel-value/array2');
+   	const { WebGL2KernelValueArray3 } = require('./kernel-value/array3');
+   	const { WebGL2KernelValueArray4 } = require('./kernel-value/array4');
+
+   	const { WebGL2KernelValueUnsignedArray } = require('./kernel-value/unsigned-array');
+   	const { WebGL2KernelValueDynamicUnsignedArray } = require('./kernel-value/dynamic-unsigned-array');
+
+   	const kernelValueMaps = {
+   	  unsigned: {
+   	    dynamic: {
+   	      'Boolean': WebGL2KernelValueBoolean,
+   	      'Integer': WebGL2KernelValueInteger,
+   	      'Float': WebGL2KernelValueFloat,
+   	      'Array': WebGL2KernelValueDynamicUnsignedArray,
+   	      'Array(2)': WebGL2KernelValueArray2,
+   	      'Array(3)': WebGL2KernelValueArray3,
+   	      'Array(4)': WebGL2KernelValueArray4,
+   	      'Array1D(2)': false,
+   	      'Array1D(3)': false,
+   	      'Array1D(4)': false,
+   	      'Array2D(2)': false,
+   	      'Array2D(3)': false,
+   	      'Array2D(4)': false,
+   	      'Array3D(2)': false,
+   	      'Array3D(3)': false,
+   	      'Array3D(4)': false,
+   	      'Input': WebGL2KernelValueDynamicUnsignedInput,
+   	      'NumberTexture': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(1)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(2)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(3)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(4)': WebGL2KernelValueDynamicNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGL2KernelValueDynamicMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGL2KernelValueDynamicHTMLImage,
+   	      'OffscreenCanvas': WebGL2KernelValueDynamicHTMLImage,
+   	      'HTMLImage': WebGL2KernelValueDynamicHTMLImage,
+   	      'ImageBitmap': WebGL2KernelValueDynamicHTMLImage,
+   	      'ImageData': WebGL2KernelValueDynamicHTMLImage,
+   	      'HTMLImageArray': WebGL2KernelValueDynamicHTMLImageArray,
+   	      'HTMLVideo': WebGL2KernelValueDynamicHTMLVideo,
+   	    },
+   	    static: {
+   	      'Boolean': WebGL2KernelValueBoolean,
+   	      'Float': WebGL2KernelValueFloat,
+   	      'Integer': WebGL2KernelValueInteger,
+   	      'Array': WebGL2KernelValueUnsignedArray,
+   	      'Array(2)': WebGL2KernelValueArray2,
+   	      'Array(3)': WebGL2KernelValueArray3,
+   	      'Array(4)': WebGL2KernelValueArray4,
+   	      'Array1D(2)': false,
+   	      'Array1D(3)': false,
+   	      'Array1D(4)': false,
+   	      'Array2D(2)': false,
+   	      'Array2D(3)': false,
+   	      'Array2D(4)': false,
+   	      'Array3D(2)': false,
+   	      'Array3D(3)': false,
+   	      'Array3D(4)': false,
+   	      'Input': WebGL2KernelValueUnsignedInput,
+   	      'NumberTexture': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(1)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(2)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(3)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(4)': WebGL2KernelValueNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGL2KernelValueDynamicMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGL2KernelValueHTMLImage,
+   	      'OffscreenCanvas': WebGL2KernelValueHTMLImage,
+   	      'HTMLImage': WebGL2KernelValueHTMLImage,
+   	      'ImageBitmap': WebGL2KernelValueHTMLImage,
+   	      'ImageData': WebGL2KernelValueHTMLImage,
+   	      'HTMLImageArray': WebGL2KernelValueHTMLImageArray,
+   	      'HTMLVideo': WebGL2KernelValueHTMLVideo,
+   	    }
+   	  },
+   	  single: {
+   	    dynamic: {
+   	      'Boolean': WebGL2KernelValueBoolean,
+   	      'Integer': WebGL2KernelValueInteger,
+   	      'Float': WebGL2KernelValueFloat,
+   	      'Array': WebGL2KernelValueDynamicSingleArray,
+   	      'Array(2)': WebGL2KernelValueArray2,
+   	      'Array(3)': WebGL2KernelValueArray3,
+   	      'Array(4)': WebGL2KernelValueArray4,
+   	      'Array1D(2)': WebGL2KernelValueDynamicSingleArray1DI,
+   	      'Array1D(3)': WebGL2KernelValueDynamicSingleArray1DI,
+   	      'Array1D(4)': WebGL2KernelValueDynamicSingleArray1DI,
+   	      'Array2D(2)': WebGL2KernelValueDynamicSingleArray2DI,
+   	      'Array2D(3)': WebGL2KernelValueDynamicSingleArray2DI,
+   	      'Array2D(4)': WebGL2KernelValueDynamicSingleArray2DI,
+   	      'Array3D(2)': WebGL2KernelValueDynamicSingleArray3DI,
+   	      'Array3D(3)': WebGL2KernelValueDynamicSingleArray3DI,
+   	      'Array3D(4)': WebGL2KernelValueDynamicSingleArray3DI,
+   	      'Input': WebGL2KernelValueDynamicSingleInput,
+   	      'NumberTexture': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(1)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(2)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(3)': WebGL2KernelValueDynamicNumberTexture,
+   	      'ArrayTexture(4)': WebGL2KernelValueDynamicNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGL2KernelValueDynamicMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGL2KernelValueDynamicHTMLImage,
+   	      'OffscreenCanvas': WebGL2KernelValueDynamicHTMLImage,
+   	      'HTMLImage': WebGL2KernelValueDynamicHTMLImage,
+   	      'ImageBitmap': WebGL2KernelValueDynamicHTMLImage,
+   	      'ImageData': WebGL2KernelValueDynamicHTMLImage,
+   	      'HTMLImageArray': WebGL2KernelValueDynamicHTMLImageArray,
+   	      'HTMLVideo': WebGL2KernelValueDynamicHTMLVideo,
+   	    },
+   	    static: {
+   	      'Boolean': WebGL2KernelValueBoolean,
+   	      'Float': WebGL2KernelValueFloat,
+   	      'Integer': WebGL2KernelValueInteger,
+   	      'Array': WebGL2KernelValueSingleArray,
+   	      'Array(2)': WebGL2KernelValueArray2,
+   	      'Array(3)': WebGL2KernelValueArray3,
+   	      'Array(4)': WebGL2KernelValueArray4,
+   	      'Array1D(2)': WebGL2KernelValueSingleArray1DI,
+   	      'Array1D(3)': WebGL2KernelValueSingleArray1DI,
+   	      'Array1D(4)': WebGL2KernelValueSingleArray1DI,
+   	      'Array2D(2)': WebGL2KernelValueSingleArray2DI,
+   	      'Array2D(3)': WebGL2KernelValueSingleArray2DI,
+   	      'Array2D(4)': WebGL2KernelValueSingleArray2DI,
+   	      'Array3D(2)': WebGL2KernelValueSingleArray3DI,
+   	      'Array3D(3)': WebGL2KernelValueSingleArray3DI,
+   	      'Array3D(4)': WebGL2KernelValueSingleArray3DI,
+   	      'Input': WebGL2KernelValueSingleInput,
+   	      'NumberTexture': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(1)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(2)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(3)': WebGL2KernelValueNumberTexture,
+   	      'ArrayTexture(4)': WebGL2KernelValueNumberTexture,
+   	      'MemoryOptimizedNumberTexture': WebGL2KernelValueMemoryOptimizedNumberTexture,
+   	      'HTMLCanvas': WebGL2KernelValueHTMLImage,
+   	      'OffscreenCanvas': WebGL2KernelValueHTMLImage,
+   	      'HTMLImage': WebGL2KernelValueHTMLImage,
+   	      'ImageBitmap': WebGL2KernelValueHTMLImage,
+   	      'ImageData': WebGL2KernelValueHTMLImage,
+   	      'HTMLImageArray': WebGL2KernelValueHTMLImageArray,
+   	      'HTMLVideo': WebGL2KernelValueHTMLVideo,
+   	    }
+   	  },
+   	};
+
+   	function lookupKernelValueType(type, dynamic, precision, value) {
+   	  if (!type) {
+   	    throw new Error('type missing');
+   	  }
+   	  if (!dynamic) {
+   	    throw new Error('dynamic missing');
+   	  }
+   	  if (!precision) {
+   	    throw new Error('precision missing');
+   	  }
+   	  if (value.type) {
+   	    type = value.type;
+   	  }
+   	  const types = kernelValueMaps[precision][dynamic];
+   	  if (types[type] === false) {
+   	    return null;
+   	  } else if (types[type] === undefined) {
+   	    throw new Error(`Could not find a KernelValue for ${ type }`);
+   	  }
+   	  return types[type];
+   	}
+
+   	module.exports = {
+   	  kernelValueMaps,
+   	  lookupKernelValueType
+   	};
+   	},{"./kernel-value/array2":75,"./kernel-value/array3":76,"./kernel-value/array4":77,"./kernel-value/boolean":78,"./kernel-value/dynamic-html-image":80,"./kernel-value/dynamic-html-image-array":79,"./kernel-value/dynamic-html-video":81,"./kernel-value/dynamic-memory-optimized-number-texture":82,"./kernel-value/dynamic-number-texture":83,"./kernel-value/dynamic-single-array":84,"./kernel-value/dynamic-single-array1d-i":85,"./kernel-value/dynamic-single-array2d-i":86,"./kernel-value/dynamic-single-array3d-i":87,"./kernel-value/dynamic-single-input":88,"./kernel-value/dynamic-unsigned-array":89,"./kernel-value/dynamic-unsigned-input":90,"./kernel-value/float":91,"./kernel-value/html-image":93,"./kernel-value/html-image-array":92,"./kernel-value/html-video":94,"./kernel-value/integer":95,"./kernel-value/memory-optimized-number-texture":96,"./kernel-value/number-texture":97,"./kernel-value/single-array":98,"./kernel-value/single-array1d-i":99,"./kernel-value/single-array2d-i":100,"./kernel-value/single-array3d-i":101,"./kernel-value/single-input":102,"./kernel-value/unsigned-array":103,"./kernel-value/unsigned-input":104}],75:[function(require,module,exports){
+   	const { WebGLKernelValueArray2 } = require('../../web-gl/kernel-value/array2');
+
+   	class WebGL2KernelValueArray2 extends WebGLKernelValueArray2 {}
+
+   	module.exports = {
+   	  WebGL2KernelValueArray2
+   	};
+   	},{"../../web-gl/kernel-value/array2":41}],76:[function(require,module,exports){
+   	const { WebGLKernelValueArray3 } = require('../../web-gl/kernel-value/array3');
+
+   	class WebGL2KernelValueArray3 extends WebGLKernelValueArray3 {}
+
+   	module.exports = {
+   	  WebGL2KernelValueArray3
+   	};
+   	},{"../../web-gl/kernel-value/array3":42}],77:[function(require,module,exports){
+   	const { WebGLKernelValueArray4 } = require('../../web-gl/kernel-value/array4');
+
+   	class WebGL2KernelValueArray4 extends WebGLKernelValueArray4 {}
+
+   	module.exports = {
+   	  WebGL2KernelValueArray4
+   	};
+   	},{"../../web-gl/kernel-value/array4":43}],78:[function(require,module,exports){
+   	const { WebGLKernelValueBoolean } = require('../../web-gl/kernel-value/boolean');
+
+   	class WebGL2KernelValueBoolean extends WebGLKernelValueBoolean {}
+
+   	module.exports = {
+   	  WebGL2KernelValueBoolean
+   	};
+   	},{"../../web-gl/kernel-value/boolean":44}],79:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueHTMLImageArray } = require('./html-image-array');
+
+   	class WebGL2KernelValueDynamicHTMLImageArray extends WebGL2KernelValueHTMLImageArray {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2DArray ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(images) {
+   	    const { width, height } = images[0];
+   	    this.checkSize(width, height);
+   	    this.dimensions = [width, height, images.length];
+   	    this.textureSize = [width, height];
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(images);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicHTMLImageArray
+   	};
+   	},{"../../../utils":114,"./html-image-array":92}],80:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueDynamicHTMLImage } = require('../../web-gl/kernel-value/dynamic-html-image');
+
+   	class WebGL2KernelValueDynamicHTMLImage extends WebGLKernelValueDynamicHTMLImage {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicHTMLImage
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/dynamic-html-image":45}],81:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGL2KernelValueDynamicHTMLImage } = require('./dynamic-html-image');
+
+   	class WebGL2KernelValueDynamicHTMLVideo extends WebGL2KernelValueDynamicHTMLImage {}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicHTMLVideo
+   	};
+   	},{"../../../utils":114,"./dynamic-html-image":80}],82:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueDynamicMemoryOptimizedNumberTexture } = require('../../web-gl/kernel-value/dynamic-memory-optimized-number-texture');
+
+   	class WebGL2KernelValueDynamicMemoryOptimizedNumberTexture extends WebGLKernelValueDynamicMemoryOptimizedNumberTexture {
+   	  getSource() {
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${this.id}`,
+   	      `uniform ivec2 ${this.sizeId}`,
+   	      `uniform ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicMemoryOptimizedNumberTexture
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/dynamic-memory-optimized-number-texture":47}],83:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueDynamicNumberTexture } = require('../../web-gl/kernel-value/dynamic-number-texture');
+
+   	class WebGL2KernelValueDynamicNumberTexture extends WebGLKernelValueDynamicNumberTexture {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicNumberTexture
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/dynamic-number-texture":48}],84:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueSingleArray } = require('../../web-gl2/kernel-value/single-array');
+
+   	class WebGL2KernelValueDynamicSingleArray extends WebGL2KernelValueSingleArray {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.dimensions = utils.getDimensions(value, true);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicSingleArray
+   	};
+   	},{"../../../utils":114,"../../web-gl2/kernel-value/single-array":98}],85:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueSingleArray1DI } = require('../../web-gl2/kernel-value/single-array1d-i');
+
+   	class WebGL2KernelValueDynamicSingleArray1DI extends WebGL2KernelValueSingleArray1DI {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicSingleArray1DI
+   	};
+   	},{"../../../utils":114,"../../web-gl2/kernel-value/single-array1d-i":99}],86:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueSingleArray2DI } = require('../../web-gl2/kernel-value/single-array2d-i');
+
+   	class WebGL2KernelValueDynamicSingleArray2DI extends WebGL2KernelValueSingleArray2DI {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicSingleArray2DI
+   	};
+   	},{"../../../utils":114,"../../web-gl2/kernel-value/single-array2d-i":100}],87:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueSingleArray3DI } = require('../../web-gl2/kernel-value/single-array3d-i');
+
+   	class WebGL2KernelValueDynamicSingleArray3DI extends WebGL2KernelValueSingleArray3DI {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    this.setShape(value);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicSingleArray3DI
+   	};
+   	},{"../../../utils":114,"../../web-gl2/kernel-value/single-array3d-i":101}],88:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGL2KernelValueSingleInput } = require('../../web-gl2/kernel-value/single-input');
+
+   	class WebGL2KernelValueDynamicSingleInput extends WebGL2KernelValueSingleInput {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    let [w, h, d] = value.size;
+   	    this.dimensions = new Int32Array([w || 1, h || 1, d || 1]);
+   	    this.textureSize = utils.getMemoryOptimizedFloatTextureSize(this.dimensions, this.bitRatio);
+   	    this.uploadArrayLength = this.textureSize[0] * this.textureSize[1] * this.bitRatio;
+   	    this.checkSize(this.textureSize[0], this.textureSize[1]);
+   	    this.uploadValue = new Float32Array(this.uploadArrayLength);
+   	    this.kernel.setUniform3iv(this.dimensionsId, this.dimensions);
+   	    this.kernel.setUniform2iv(this.sizeId, this.textureSize);
+   	    super.updateValue(value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicSingleInput
+   	};
+   	},{"../../../utils":114,"../../web-gl2/kernel-value/single-input":102}],89:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueDynamicUnsignedArray } = require('../../web-gl/kernel-value/dynamic-unsigned-array');
+
+   	class WebGL2KernelValueDynamicUnsignedArray extends WebGLKernelValueDynamicUnsignedArray {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicUnsignedArray
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/dynamic-unsigned-array":54}],90:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueDynamicUnsignedInput } = require('../../web-gl/kernel-value/dynamic-unsigned-input');
+
+   	class WebGL2KernelValueDynamicUnsignedInput extends WebGLKernelValueDynamicUnsignedInput {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `uniform ${ variablePrecision } ivec2 ${this.sizeId}`,
+   	      `uniform ${ variablePrecision } ivec3 ${this.dimensionsId}`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueDynamicUnsignedInput
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/dynamic-unsigned-input":55}],91:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGLKernelValueFloat } = require('../../web-gl/kernel-value/float');
+
+   	class WebGL2KernelValueFloat extends WebGLKernelValueFloat {}
+
+   	module.exports = {
+   	  WebGL2KernelValueFloat
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/float":56}],92:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelArray } = require('../../web-gl/kernel-value/array');
+
+   	class WebGL2KernelValueHTMLImageArray extends WebGLKernelArray {
+   	  constructor(value, settings) {
+   	    super(value, settings);
+   	    this.checkSize(value[0].width, value[0].height);
+   	    this.dimensions = [value[0].width, value[0].height, value.length];
+   	    this.textureSize = [value[0].width, value[0].height];
+   	  }
+   	  defineTexture() {
+   	    const { context: gl } = this;
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+   	    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	  }
+
+   	  getStringValueHandler() {
+   	    return `const uploadValue_${this.name} = ${this.varName};\n`;
+   	  }
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2DArray ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(images) {
+   	    const { context: gl } = this;
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+   	    gl.texImage3D(
+   	      gl.TEXTURE_2D_ARRAY,
+   	      0,
+   	      gl.RGBA,
+   	      images[0].width,
+   	      images[0].height,
+   	      images.length,
+   	      0,
+   	      gl.RGBA,
+   	      gl.UNSIGNED_BYTE,
+   	      null
+   	    );
+   	    for (let i = 0; i < images.length; i++) {
+   	      const xOffset = 0;
+   	      const yOffset = 0;
+   	      const imageDepth = 1;
+   	      gl.texSubImage3D(
+   	        gl.TEXTURE_2D_ARRAY,
+   	        0,
+   	        xOffset,
+   	        yOffset,
+   	        i,
+   	        images[i].width,
+   	        images[i].height,
+   	        imageDepth,
+   	        gl.RGBA,
+   	        gl.UNSIGNED_BYTE,
+   	        this.uploadValue = images[i]
+   	      );
+   	    }
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueHTMLImageArray
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/array":40}],93:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueHTMLImage } = require('../../web-gl/kernel-value/html-image');
+
+   	class WebGL2KernelValueHTMLImage extends WebGLKernelValueHTMLImage {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueHTMLImage
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/html-image":57}],94:[function(require,module,exports){
+   	require('../../../utils');
+   	const { WebGL2KernelValueHTMLImage } = require('./html-image');
+
+   	class WebGL2KernelValueHTMLVideo extends WebGL2KernelValueHTMLImage {}
+
+   	module.exports = {
+   	  WebGL2KernelValueHTMLVideo
+   	};
+   	},{"../../../utils":114,"./html-image":93}],95:[function(require,module,exports){
+   	const { WebGLKernelValueInteger } = require('../../web-gl/kernel-value/integer');
+
+   	class WebGL2KernelValueInteger extends WebGLKernelValueInteger {
+   	  getSource(value) {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    if (this.origin === 'constants') {
+   	      return `const ${ variablePrecision } int ${this.id} = ${ parseInt(value) };\n`;
+   	    }
+   	    return `uniform ${ variablePrecision } int ${this.id};\n`;
+   	  }
+
+   	  updateValue(value) {
+   	    if (this.origin === 'constants') return;
+   	    this.kernel.setUniform1i(this.id, this.uploadValue = value);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueInteger
+   	};
+   	},{"../../web-gl/kernel-value/integer":60}],96:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueMemoryOptimizedNumberTexture } = require('../../web-gl/kernel-value/memory-optimized-number-texture');
+
+   	class WebGL2KernelValueMemoryOptimizedNumberTexture extends WebGLKernelValueMemoryOptimizedNumberTexture {
+   	  getSource() {
+   	    const { id, sizeId, textureSize, dimensionsId, dimensions } = this;
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform sampler2D ${id}`,
+   	      `${ variablePrecision } ivec2 ${sizeId} = ivec2(${textureSize[0]}, ${textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${dimensionsId} = ivec3(${dimensions[0]}, ${dimensions[1]}, ${dimensions[2]})`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueMemoryOptimizedNumberTexture
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/memory-optimized-number-texture":61}],97:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueNumberTexture } = require('../../web-gl/kernel-value/number-texture');
+
+   	class WebGL2KernelValueNumberTexture extends WebGLKernelValueNumberTexture {
+   	  getSource() {
+   	    const { id, sizeId, textureSize, dimensionsId, dimensions } = this;
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${id}`,
+   	      `${ variablePrecision } ivec2 ${sizeId} = ivec2(${textureSize[0]}, ${textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${dimensionsId} = ivec3(${dimensions[0]}, ${dimensions[1]}, ${dimensions[2]})`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueNumberTexture
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/number-texture":62}],98:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray } = require('../../web-gl/kernel-value/single-array');
+
+   	class WebGL2KernelValueSingleArray extends WebGLKernelValueSingleArray {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueSingleArray
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/single-array":63}],99:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray1DI } = require('../../web-gl/kernel-value/single-array1d-i');
+
+   	class WebGL2KernelValueSingleArray1DI extends WebGLKernelValueSingleArray1DI {
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueSingleArray1DI
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/single-array1d-i":64}],100:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray2DI } = require('../../web-gl/kernel-value/single-array2d-i');
+
+   	class WebGL2KernelValueSingleArray2DI extends WebGLKernelValueSingleArray2DI {
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueSingleArray2DI
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/single-array2d-i":65}],101:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleArray3DI } = require('../../web-gl/kernel-value/single-array3d-i');
+
+   	class WebGL2KernelValueSingleArray3DI extends WebGLKernelValueSingleArray3DI {
+   	  updateValue(value) {
+   	    if (value.constructor !== this.initialValueConstructor) {
+   	      this.onUpdateValueMismatch(value.constructor);
+   	      return;
+   	    }
+   	    const { context: gl } = this;
+   	    utils.flattenTo(value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueSingleArray3DI
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/single-array3d-i":66}],102:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueSingleInput } = require('../../web-gl/kernel-value/single-input');
+
+   	class WebGL2KernelValueSingleInput extends WebGLKernelValueSingleInput {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+
+   	  updateValue(input) {
+   	    const { context: gl } = this;
+   	    utils.flattenTo(input.value, this.uploadValue);
+   	    gl.activeTexture(this.contextHandle);
+   	    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+   	    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+   	    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize[0], this.textureSize[1], 0, gl.RGBA, gl.FLOAT, this.uploadValue);
+   	    this.kernel.setUniform1i(this.id, this.index);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueSingleInput
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/single-input":67}],103:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueUnsignedArray } = require('../../web-gl/kernel-value/unsigned-array');
+
+   	class WebGL2KernelValueUnsignedArray extends WebGLKernelValueUnsignedArray {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueUnsignedArray
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/unsigned-array":68}],104:[function(require,module,exports){
+   	const { utils } = require('../../../utils');
+   	const { WebGLKernelValueUnsignedInput } = require('../../web-gl/kernel-value/unsigned-input');
+
+   	class WebGL2KernelValueUnsignedInput extends WebGLKernelValueUnsignedInput {
+   	  getSource() {
+   	    const variablePrecision = this.getVariablePrecisionString();
+   	    return utils.linesToString([
+   	      `uniform ${ variablePrecision } sampler2D ${this.id}`,
+   	      `${ variablePrecision } ivec2 ${this.sizeId} = ivec2(${this.textureSize[0]}, ${this.textureSize[1]})`,
+   	      `${ variablePrecision } ivec3 ${this.dimensionsId} = ivec3(${this.dimensions[0]}, ${this.dimensions[1]}, ${this.dimensions[2]})`,
+   	    ]);
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2KernelValueUnsignedInput
+   	};
+   	},{"../../../utils":114,"../../web-gl/kernel-value/unsigned-input":69}],105:[function(require,module,exports){
+   	const { WebGLKernel } = require('../web-gl/kernel');
+   	const { WebGL2FunctionNode } = require('./function-node');
+   	const { FunctionBuilder } = require('../function-builder');
+   	const { utils } = require('../../utils');
+   	const { fragmentShader } = require('./fragment-shader');
+   	const { vertexShader } = require('./vertex-shader');
+   	const { lookupKernelValueType } = require('./kernel-value-maps');
+
+   	let isSupported = null;
+   	let testCanvas = null;
+   	let testContext = null;
+
+   	let features = null;
+
+   	class WebGL2Kernel extends WebGLKernel {
+   	  static get isSupported() {
+   	    if (isSupported !== null) {
+   	      return isSupported;
+   	    }
+   	    this.setupFeatureChecks();
+   	    isSupported = this.isContextMatch(testContext);
+   	    return isSupported;
+   	  }
+
+   	  static setupFeatureChecks() {
+   	    if (typeof document !== 'undefined') {
+   	      testCanvas = document.createElement('canvas');
+   	    } else if (typeof OffscreenCanvas !== 'undefined') {
+   	      testCanvas = new OffscreenCanvas(0, 0);
+   	    }
+   	    if (!testCanvas) return;
+   	    testContext = testCanvas.getContext('webgl2');
+   	    if (!testContext || !testContext.getExtension) return;
+   	    ({
+   	      EXT_color_buffer_float: testContext.getExtension('EXT_color_buffer_float'),
+   	      OES_texture_float_linear: testContext.getExtension('OES_texture_float_linear'),
+   	    });
+   	    features = this.getFeatures();
+   	  }
+
+   	  static isContextMatch(context) {
+   	    if (typeof WebGL2RenderingContext !== 'undefined') {
+   	      return context instanceof WebGL2RenderingContext;
+   	    }
+   	    return false;
+   	  }
+
+   	  static getFeatures() {
+   	    const gl = this.testContext;
+   	    return Object.freeze({
+   	      isFloatRead: this.getIsFloatRead(),
+   	      isIntegerDivisionAccurate: this.getIsIntegerDivisionAccurate(),
+   	      isSpeedTacticSupported: this.getIsSpeedTacticSupported(),
+   	      kernelMap: true,
+   	      isTextureFloat: true,
+   	      isDrawBuffers: true,
+   	      channelCount: this.getChannelCount(),
+   	      maxTextureSize: this.getMaxTextureSize(),
+   	      lowIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.LOW_INT),
+   	      lowFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.LOW_FLOAT),
+   	      mediumIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.MEDIUM_INT),
+   	      mediumFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.MEDIUM_FLOAT),
+   	      highIntPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_INT),
+   	      highFloatPrecision: gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT),
+   	    });
+   	  }
+
+   	  static getIsTextureFloat() {
+   	    return true;
+   	  }
+
+   	  static getChannelCount() {
+   	    return testContext.getParameter(testContext.MAX_DRAW_BUFFERS);
+   	  }
+
+   	  static getMaxTextureSize() {
+   	    return testContext.getParameter(testContext.MAX_TEXTURE_SIZE);
+   	  }
+
+   	  static lookupKernelValueType(type, dynamic, precision, value) {
+   	    return lookupKernelValueType(type, dynamic, precision, value);
+   	  }
+
+   	  static get testCanvas() {
+   	    return testCanvas;
+   	  }
+
+   	  static get testContext() {
+   	    return testContext;
+   	  }
+
+   	  static get features() {
+   	    return features;
+   	  }
+
+   	  static get fragmentShader() {
+   	    return fragmentShader;
+   	  }
+   	  static get vertexShader() {
+   	    return vertexShader;
+   	  }
+
+   	  initContext() {
+   	    const settings = {
+   	      alpha: false,
+   	      depth: false,
+   	      antialias: false
+   	    };
+   	    return this.canvas.getContext('webgl2', settings);
+   	  }
+
+   	  initExtensions() {
+   	    this.extensions = {
+   	      EXT_color_buffer_float: this.context.getExtension('EXT_color_buffer_float'),
+   	      OES_texture_float_linear: this.context.getExtension('OES_texture_float_linear'),
+   	    };
+   	  }
+
+   	  validateSettings(args) {
+   	    if (!this.validate) {
+   	      this.texSize = utils.getKernelTextureSize({
+   	        optimizeFloatMemory: this.optimizeFloatMemory,
+   	        precision: this.precision,
+   	      }, this.output);
+   	      return;
+   	    }
+
+   	    const { features } = this.constructor;
+   	    if (this.precision === 'single' && !features.isFloatRead) {
+   	      throw new Error('Float texture outputs are not supported');
+   	    } else if (!this.graphical && this.precision === null) {
+   	      this.precision = features.isFloatRead ? 'single' : 'unsigned';
+   	    }
+
+   	    if (this.fixIntegerDivisionAccuracy === null) {
+   	      this.fixIntegerDivisionAccuracy = !features.isIntegerDivisionAccurate;
+   	    } else if (this.fixIntegerDivisionAccuracy && features.isIntegerDivisionAccurate) {
+   	      this.fixIntegerDivisionAccuracy = false;
+   	    }
+
+   	    this.checkOutput();
+
+   	    if (!this.output || this.output.length === 0) {
+   	      if (args.length !== 1) {
+   	        throw new Error('Auto output only supported for kernels with only one input');
+   	      }
+
+   	      const argType = utils.getVariableType(args[0], this.strictIntegers);
+   	      switch (argType) {
+   	        case 'Array':
+   	          this.output = utils.getDimensions(argType);
+   	          break;
+   	        case 'NumberTexture':
+   	        case 'MemoryOptimizedNumberTexture':
+   	        case 'ArrayTexture(1)':
+   	        case 'ArrayTexture(2)':
+   	        case 'ArrayTexture(3)':
+   	        case 'ArrayTexture(4)':
+   	          this.output = args[0].output;
+   	          break;
+   	        default:
+   	          throw new Error('Auto output not supported for input type: ' + argType);
+   	      }
+   	    }
+
+   	    if (this.graphical) {
+   	      if (this.output.length !== 2) {
+   	        throw new Error('Output must have 2 dimensions on graphical mode');
+   	      }
+
+   	      if (this.precision === 'single') {
+   	        console.warn('Cannot use graphical mode and single precision at the same time');
+   	        this.precision = 'unsigned';
+   	      }
+
+   	      this.texSize = utils.clone(this.output);
+   	      return;
+   	    } else if (!this.graphical && this.precision === null && features.isTextureFloat) {
+   	      this.precision = 'single';
+   	    }
+
+   	    this.texSize = utils.getKernelTextureSize({
+   	      optimizeFloatMemory: this.optimizeFloatMemory,
+   	      precision: this.precision,
+   	    }, this.output);
+
+   	    this.checkTextureSize();
+   	  }
+
+   	  translateSource() {
+   	    const functionBuilder = FunctionBuilder.fromKernel(this, WebGL2FunctionNode, {
+   	      fixIntegerDivisionAccuracy: this.fixIntegerDivisionAccuracy
+   	    });
+   	    this.translatedSource = functionBuilder.getPrototypeString('kernel');
+   	    this.setupReturnTypes(functionBuilder);
+   	  }
+
+   	  drawBuffers() {
+   	    this.context.drawBuffers(this.drawBuffersMap);
+   	  }
+
+   	  getTextureFormat() {
+   	    const { context: gl } = this;
+   	    switch (this.getInternalFormat()) {
+   	      case gl.R32F:
+   	        return gl.RED;
+   	      case gl.RG32F:
+   	        return gl.RG;
+   	      case gl.RGBA32F:
+   	        return gl.RGBA;
+   	      case gl.RGBA:
+   	        return gl.RGBA;
+   	      default:
+   	        throw new Error('Unknown internal format');
+   	    }
+   	  }
+   	  getInternalFormat() {
+   	    const { context: gl } = this;
+
+   	    if (this.precision === 'single') {
+   	      if (this.pipeline) {
+   	        switch (this.returnType) {
+   	          case 'Number':
+   	          case 'Float':
+   	          case 'Integer':
+   	            if (this.optimizeFloatMemory) {
+   	              return gl.RGBA32F;
+   	            } else {
+   	              return gl.R32F;
+   	            }
+   	            case 'Array(2)':
+   	              return gl.RG32F;
+   	            case 'Array(3)': 
+   	            case 'Array(4)':
+   	              return gl.RGBA32F;
+   	            default:
+   	              throw new Error('Unhandled return type');
+   	        }
+   	      }
+   	      return gl.RGBA32F;
+   	    }
+   	    return gl.RGBA;
+   	  }
+
+   	  _setupOutputTexture() {
+   	    const gl = this.context;
+   	    if (this.texture) {
+   	      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture.texture, 0);
+   	      return;
+   	    }
+   	    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+   	    const texture = gl.createTexture();
+   	    const texSize = this.texSize;
+   	    gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount);
+   	    gl.bindTexture(gl.TEXTURE_2D, texture);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	    const format = this.getInternalFormat();
+   	    if (this.precision === 'single') {
+   	      gl.texStorage2D(gl.TEXTURE_2D, 1, format, texSize[0], texSize[1]);
+   	    } else {
+   	      gl.texImage2D(gl.TEXTURE_2D, 0, format, texSize[0], texSize[1], 0, format, gl.UNSIGNED_BYTE, null);
+   	    }
+   	    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+   	    this.texture = new this.TextureConstructor({
+   	      texture,
+   	      size: texSize,
+   	      dimensions: this.threadDim,
+   	      output: this.output,
+   	      context: this.context,
+   	      internalFormat: this.getInternalFormat(),
+   	      textureFormat: this.getTextureFormat(),
+   	      kernel: this,
+   	    });
+   	  }
+
+   	  _setupSubOutputTextures() {
+   	    const gl = this.context;
+   	    if (this.mappedTextures) {
+   	      for (let i = 0; i < this.subKernels.length; i++) {
+   	        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, this.mappedTextures[i].texture, 0);
+   	      }
+   	      return;
+   	    }
+   	    const texSize = this.texSize;
+   	    this.drawBuffersMap = [gl.COLOR_ATTACHMENT0];
+   	    this.mappedTextures = [];
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const texture = this.createTexture();
+   	      this.drawBuffersMap.push(gl.COLOR_ATTACHMENT0 + i + 1);
+   	      gl.activeTexture(gl.TEXTURE0 + this.constantTextureCount + this.argumentTextureCount + i);
+   	      gl.bindTexture(gl.TEXTURE_2D, texture);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+   	      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+   	      const format = this.getInternalFormat();
+   	      if (this.precision === 'single') {
+   	        gl.texStorage2D(gl.TEXTURE_2D, 1, format, texSize[0], texSize[1]);
+   	      } else {
+   	        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, texSize[0], texSize[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+   	      }
+   	      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i + 1, gl.TEXTURE_2D, texture, 0);
+
+   	      this.mappedTextures.push(new this.TextureConstructor({
+   	        texture,
+   	        size: texSize,
+   	        dimensions: this.threadDim,
+   	        output: this.output,
+   	        context: this.context,
+   	        internalFormat: this.getInternalFormat(),
+   	        textureFormat: this.getTextureFormat(),
+   	        kernel: this,
+   	      }));
+   	    }
+   	  }
+
+   	  _getHeaderString() {
+   	    return '';
+   	  }
+
+   	  _getTextureCoordinate() {
+   	    const subKernels = this.subKernels;
+   	    const variablePrecision = this.getVariablePrecisionString(this.texSize, this.tactic);
+   	    if (subKernels === null || subKernels.length < 1) {
+   	      return `in ${ variablePrecision } vec2 vTexCoord;\n`;
+   	    } else {
+   	      return `out ${ variablePrecision } vec2 vTexCoord;\n`;
+   	    }
+   	  }
+
+   	  _getMainArgumentsString(args) {
+   	    const result = [];
+   	    const argumentNames = this.argumentNames;
+   	    for (let i = 0; i < argumentNames.length; i++) {
+   	      result.push(this.kernelArguments[i].getSource(args[i]));
+   	    }
+   	    return result.join('');
+   	  }
+
+   	  getKernelString() {
+   	    const result = [this.getKernelResultDeclaration()];
+   	    const subKernels = this.subKernels;
+   	    if (subKernels !== null) {
+   	      result.push(
+   	        'layout(location = 0) out vec4 data0'
+   	      );
+   	      switch (this.returnType) {
+   	        case 'Number':
+   	        case 'Float':
+   	        case 'Integer':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            const subKernel = subKernels[i];
+   	            result.push(
+   	              subKernel.returnType === 'Integer' ?
+   	              `int subKernelResult_${ subKernel.name } = 0` :
+   	              `float subKernelResult_${ subKernel.name } = 0.0`,
+   	              `layout(location = ${ i + 1 }) out vec4 data${ i + 1 }`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(2)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec2 subKernelResult_${ subKernels[i].name }`,
+   	              `layout(location = ${ i + 1 }) out vec4 data${ i + 1 }`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(3)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec3 subKernelResult_${ subKernels[i].name }`,
+   	              `layout(location = ${ i + 1 }) out vec4 data${ i + 1 }`
+   	            );
+   	          }
+   	          break;
+   	        case 'Array(4)':
+   	          for (let i = 0; i < subKernels.length; i++) {
+   	            result.push(
+   	              `vec4 subKernelResult_${ subKernels[i].name }`,
+   	              `layout(location = ${ i + 1 }) out vec4 data${ i + 1 }`
+   	            );
+   	          }
+   	          break;
+   	      }
+   	    } else {
+   	      result.push(
+   	        'out vec4 data0'
+   	      );
+   	    }
+
+   	    return utils.linesToString(result) + this.translatedSource;
+   	  }
+
+   	  getMainResultGraphical() {
+   	    return utils.linesToString([
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  data0 = actualColor',
+   	    ]);
+   	  }
+
+   	  getMainResultPackedPixels() {
+   	    switch (this.returnType) {
+   	      case 'LiteralInteger':
+   	      case 'Number':
+   	      case 'Integer':
+   	      case 'Float':
+   	        return this.getMainResultKernelPackedPixels() +
+   	          this.getMainResultSubKernelPackedPixels();
+   	      default:
+   	        throw new Error(`packed output only usable with Numbers, "${this.returnType}" specified`);
+   	    }
+   	  }
+
+   	  getMainResultKernelPackedPixels() {
+   	    return utils.linesToString([
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      `  data0 = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(kernelResult)`
+   	    ]);
+   	  }
+
+   	  getMainResultSubKernelPackedPixels() {
+   	    const result = [];
+   	    if (!this.subKernels) return '';
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  data${i + 1} = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(float(subKernelResult_${this.subKernels[i].name}))`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  data${i + 1} = ${this.useLegacyEncoder ? 'legacyEncode32' : 'encode32'}(subKernelResult_${this.subKernels[i].name})`
+   	        );
+   	      }
+   	    }
+   	    return utils.linesToString(result);
+   	  }
+
+   	  getMainResultKernelMemoryOptimizedFloats(result, channel) {
+   	    result.push(
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      `  data0.${channel} = kernelResult`
+   	    );
+   	  }
+
+   	  getMainResultSubKernelMemoryOptimizedFloats(result, channel) {
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; i++) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  data${i + 1}.${channel} = float(subKernelResult_${subKernel.name})`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  data${i + 1}.${channel} = subKernelResult_${subKernel.name}`
+   	        );
+   	      }
+   	    }
+   	  }
+
+   	  getMainResultKernelNumberTexture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  data0[0] = kernelResult',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelNumberTexture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      const subKernel = this.subKernels[i];
+   	      if (subKernel.returnType === 'Integer') {
+   	        result.push(
+   	          `  data${i + 1}[0] = float(subKernelResult_${subKernel.name})`
+   	        );
+   	      } else {
+   	        result.push(
+   	          `  data${i + 1}[0] = subKernelResult_${subKernel.name}`
+   	        );
+   	      }
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray2Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  data0[0] = kernelResult[0]',
+   	      '  data0[1] = kernelResult[1]',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray2Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      const subKernel = this.subKernels[i];
+   	      result.push(
+   	        `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
+   	        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`
+   	      );
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray3Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  data0[0] = kernelResult[0]',
+   	      '  data0[1] = kernelResult[1]',
+   	      '  data0[2] = kernelResult[2]',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray3Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      const subKernel = this.subKernels[i];
+   	      result.push(
+   	        `  data${i + 1}[0] = subKernelResult_${subKernel.name}[0]`,
+   	        `  data${i + 1}[1] = subKernelResult_${subKernel.name}[1]`,
+   	        `  data${i + 1}[2] = subKernelResult_${subKernel.name}[2]`
+   	      );
+   	    }
+   	    return result;
+   	  }
+
+   	  getMainResultKernelArray4Texture() {
+   	    return [
+   	      '  threadId = indexTo3D(index, uOutputDim)',
+   	      '  kernel()',
+   	      '  data0 = kernelResult',
+   	    ];
+   	  }
+
+   	  getMainResultSubKernelArray4Texture() {
+   	    const result = [];
+   	    if (!this.subKernels) return result;
+   	    for (let i = 0; i < this.subKernels.length; ++i) {
+   	      result.push(
+   	        `  data${i + 1} = subKernelResult_${this.subKernels[i].name}`
+   	      );
+   	    }
+   	    return result;
+   	  }
+
+   	  destroyExtensions() {
+   	    this.extensions.EXT_color_buffer_float = null;
+   	    this.extensions.OES_texture_float_linear = null;
+   	  }
+
+   	  toJSON() {
+   	    const json = super.toJSON();
+   	    json.functionNodes = FunctionBuilder.fromKernel(this, WebGL2FunctionNode).toJSON();
+   	    json.settings.threadDim = this.threadDim;
+   	    return json;
+   	  }
+   	}
+
+   	module.exports = {
+   	  WebGL2Kernel
+   	};
+   	},{"../../utils":114,"../function-builder":9,"../web-gl/kernel":70,"./fragment-shader":72,"./function-node":73,"./kernel-value-maps":74,"./vertex-shader":106}],106:[function(require,module,exports){
+   	const vertexShader = `#version 300 es
+__FLOAT_TACTIC_DECLARATION__;
+__INT_TACTIC_DECLARATION__;
+__SAMPLER_2D_TACTIC_DECLARATION__;
+
+in vec2 aPos;
+in vec2 aTexCoord;
+
+out vec2 vTexCoord;
+uniform vec2 ratio;
+
+void main(void) {
+  gl_Position = vec4((aPos + vec2(1)) * ratio + vec2(-1), 0, 1);
+  vTexCoord = aTexCoord;
+}`;
+
+   	module.exports = {
+   	  vertexShader
+   	};
+   	},{}],107:[function(require,module,exports){
+   	const lib = require('./index');
+   	const GPU = lib.GPU;
+   	for (const p in lib) {
+   	  if (!lib.hasOwnProperty(p)) continue;
+   	  if (p === 'GPU') continue; 
+   	  GPU[p] = lib[p];
+   	}
+
+   	if (typeof window !== 'undefined') {
+   	  bindTo(window);
+   	}
+   	if (typeof self !== 'undefined') {
+   	  bindTo(self);
+   	}
+
+   	function bindTo(target) {
+   	  if (target.GPU) return;
+   	  Object.defineProperty(target, 'GPU', {
+   	    get() {
+   	      return GPU;
+   	    }
+   	  });
+   	}
+
+   	module.exports = lib;
+   	},{"./index":109}],108:[function(require,module,exports){
+   	const { gpuMock } = require('gpu-mock.js');
+   	const { utils } = require('./utils');
+   	require('./backend/kernel');
+   	const { CPUKernel } = require('./backend/cpu/kernel');
+   	const { HeadlessGLKernel } = require('./backend/headless-gl/kernel');
+   	const { WebGL2Kernel } = require('./backend/web-gl2/kernel');
+   	const { WebGLKernel } = require('./backend/web-gl/kernel');
+   	const { kernelRunShortcut } = require('./kernel-run-shortcut');
+
+
+   	const kernelOrder = [HeadlessGLKernel, WebGL2Kernel, WebGLKernel];
+
+   	const kernelTypes = ['gpu', 'cpu'];
+
+   	const internalKernels = {
+   	  'headlessgl': HeadlessGLKernel,
+   	  'webgl2': WebGL2Kernel,
+   	  'webgl': WebGLKernel,
+   	};
+
+   	let validate = true;
+
+   	class GPU {
+   	  static disableValidation() {
+   	    validate = false;
+   	  }
+
+   	  static enableValidation() {
+   	    validate = true;
+   	  }
+
+   	  static get isGPUSupported() {
+   	    return kernelOrder.some(Kernel => Kernel.isSupported);
+   	  }
+
+   	  static get isKernelMapSupported() {
+   	    return kernelOrder.some(Kernel => Kernel.isSupported && Kernel.features.kernelMap);
+   	  }
+
+   	  static get isOffscreenCanvasSupported() {
+   	    return (typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined') || typeof importScripts !== 'undefined';
+   	  }
+
+   	  static get isWebGLSupported() {
+   	    return WebGLKernel.isSupported;
+   	  }
+
+   	  static get isWebGL2Supported() {
+   	    return WebGL2Kernel.isSupported;
+   	  }
+
+   	  static get isHeadlessGLSupported() {
+   	    return HeadlessGLKernel.isSupported;
+   	  }
+
+   	  static get isCanvasSupported() {
+   	    return typeof HTMLCanvasElement !== 'undefined';
+   	  }
+
+   	  static get isGPUHTMLImageArraySupported() {
+   	    return WebGL2Kernel.isSupported;
+   	  }
+
+   	  static get isSinglePrecisionSupported() {
+   	    return kernelOrder.some(Kernel => Kernel.isSupported && Kernel.features.isFloatRead && Kernel.features.isTextureFloat);
+   	  }
+
+   	  constructor(settings) {
+   	    settings = settings || {};
+   	    this.canvas = settings.canvas || null;
+   	    this.context = settings.context || null;
+   	    this.mode = settings.mode;
+   	    this.Kernel = null;
+   	    this.kernels = [];
+   	    this.functions = [];
+   	    this.nativeFunctions = [];
+   	    this.injectedNative = null;
+   	    if (this.mode === 'dev') return;
+   	    this.chooseKernel();
+   	    if (settings.functions) {
+   	      for (let i = 0; i < settings.functions.length; i++) {
+   	        this.addFunction(settings.functions[i]);
+   	      }
+   	    }
+
+   	    if (settings.nativeFunctions) {
+   	      for (const p in settings.nativeFunctions) {
+   	        if (!settings.nativeFunctions.hasOwnProperty(p)) continue;
+   	        const s = settings.nativeFunctions[p];
+   	        const { name, source } = s;
+   	        this.addNativeFunction(name, source, s);
+   	      }
+   	    }
+   	  }
+
+   	  chooseKernel() {
+   	    if (this.Kernel) return;
+
+   	    let Kernel = null;
+
+   	    if (this.context) {
+   	      for (let i = 0; i < kernelOrder.length; i++) {
+   	        const ExternalKernel = kernelOrder[i];
+   	        if (ExternalKernel.isContextMatch(this.context)) {
+   	          if (!ExternalKernel.isSupported) {
+   	            throw new Error(`Kernel type ${ExternalKernel.name} not supported`);
+   	          }
+   	          Kernel = ExternalKernel;
+   	          break;
+   	        }
+   	      }
+   	      if (Kernel === null) {
+   	        throw new Error('unknown Context');
+   	      }
+   	    } else if (this.mode) {
+   	      if (this.mode in internalKernels) {
+   	        if (!validate || internalKernels[this.mode].isSupported) {
+   	          Kernel = internalKernels[this.mode];
+   	        }
+   	      } else if (this.mode === 'gpu') {
+   	        for (let i = 0; i < kernelOrder.length; i++) {
+   	          if (kernelOrder[i].isSupported) {
+   	            Kernel = kernelOrder[i];
+   	            break;
+   	          }
+   	        }
+   	      } else if (this.mode === 'cpu') {
+   	        Kernel = CPUKernel;
+   	      }
+   	      if (!Kernel) {
+   	        throw new Error(`A requested mode of "${this.mode}" and is not supported`);
+   	      }
+   	    } else {
+   	      for (let i = 0; i < kernelOrder.length; i++) {
+   	        if (kernelOrder[i].isSupported) {
+   	          Kernel = kernelOrder[i];
+   	          break;
+   	        }
+   	      }
+   	      if (!Kernel) {
+   	        Kernel = CPUKernel;
+   	      }
+   	    }
+
+   	    if (!this.mode) {
+   	      this.mode = Kernel.mode;
+   	    }
+   	    this.Kernel = Kernel;
+   	  }
+
+   	  createKernel(source, settings) {
+   	    if (typeof source === 'undefined') {
+   	      throw new Error('Missing source parameter');
+   	    }
+   	    if (typeof source !== 'object' && !utils.isFunction(source) && typeof source !== 'string') {
+   	      throw new Error('source parameter not a function');
+   	    }
+
+   	    const kernels = this.kernels;
+   	    if (this.mode === 'dev') {
+   	      const devKernel = gpuMock(source, upgradeDeprecatedCreateKernelSettings(settings));
+   	      kernels.push(devKernel);
+   	      return devKernel;
+   	    }
+
+   	    source = typeof source === 'function' ? source.toString() : source;
+   	    const switchableKernels = {};
+   	    const settingsCopy = upgradeDeprecatedCreateKernelSettings(settings) || {};
+   	    if (settings && typeof settings.argumentTypes === 'object') {
+   	      settingsCopy.argumentTypes = Object.keys(settings.argumentTypes).map(argumentName => settings.argumentTypes[argumentName]);
+   	    }
+
+   	    function onRequestFallback(args) {
+   	      console.warn('Falling back to CPU');
+   	      const fallbackKernel = new CPUKernel(source, {
+   	        argumentTypes: kernelRun.argumentTypes,
+   	        constantTypes: kernelRun.constantTypes,
+   	        graphical: kernelRun.graphical,
+   	        loopMaxIterations: kernelRun.loopMaxIterations,
+   	        constants: kernelRun.constants,
+   	        dynamicOutput: kernelRun.dynamicOutput,
+   	        dynamicArgument: kernelRun.dynamicArguments,
+   	        output: kernelRun.output,
+   	        precision: kernelRun.precision,
+   	        pipeline: kernelRun.pipeline,
+   	        immutable: kernelRun.immutable,
+   	        optimizeFloatMemory: kernelRun.optimizeFloatMemory,
+   	        fixIntegerDivisionAccuracy: kernelRun.fixIntegerDivisionAccuracy,
+   	        functions: kernelRun.functions,
+   	        nativeFunctions: kernelRun.nativeFunctions,
+   	        injectedNative: kernelRun.injectedNative,
+   	        subKernels: kernelRun.subKernels,
+   	        strictIntegers: kernelRun.strictIntegers,
+   	        debug: kernelRun.debug,
+   	      });
+   	      fallbackKernel.build.apply(fallbackKernel, args);
+   	      const result = fallbackKernel.run.apply(fallbackKernel, args);
+   	      kernelRun.replaceKernel(fallbackKernel);
+   	      return result;
+   	    }
+
+   	    function onRequestSwitchKernel(reasons, args, _kernel) {
+   	      if (_kernel.debug) {
+   	        console.warn('Switching kernels');
+   	      }
+   	      let newOutput = null;
+   	      if (_kernel.signature && !switchableKernels[_kernel.signature]) {
+   	        switchableKernels[_kernel.signature] = _kernel;
+   	      }
+   	      if (_kernel.dynamicOutput) {
+   	        for (let i = reasons.length - 1; i >= 0; i--) {
+   	          const reason = reasons[i];
+   	          if (reason.type === 'outputPrecisionMismatch') {
+   	            newOutput = reason.needed;
+   	          }
+   	        }
+   	      }
+
+   	      const Constructor = _kernel.constructor;
+   	      const argumentTypes = Constructor.getArgumentTypes(_kernel, args);
+   	      const signature = Constructor.getSignature(_kernel, argumentTypes);
+   	      const existingKernel = switchableKernels[signature];
+   	      if (existingKernel) {
+   	        existingKernel.onActivate(_kernel);
+   	        return existingKernel;
+   	      }
+
+   	      const newKernel = switchableKernels[signature] = new Constructor(source, {
+   	        argumentTypes,
+   	        constantTypes: _kernel.constantTypes,
+   	        graphical: _kernel.graphical,
+   	        loopMaxIterations: _kernel.loopMaxIterations,
+   	        constants: _kernel.constants,
+   	        dynamicOutput: _kernel.dynamicOutput,
+   	        dynamicArgument: _kernel.dynamicArguments,
+   	        context: _kernel.context,
+   	        canvas: _kernel.canvas,
+   	        output: newOutput || _kernel.output,
+   	        precision: _kernel.precision,
+   	        pipeline: _kernel.pipeline,
+   	        immutable: _kernel.immutable,
+   	        optimizeFloatMemory: _kernel.optimizeFloatMemory,
+   	        fixIntegerDivisionAccuracy: _kernel.fixIntegerDivisionAccuracy,
+   	        functions: _kernel.functions,
+   	        nativeFunctions: _kernel.nativeFunctions,
+   	        injectedNative: _kernel.injectedNative,
+   	        subKernels: _kernel.subKernels,
+   	        strictIntegers: _kernel.strictIntegers,
+   	        debug: _kernel.debug,
+   	        gpu: _kernel.gpu,
+   	        validate,
+   	        returnType: _kernel.returnType,
+   	        tactic: _kernel.tactic,
+   	        onRequestFallback,
+   	        onRequestSwitchKernel,
+   	        texture: _kernel.texture,
+   	        mappedTextures: _kernel.mappedTextures,
+   	        drawBuffersMap: _kernel.drawBuffersMap,
+   	      });
+   	      newKernel.build.apply(newKernel, args);
+   	      kernelRun.replaceKernel(newKernel);
+   	      kernels.push(newKernel);
+   	      return newKernel;
+   	    }
+   	    const mergedSettings = Object.assign({
+   	      context: this.context,
+   	      canvas: this.canvas,
+   	      functions: this.functions,
+   	      nativeFunctions: this.nativeFunctions,
+   	      injectedNative: this.injectedNative,
+   	      gpu: this,
+   	      validate,
+   	      onRequestFallback,
+   	      onRequestSwitchKernel
+   	    }, settingsCopy);
+
+   	    const kernel = new this.Kernel(source, mergedSettings);
+   	    const kernelRun = kernelRunShortcut(kernel);
+
+   	    if (!this.canvas) {
+   	      this.canvas = kernel.canvas;
+   	    }
+
+   	    if (!this.context) {
+   	      this.context = kernel.context;
+   	    }
+
+   	    kernels.push(kernel);
+
+   	    return kernelRun;
+   	  }
+
+   	  createKernelMap() {
+   	    let fn;
+   	    let settings;
+   	    const argument2Type = typeof arguments[arguments.length - 2];
+   	    if (argument2Type === 'function' || argument2Type === 'string') {
+   	      fn = arguments[arguments.length - 2];
+   	      settings = arguments[arguments.length - 1];
+   	    } else {
+   	      fn = arguments[arguments.length - 1];
+   	    }
+
+   	    if (this.mode !== 'dev') {
+   	      if (!this.Kernel.isSupported || !this.Kernel.features.kernelMap) {
+   	        if (this.mode && kernelTypes.indexOf(this.mode) < 0) {
+   	          throw new Error(`kernelMap not supported on ${this.Kernel.name}`);
+   	        }
+   	      }
+   	    }
+
+   	    const settingsCopy = upgradeDeprecatedCreateKernelSettings(settings);
+   	    if (settings && typeof settings.argumentTypes === 'object') {
+   	      settingsCopy.argumentTypes = Object.keys(settings.argumentTypes).map(argumentName => settings.argumentTypes[argumentName]);
+   	    }
+
+   	    if (Array.isArray(arguments[0])) {
+   	      settingsCopy.subKernels = [];
+   	      const functions = arguments[0];
+   	      for (let i = 0; i < functions.length; i++) {
+   	        const source = functions[i].toString();
+   	        const name = utils.getFunctionNameFromString(source);
+   	        settingsCopy.subKernels.push({
+   	          name,
+   	          source,
+   	          property: i,
+   	        });
+   	      }
+   	    } else {
+   	      settingsCopy.subKernels = [];
+   	      const functions = arguments[0];
+   	      for (let p in functions) {
+   	        if (!functions.hasOwnProperty(p)) continue;
+   	        const source = functions[p].toString();
+   	        const name = utils.getFunctionNameFromString(source);
+   	        settingsCopy.subKernels.push({
+   	          name: name || p,
+   	          source,
+   	          property: p,
+   	        });
+   	      }
+   	    }
+   	    return this.createKernel(fn, settingsCopy);
+   	  }
+
+   	  combineKernels() {
+   	    const firstKernel = arguments[0];
+   	    const combinedKernel = arguments[arguments.length - 1];
+   	    if (firstKernel.kernel.constructor.mode === 'cpu') return combinedKernel;
+   	    const canvas = arguments[0].canvas;
+   	    const context = arguments[0].context;
+   	    const max = arguments.length - 1;
+   	    for (let i = 0; i < max; i++) {
+   	      arguments[i]
+   	        .setCanvas(canvas)
+   	        .setContext(context)
+   	        .setPipeline(true);
+   	    }
+
+   	    return function() {
+   	      const texture = combinedKernel.apply(this, arguments);
+   	      if (texture.toArray) {
+   	        return texture.toArray();
+   	      }
+   	      return texture;
+   	    };
+   	  }
+
+   	  setFunctions(functions) {
+   	    this.functions = functions;
+   	    return this;
+   	  }
+
+   	  setNativeFunctions(nativeFunctions) {
+   	    this.nativeFunctions = nativeFunctions;
+   	    return this;
+   	  }
+
+   	  addFunction(source, settings) {
+   	    this.functions.push({ source, settings });
+   	    return this;
+   	  }
+
+   	  addNativeFunction(name, source, settings) {
+   	    if (this.kernels.length > 0) {
+   	      throw new Error('Cannot call "addNativeFunction" after "createKernels" has been called.');
+   	    }
+   	    this.nativeFunctions.push(Object.assign({ name, source }, settings));
+   	    return this;
+   	  }
+
+   	  injectNative(source) {
+   	    this.injectedNative = source;
+   	    return this;
+   	  }
+
+   	  destroy() {
+   	    return new Promise((resolve, reject) => {
+   	      if (!this.kernels) {
+   	        resolve();
+   	      }
+   	      setTimeout(() => {
+   	        try {
+   	          for (let i = 0; i < this.kernels.length; i++) {
+   	            this.kernels[i].destroy(true); 
+   	          }
+   	          let firstKernel = this.kernels[0];
+   	          if (firstKernel) {
+   	            if (firstKernel.kernel) {
+   	              firstKernel = firstKernel.kernel;
+   	            }
+   	            if (firstKernel.constructor.destroyContext) {
+   	              firstKernel.constructor.destroyContext(this.context);
+   	            }
+   	          }
+   	        } catch (e) {
+   	          reject(e);
+   	        }
+   	        resolve();
+   	      }, 0);
+   	    });
+   	  }
+   	}
+
+
+   	function upgradeDeprecatedCreateKernelSettings(settings) {
+   	  if (!settings) {
+   	    return {};
+   	  }
+   	  const upgradedSettings = Object.assign({}, settings);
+
+   	  if (settings.hasOwnProperty('floatOutput')) {
+   	    utils.warnDeprecated('setting', 'floatOutput', 'precision');
+   	    upgradedSettings.precision = settings.floatOutput ? 'single' : 'unsigned';
+   	  }
+   	  if (settings.hasOwnProperty('outputToTexture')) {
+   	    utils.warnDeprecated('setting', 'outputToTexture', 'pipeline');
+   	    upgradedSettings.pipeline = Boolean(settings.outputToTexture);
+   	  }
+   	  if (settings.hasOwnProperty('outputImmutable')) {
+   	    utils.warnDeprecated('setting', 'outputImmutable', 'immutable');
+   	    upgradedSettings.immutable = Boolean(settings.outputImmutable);
+   	  }
+   	  if (settings.hasOwnProperty('floatTextures')) {
+   	    utils.warnDeprecated('setting', 'floatTextures', 'optimizeFloatMemory');
+   	    upgradedSettings.optimizeFloatMemory = Boolean(settings.floatTextures);
+   	  }
+   	  return upgradedSettings;
+   	}
+
+   	module.exports = {
+   	  GPU,
+   	  kernelOrder,
+   	  kernelTypes
+   	};
+   	},{"./backend/cpu/kernel":8,"./backend/headless-gl/kernel":34,"./backend/kernel":36,"./backend/web-gl/kernel":70,"./backend/web-gl2/kernel":105,"./kernel-run-shortcut":111,"./utils":114,"gpu-mock.js":4}],109:[function(require,module,exports){
+   	const { GPU } = require('./gpu');
+   	const { alias } = require('./alias');
+   	const { utils } = require('./utils');
+   	const { Input, input } = require('./input');
+   	const { Texture } = require('./texture');
+   	const { FunctionBuilder } = require('./backend/function-builder');
+   	const { FunctionNode } = require('./backend/function-node');
+   	const { CPUFunctionNode } = require('./backend/cpu/function-node');
+   	const { CPUKernel } = require('./backend/cpu/kernel');
+
+   	const { HeadlessGLKernel } = require('./backend/headless-gl/kernel');
+
+   	const { WebGLFunctionNode } = require('./backend/web-gl/function-node');
+   	const { WebGLKernel } = require('./backend/web-gl/kernel');
+   	const { kernelValueMaps: webGLKernelValueMaps } = require('./backend/web-gl/kernel-value-maps');
+
+   	const { WebGL2FunctionNode } = require('./backend/web-gl2/function-node');
+   	const { WebGL2Kernel } = require('./backend/web-gl2/kernel');
+   	const { kernelValueMaps: webGL2KernelValueMaps } = require('./backend/web-gl2/kernel-value-maps');
+
+   	const { GLKernel } = require('./backend/gl/kernel');
+
+   	const { Kernel } = require('./backend/kernel');
+
+   	const { FunctionTracer } = require('./backend/function-tracer');
+
+   	const mathRandom = require('./plugins/math-random-uniformly-distributed');
+
+   	module.exports = {
+   	  alias,
+   	  CPUFunctionNode,
+   	  CPUKernel,
+   	  GPU,
+   	  FunctionBuilder,
+   	  FunctionNode,
+   	  HeadlessGLKernel,
+   	  Input,
+   	  input,
+   	  Texture,
+   	  utils,
+
+   	  WebGL2FunctionNode,
+   	  WebGL2Kernel,
+   	  webGL2KernelValueMaps,
+
+   	  WebGLFunctionNode,
+   	  WebGLKernel,
+   	  webGLKernelValueMaps,
+
+   	  GLKernel,
+   	  Kernel,
+   	  FunctionTracer,
+
+   	  plugins: {
+   	    mathRandom
+   	  }
+   	};
+   	},{"./alias":5,"./backend/cpu/function-node":6,"./backend/cpu/kernel":8,"./backend/function-builder":9,"./backend/function-node":10,"./backend/function-tracer":11,"./backend/gl/kernel":13,"./backend/headless-gl/kernel":34,"./backend/kernel":36,"./backend/web-gl/function-node":38,"./backend/web-gl/kernel":70,"./backend/web-gl/kernel-value-maps":39,"./backend/web-gl2/function-node":73,"./backend/web-gl2/kernel":105,"./backend/web-gl2/kernel-value-maps":74,"./gpu":108,"./input":110,"./plugins/math-random-uniformly-distributed":112,"./texture":113,"./utils":114}],110:[function(require,module,exports){
+   	class Input {
+   	  constructor(value, size) {
+   	    this.value = value;
+   	    if (Array.isArray(size)) {
+   	      this.size = size;
+   	    } else {
+   	      this.size = new Int32Array(3);
+   	      if (size.z) {
+   	        this.size = new Int32Array([size.x, size.y, size.z]);
+   	      } else if (size.y) {
+   	        this.size = new Int32Array([size.x, size.y]);
+   	      } else {
+   	        this.size = new Int32Array([size.x]);
+   	      }
+   	    }
+
+   	    const [w, h, d] = this.size;
+   	    if (d) {
+   	      if (this.value.length !== (w * h * d)) {
+   	        throw new Error(`Input size ${this.value.length} does not match ${w} * ${h} * ${d} = ${(h * w * d)}`);
+   	      }
+   	    } else if (h) {
+   	      if (this.value.length !== (w * h)) {
+   	        throw new Error(`Input size ${this.value.length} does not match ${w} * ${h} = ${(h * w)}`);
+   	      }
+   	    } else {
+   	      if (this.value.length !== w) {
+   	        throw new Error(`Input size ${this.value.length} does not match ${w}`);
+   	      }
+   	    }
+
+   	  }
+
+   	  toArray() {
+   	    const { utils } = require('./utils');
+   	    const [w, h, d] = this.size;
+   	    if (d) {
+   	      return utils.erectMemoryOptimized3DFloat(this.value.subarray ? this.value : new Float32Array(this.value), w, h, d);
+   	    } else if (h) {
+   	      return utils.erectMemoryOptimized2DFloat(this.value.subarray ? this.value : new Float32Array(this.value), w, h);
+   	    } else {
+   	      return this.value;
+   	    }
+   	  }
+   	}
+
+   	function input(value, size) {
+   	  return new Input(value, size);
+   	}
+
+   	module.exports = {
+   	  Input,
+   	  input
+   	};
+   	},{"./utils":114}],111:[function(require,module,exports){
+   	const { utils } = require('./utils');
+
+   	function kernelRunShortcut(kernel) {
+   	  let run = function() {
+   	    kernel.build.apply(kernel, arguments);
+   	    run = function() {
+   	      let result = kernel.run.apply(kernel, arguments);
+   	      if (kernel.switchingKernels) {
+   	        const reasons = kernel.resetSwitchingKernels();
+   	        const newKernel = kernel.onRequestSwitchKernel(reasons, arguments, kernel);
+   	        shortcut.kernel = kernel = newKernel;
+   	        result = newKernel.run.apply(newKernel, arguments);
+   	      }
+   	      if (kernel.renderKernels) {
+   	        return kernel.renderKernels();
+   	      } else if (kernel.renderOutput) {
+   	        return kernel.renderOutput();
+   	      } else {
+   	        return result;
+   	      }
+   	    };
+   	    return run.apply(kernel, arguments);
+   	  };
+   	  const shortcut = function() {
+   	    return run.apply(kernel, arguments);
+   	  };
+   	  shortcut.exec = function() {
+   	    return new Promise((accept, reject) => {
+   	      try {
+   	        accept(run.apply(this, arguments));
+   	      } catch (e) {
+   	        reject(e);
+   	      }
+   	    });
+   	  };
+   	  shortcut.replaceKernel = function(replacementKernel) {
+   	    kernel = replacementKernel;
+   	    bindKernelToShortcut(kernel, shortcut);
+   	  };
+
+   	  bindKernelToShortcut(kernel, shortcut);
+   	  return shortcut;
+   	}
+
+   	function bindKernelToShortcut(kernel, shortcut) {
+   	  if (shortcut.kernel) {
+   	    shortcut.kernel = kernel;
+   	    return;
+   	  }
+   	  const properties = utils.allPropertiesOf(kernel);
+   	  for (let i = 0; i < properties.length; i++) {
+   	    const property = properties[i];
+   	    if (property[0] === '_' && property[1] === '_') continue;
+   	    if (typeof kernel[property] === 'function') {
+   	      if (property.substring(0, 3) === 'add' || property.substring(0, 3) === 'set') {
+   	        shortcut[property] = function() {
+   	          shortcut.kernel[property].apply(shortcut.kernel, arguments);
+   	          return shortcut;
+   	        };
+   	      } else {
+   	        shortcut[property] = function() {
+   	          return shortcut.kernel[property].apply(shortcut.kernel, arguments);
+   	        };
+   	      }
+   	    } else {
+   	      shortcut.__defineGetter__(property, () => shortcut.kernel[property]);
+   	      shortcut.__defineSetter__(property, (value) => {
+   	        shortcut.kernel[property] = value;
+   	      });
+   	    }
+   	  }
+   	  shortcut.kernel = kernel;
+   	}
+   	module.exports = {
+   	  kernelRunShortcut
+   	};
+   	},{"./utils":114}],112:[function(require,module,exports){
+   	const source = `// https://www.shadertoy.com/view/4t2SDh
+//note: uniformly distributed, normalized rand, [0,1]
+highp float randomSeedShift = 1.0;
+highp float slide = 1.0;
+uniform highp float randomSeed1;
+uniform highp float randomSeed2;
+
+highp float nrand(highp vec2 n) {
+  highp float result = fract(sin(dot((n.xy + 1.0) * vec2(randomSeed1 * slide, randomSeed2 * randomSeedShift), vec2(12.9898, 78.233))) * 43758.5453);
+  randomSeedShift = result;
+  if (randomSeedShift > 0.5) {
+    slide += 0.00009; 
+  } else {
+    slide += 0.0009;
+  }
+  return result;
+}`;
+
+   	const name = 'math-random-uniformly-distributed';
+
+   	const functionMatch = `Math.random()`;
+
+   	const functionReplace = `nrand(vTexCoord)`;
+
+   	const functionReturnType = 'Number';
+   	const onBeforeRun = (kernel) => {
+   	  kernel.setUniform1f('randomSeed1', Math.random());
+   	  kernel.setUniform1f('randomSeed2', Math.random());
+   	};
+
+   	const plugin = {
+   	  name,
+   	  onBeforeRun,
+   	  functionMatch,
+   	  functionReplace,
+   	  functionReturnType,
+   	  source
+   	};
+
+   	module.exports = plugin;
+   	},{}],113:[function(require,module,exports){
+   	class Texture {
+   	  constructor(settings) {
+   	    const {
+   	      texture,
+   	      size,
+   	      dimensions,
+   	      output,
+   	      context,
+   	      type = 'NumberTexture',
+   	      kernel,
+   	      internalFormat,
+   	      textureFormat
+   	    } = settings;
+   	    if (!output) throw new Error('settings property "output" required.');
+   	    if (!context) throw new Error('settings property "context" required.');
+   	    if (!texture) throw new Error('settings property "texture" required.');
+   	    if (!kernel) throw new Error('settings property "kernel" required.');
+   	    this.texture = texture;
+   	    if (texture._refs) {
+   	      texture._refs++;
+   	    } else {
+   	      texture._refs = 1;
+   	    }
+   	    this.size = size;
+   	    this.dimensions = dimensions;
+   	    this.output = output;
+   	    this.context = context;
+   	    this.kernel = kernel;
+   	    this.type = type;
+   	    this._deleted = false;
+   	    this.internalFormat = internalFormat;
+   	    this.textureFormat = textureFormat;
+   	  }
+
+   	  toArray() {
+   	    throw new Error(`Not implemented on ${this.constructor.name}`);
+   	  }
+
+   	  clone() {
+   	    throw new Error(`Not implemented on ${this.constructor.name}`);
+   	  }
+
+   	  delete() {
+   	    throw new Error(`Not implemented on ${this.constructor.name}`);
+   	  }
+
+   	  clear() {
+   	    throw new Error(`Not implemented on ${this.constructor.name}`);
+   	  }
+   	}
+
+   	module.exports = {
+   	  Texture
+   	};
+   	},{}],114:[function(require,module,exports){
+   	const acorn = require('acorn');
+   	const { Input } = require('./input');
+   	const { Texture } = require('./texture');
+
+   	const FUNCTION_NAME = /function ([^(]*)/;
+   	const STRIP_COMMENTS = /((\/\/.*$)|(\/\*[\s\S]*?\*\/))/mg;
+   	const ARGUMENT_NAMES = /([^\s,]+)/g;
+
+   	const utils = {
+   	  systemEndianness() {
+   	    return _systemEndianness;
+   	  },
+   	  getSystemEndianness() {
+   	    const b = new ArrayBuffer(4);
+   	    const a = new Uint32Array(b);
+   	    const c = new Uint8Array(b);
+   	    a[0] = 0xdeadbeef;
+   	    if (c[0] === 0xef) return 'LE';
+   	    if (c[0] === 0xde) return 'BE';
+   	    throw new Error('unknown endianness');
+   	  },
+
+   	  isFunction(funcObj) {
+   	    return typeof(funcObj) === 'function';
+   	  },
+
+   	  isFunctionString(fn) {
+   	    if (typeof fn === 'string') {
+   	      return (fn
+   	        .slice(0, 'function'.length)
+   	        .toLowerCase() === 'function');
+   	    }
+   	    return false;
+   	  },
+
+   	  getFunctionNameFromString(funcStr) {
+   	    const result = FUNCTION_NAME.exec(funcStr);
+   	    if (!result || result.length === 0) return null;
+   	    return result[1].trim();
+   	  },
+
+   	  getFunctionBodyFromString(funcStr) {
+   	    return funcStr.substring(funcStr.indexOf('{') + 1, funcStr.lastIndexOf('}'));
+   	  },
+
+   	  getArgumentNamesFromString(fn) {
+   	    const fnStr = fn.replace(STRIP_COMMENTS, '');
+   	    let result = fnStr.slice(fnStr.indexOf('(') + 1, fnStr.indexOf(')')).match(ARGUMENT_NAMES);
+   	    if (result === null) {
+   	      result = [];
+   	    }
+   	    return result;
+   	  },
+
+   	  clone(obj) {
+   	    if (obj === null || typeof obj !== 'object' || obj.hasOwnProperty('isActiveClone')) return obj;
+
+   	    const temp = obj.constructor(); 
+
+   	    for (let key in obj) {
+   	      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+   	        obj.isActiveClone = null;
+   	        temp[key] = utils.clone(obj[key]);
+   	        delete obj.isActiveClone;
+   	      }
+   	    }
+
+   	    return temp;
+   	  },
+
+   	  isArray(array) {
+   	    return !isNaN(array.length);
+   	  },
+
+   	  getVariableType(value, strictIntegers) {
+   	    if (utils.isArray(value)) {
+   	      if (value.length > 0 && value[0].nodeName === 'IMG') {
+   	        return 'HTMLImageArray';
+   	      }
+   	      return 'Array';
+   	    }
+
+   	    switch (value.constructor) {
+   	      case Boolean:
+   	        return 'Boolean';
+   	      case Number:
+   	        if (strictIntegers && Number.isInteger(value)) {
+   	          return 'Integer';
+   	        }
+   	        return 'Float';
+   	      case Texture:
+   	        return value.type;
+   	      case Input:
+   	        return 'Input';
+   	    }
+   	    if ('nodeName' in value) {
+   	      switch (value.nodeName) {
+   	        case 'IMG':
+   	          return 'HTMLImage';
+   	        case 'CANVAS':
+   	          return 'HTMLImage';
+   	        case 'VIDEO':
+   	          return 'HTMLVideo';
+   	      }
+   	    } else if (value.hasOwnProperty('type')) {
+   	      return value.type;
+   	    } else if (typeof OffscreenCanvas !== 'undefined' && value instanceof OffscreenCanvas) {
+   	      return 'OffscreenCanvas';
+   	    } else if (typeof ImageBitmap !== 'undefined' && value instanceof ImageBitmap) {
+   	      return 'ImageBitmap';
+   	    } else if (typeof ImageData !== 'undefined' && value instanceof ImageData) {
+   	      return 'ImageData';
+   	    }
+   	    return 'Unknown';
+   	  },
+
+   	  getKernelTextureSize(settings, dimensions) {
+   	    let [w, h, d] = dimensions;
+   	    let texelCount = (w || 1) * (h || 1) * (d || 1);
+
+   	    if (settings.optimizeFloatMemory && settings.precision === 'single') {
+   	      w = texelCount = Math.ceil(texelCount / 4);
+   	    }
+   	    if (h > 1 && w * h === texelCount) {
+   	      return new Int32Array([w, h]);
+   	    }
+   	    return utils.closestSquareDimensions(texelCount);
+   	  },
+
+   	  closestSquareDimensions(length) {
+   	    const sqrt = Math.sqrt(length);
+   	    let high = Math.ceil(sqrt);
+   	    let low = Math.floor(sqrt);
+   	    while (high * low < length) {
+   	      high--;
+   	      low = Math.ceil(length / high);
+   	    }
+   	    return new Int32Array([low, Math.ceil(length / low)]);
+   	  },
+
+   	  getMemoryOptimizedFloatTextureSize(dimensions, bitRatio) {
+   	    const totalArea = utils.roundTo((dimensions[0] || 1) * (dimensions[1] || 1) * (dimensions[2] || 1) * (dimensions[3] || 1), 4);
+   	    const texelCount = totalArea / bitRatio;
+   	    return utils.closestSquareDimensions(texelCount);
+   	  },
+
+   	  getMemoryOptimizedPackedTextureSize(dimensions, bitRatio) {
+   	    const [w, h, d] = dimensions;
+   	    const totalArea = utils.roundTo((w || 1) * (h || 1) * (d || 1), 4);
+   	    const texelCount = totalArea / (4 / bitRatio);
+   	    return utils.closestSquareDimensions(texelCount);
+   	  },
+
+   	  roundTo(n, d) {
+   	    return Math.floor((n + d - 1) / d) * d;
+   	  },
+   	  getDimensions(x, pad) {
+   	    let ret;
+   	    if (utils.isArray(x)) {
+   	      const dim = [];
+   	      let temp = x;
+   	      while (utils.isArray(temp)) {
+   	        dim.push(temp.length);
+   	        temp = temp[0];
+   	      }
+   	      ret = dim.reverse();
+   	    } else if (x instanceof Texture) {
+   	      ret = x.output;
+   	    } else if (x instanceof Input) {
+   	      ret = x.size;
+   	    } else {
+   	      throw new Error(`Unknown dimensions of ${x}`);
+   	    }
+
+   	    if (pad) {
+   	      ret = Array.from(ret);
+   	      while (ret.length < 3) {
+   	        ret.push(1);
+   	      }
+   	    }
+
+   	    return new Int32Array(ret);
+   	  },
+
+   	  flatten2dArrayTo(array, target) {
+   	    let offset = 0;
+   	    for (let y = 0; y < array.length; y++) {
+   	      target.set(array[y], offset);
+   	      offset += array[y].length;
+   	    }
+   	  },
+
+   	  flatten3dArrayTo(array, target) {
+   	    let offset = 0;
+   	    for (let z = 0; z < array.length; z++) {
+   	      for (let y = 0; y < array[z].length; y++) {
+   	        target.set(array[z][y], offset);
+   	        offset += array[z][y].length;
+   	      }
+   	    }
+   	  },
+
+   	  flatten4dArrayTo(array, target) {
+   	    let offset = 0;
+   	    for (let l = 0; l < array.length; l++) {
+   	      for (let z = 0; z < array[l].length; z++) {
+   	        for (let y = 0; y < array[l][z].length; y++) {
+   	          target.set(array[l][z][y], offset);
+   	          offset += array[l][z][y].length;
+   	        }
+   	      }
+   	    }
+   	  },
+
+   	  flattenTo(array, target) {
+   	    if (utils.isArray(array[0])) {
+   	      if (utils.isArray(array[0][0])) {
+   	        if (utils.isArray(array[0][0][0])) {
+   	          utils.flatten4dArrayTo(array, target);
+   	        } else {
+   	          utils.flatten3dArrayTo(array, target);
+   	        }
+   	      } else {
+   	        utils.flatten2dArrayTo(array, target);
+   	      }
+   	    } else {
+   	      target.set(array);
+   	    }
+   	  },
+
+   	  splitArray(array, part) {
+   	    const result = [];
+   	    for (let i = 0; i < array.length; i += part) {
+   	      result.push(new array.constructor(array.buffer, i * 4 + array.byteOffset, part));
+   	    }
+   	    return result;
+   	  },
+
+   	  getAstString(source, ast) {
+   	    const lines = Array.isArray(source) ? source : source.split(/\r?\n/g);
+   	    const start = ast.loc.start;
+   	    const end = ast.loc.end;
+   	    const result = [];
+   	    if (start.line === end.line) {
+   	      result.push(lines[start.line - 1].substring(start.column, end.column));
+   	    } else {
+   	      result.push(lines[start.line - 1].slice(start.column));
+   	      for (let i = start.line; i < end.line; i++) {
+   	        result.push(lines[i]);
+   	      }
+   	      result.push(lines[end.line - 1].slice(0, end.column));
+   	    }
+   	    return result.join('\n');
+   	  },
+
+   	  allPropertiesOf(obj) {
+   	    const props = [];
+
+   	    do {
+   	      props.push.apply(props, Object.getOwnPropertyNames(obj));
+   	    } while (obj = Object.getPrototypeOf(obj));
+
+   	    return props;
+   	  },
+
+   	  linesToString(lines) {
+   	    if (lines.length > 0) {
+   	      return lines.join(';\n') + ';\n';
+   	    } else {
+   	      return '\n';
+   	    }
+   	  },
+   	  warnDeprecated(type, oldName, newName) {
+   	    if (newName) {
+   	      console.warn(`You are using a deprecated ${ type } "${ oldName }". It has been replaced with "${ newName }". Fixing, but please upgrade as it will soon be removed.`);
+   	    } else {
+   	      console.warn(`You are using a deprecated ${ type } "${ oldName }". It has been removed. Fixing, but please upgrade as it will soon be removed.`);
+   	    }
+   	  },
+   	  flipPixels: (pixels, width, height) => {
+   	    const halfHeight = height / 2 | 0; 
+   	    const bytesPerRow = width * 4;
+   	    const temp = new Uint8ClampedArray(width * 4);
+   	    const result = pixels.slice(0);
+   	    for (let y = 0; y < halfHeight; ++y) {
+   	      const topOffset = y * bytesPerRow;
+   	      const bottomOffset = (height - y - 1) * bytesPerRow;
+
+   	      temp.set(result.subarray(topOffset, topOffset + bytesPerRow));
+
+   	      result.copyWithin(topOffset, bottomOffset, bottomOffset + bytesPerRow);
+
+   	      result.set(temp, bottomOffset);
+   	    }
+   	    return result;
+   	  },
+   	  erectPackedFloat: (array, width) => {
+   	    return array.subarray(0, width);
+   	  },
+   	  erect2DPackedFloat: (array, width, height) => {
+   	    const yResults = new Array(height);
+   	    for (let y = 0; y < height; y++) {
+   	      const xStart = y * width;
+   	      const xEnd = xStart + width;
+   	      yResults[y] = array.subarray(xStart, xEnd);
+   	    }
+   	    return yResults;
+   	  },
+   	  erect3DPackedFloat: (array, width, height, depth) => {
+   	    const zResults = new Array(depth);
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const xStart = (z * height * width) + y * width;
+   	        const xEnd = xStart + width;
+   	        yResults[y] = array.subarray(xStart, xEnd);
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+   	  erectMemoryOptimizedFloat: (array, width) => {
+   	    return array.subarray(0, width);
+   	  },
+   	  erectMemoryOptimized2DFloat: (array, width, height) => {
+   	    const yResults = new Array(height);
+   	    for (let y = 0; y < height; y++) {
+   	      const offset = y * width;
+   	      yResults[y] = array.subarray(offset, offset + width);
+   	    }
+   	    return yResults;
+   	  },
+   	  erectMemoryOptimized3DFloat: (array, width, height, depth) => {
+   	    const zResults = new Array(depth);
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const offset = (z * height * width) + (y * width);
+   	        yResults[y] = array.subarray(offset, offset + width);
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+   	  erectFloat: (array, width) => {
+   	    const xResults = new Float32Array(width);
+   	    let i = 0;
+   	    for (let x = 0; x < width; x++) {
+   	      xResults[x] = array[i];
+   	      i += 4;
+   	    }
+   	    return xResults;
+   	  },
+   	  erect2DFloat: (array, width, height) => {
+   	    const yResults = new Array(height);
+   	    let i = 0;
+   	    for (let y = 0; y < height; y++) {
+   	      const xResults = new Float32Array(width);
+   	      for (let x = 0; x < width; x++) {
+   	        xResults[x] = array[i];
+   	        i += 4;
+   	      }
+   	      yResults[y] = xResults;
+   	    }
+   	    return yResults;
+   	  },
+   	  erect3DFloat: (array, width, height, depth) => {
+   	    const zResults = new Array(depth);
+   	    let i = 0;
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const xResults = new Float32Array(width);
+   	        for (let x = 0; x < width; x++) {
+   	          xResults[x] = array[i];
+   	          i += 4;
+   	        }
+   	        yResults[y] = xResults;
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+   	  erectArray2: (array, width) => {
+   	    const xResults = new Array(width);
+   	    const xResultsMax = width * 4;
+   	    let i = 0;
+   	    for (let x = 0; x < xResultsMax; x += 4) {
+   	      xResults[i++] = array.subarray(x, x + 2);
+   	    }
+   	    return xResults;
+   	  },
+   	  erect2DArray2: (array, width, height) => {
+   	    const yResults = new Array(height);
+   	    const XResultsMax = width * 4;
+   	    for (let y = 0; y < height; y++) {
+   	      const xResults = new Array(width);
+   	      const offset = y * XResultsMax;
+   	      let i = 0;
+   	      for (let x = 0; x < XResultsMax; x += 4) {
+   	        xResults[i++] = array.subarray(x + offset, x + offset + 2);
+   	      }
+   	      yResults[y] = xResults;
+   	    }
+   	    return yResults;
+   	  },
+   	  erect3DArray2: (array, width, height, depth) => {
+   	    const xResultsMax = width * 4;
+   	    const zResults = new Array(depth);
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const xResults = new Array(width);
+   	        const offset = (z * xResultsMax * height) + (y * xResultsMax);
+   	        let i = 0;
+   	        for (let x = 0; x < xResultsMax; x += 4) {
+   	          xResults[i++] = array.subarray(x + offset, x + offset + 2);
+   	        }
+   	        yResults[y] = xResults;
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+   	  erectArray3: (array, width) => {
+   	    const xResults = new Array(width);
+   	    const xResultsMax = width * 4;
+   	    let i = 0;
+   	    for (let x = 0; x < xResultsMax; x += 4) {
+   	      xResults[i++] = array.subarray(x, x + 3);
+   	    }
+   	    return xResults;
+   	  },
+   	  erect2DArray3: (array, width, height) => {
+   	    const xResultsMax = width * 4;
+   	    const yResults = new Array(height);
+   	    for (let y = 0; y < height; y++) {
+   	      const xResults = new Array(width);
+   	      const offset = y * xResultsMax;
+   	      let i = 0;
+   	      for (let x = 0; x < xResultsMax; x += 4) {
+   	        xResults[i++] = array.subarray(x + offset, x + offset + 3);
+   	      }
+   	      yResults[y] = xResults;
+   	    }
+   	    return yResults;
+   	  },
+   	  erect3DArray3: (array, width, height, depth) => {
+   	    const xResultsMax = width * 4;
+   	    const zResults = new Array(depth);
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const xResults = new Array(width);
+   	        const offset = (z * xResultsMax * height) + (y * xResultsMax);
+   	        let i = 0;
+   	        for (let x = 0; x < xResultsMax; x += 4) {
+   	          xResults[i++] = array.subarray(x + offset, x + offset + 3);
+   	        }
+   	        yResults[y] = xResults;
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+   	  erectArray4: (array, width) => {
+   	    const xResults = new Array(array);
+   	    const xResultsMax = width * 4;
+   	    let i = 0;
+   	    for (let x = 0; x < xResultsMax; x += 4) {
+   	      xResults[i++] = array.subarray(x, x + 4);
+   	    }
+   	    return xResults;
+   	  },
+   	  erect2DArray4: (array, width, height) => {
+   	    const xResultsMax = width * 4;
+   	    const yResults = new Array(height);
+   	    for (let y = 0; y < height; y++) {
+   	      const xResults = new Array(width);
+   	      const offset = y * xResultsMax;
+   	      let i = 0;
+   	      for (let x = 0; x < xResultsMax; x += 4) {
+   	        xResults[i++] = array.subarray(x + offset, x + offset + 4);
+   	      }
+   	      yResults[y] = xResults;
+   	    }
+   	    return yResults;
+   	  },
+   	  erect3DArray4: (array, width, height, depth) => {
+   	    const xResultsMax = width * 4;
+   	    const zResults = new Array(depth);
+   	    for (let z = 0; z < depth; z++) {
+   	      const yResults = new Array(height);
+   	      for (let y = 0; y < height; y++) {
+   	        const xResults = new Array(width);
+   	        const offset = (z * xResultsMax * height) + (y * xResultsMax);
+   	        let i = 0;
+   	        for (let x = 0; x < xResultsMax; x += 4) {
+   	          xResults[i++] = array.subarray(x + offset, x + offset + 4);
+   	        }
+   	        yResults[y] = xResults;
+   	      }
+   	      zResults[z] = yResults;
+   	    }
+   	    return zResults;
+   	  },
+
+   	  flattenFunctionToString: (source, settings) => {
+   	    const { findDependency, thisLookup, doNotDefine } = settings;
+   	    let flattened = settings.flattened;
+   	    if (!flattened) {
+   	      flattened = settings.flattened = {};
+   	    }
+   	    const ast = acorn.parse(source);
+   	    const functionDependencies = [];
+   	    let indent = 0;
+
+   	    function flatten(ast) {
+   	      if (Array.isArray(ast)) {
+   	        const results = [];
+   	        for (let i = 0; i < ast.length; i++) {
+   	          results.push(flatten(ast[i]));
+   	        }
+   	        return results.join('');
+   	      }
+   	      switch (ast.type) {
+   	        case 'Program':
+   	          return flatten(ast.body) + (ast.body[0].type === 'VariableDeclaration' ? ';' : '');
+   	        case 'FunctionDeclaration':
+   	          return `function ${ast.id.name}(${ast.params.map(flatten).join(', ')}) ${ flatten(ast.body) }`;
+   	        case 'BlockStatement': {
+   	          const result = [];
+   	          indent += 2;
+   	          for (let i = 0; i < ast.body.length; i++) {
+   	            const flat = flatten(ast.body[i]);
+   	            if (flat) {
+   	              result.push(' '.repeat(indent) + flat, ';\n');
+   	            }
+   	          }
+   	          indent -= 2;
+   	          return `{\n${result.join('')}}`;
+   	        }
+   	        case 'VariableDeclaration':
+   	          const declarations = utils.normalizeDeclarations(ast)
+   	            .map(flatten)
+   	            .filter(r => r !== null);
+   	          if (declarations.length < 1) {
+   	            return '';
+   	          } else {
+   	            return `${ast.kind} ${declarations.join(',')}`;
+   	          }
+   	          case 'VariableDeclarator':
+   	            if (ast.init.object && ast.init.object.type === 'ThisExpression') {
+   	              const lookup = thisLookup(ast.init.property.name, true);
+   	              if (lookup) {
+   	                return `${ast.id.name} = ${flatten(ast.init)}`;
+   	              } else {
+   	                return null;
+   	              }
+   	            } else {
+   	              return `${ast.id.name} = ${flatten(ast.init)}`;
+   	            }
+   	            case 'CallExpression': {
+   	              if (ast.callee.property.name === 'subarray') {
+   	                return `${flatten(ast.callee.object)}.${flatten(ast.callee.property)}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	              }
+   	              if (ast.callee.object.name === 'gl' || ast.callee.object.name === 'context') {
+   	                return `${flatten(ast.callee.object)}.${flatten(ast.callee.property)}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	              }
+   	              if (ast.callee.object.type === 'ThisExpression') {
+   	                functionDependencies.push(findDependency('this', ast.callee.property.name));
+   	                return `${ast.callee.property.name}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	              } else if (ast.callee.object.name) {
+   	                const foundSource = findDependency(ast.callee.object.name, ast.callee.property.name);
+   	                if (foundSource === null) {
+   	                  return `${ast.callee.object.name}.${ast.callee.property.name}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	                } else {
+   	                  functionDependencies.push(foundSource);
+   	                  return `${ast.callee.property.name}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	                }
+   	              } else if (ast.callee.object.type === 'MemberExpression') {
+   	                return `${flatten(ast.callee.object)}.${ast.callee.property.name}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	              } else {
+   	                throw new Error('unknown ast.callee');
+   	              }
+   	            }
+   	            case 'ReturnStatement':
+   	              return `return ${flatten(ast.argument)}`;
+   	            case 'BinaryExpression':
+   	              return `(${flatten(ast.left)}${ast.operator}${flatten(ast.right)})`;
+   	            case 'UnaryExpression':
+   	              if (ast.prefix) {
+   	                return `${ast.operator} ${flatten(ast.argument)}`;
+   	              } else {
+   	                return `${flatten(ast.argument)} ${ast.operator}`;
+   	              }
+   	              case 'ExpressionStatement':
+   	                return `${flatten(ast.expression)}`;
+   	              case 'SequenceExpression':
+   	                return `(${flatten(ast.expressions)})`;
+   	              case 'ArrowFunctionExpression':
+   	                return `(${ast.params.map(flatten).join(', ')}) => ${flatten(ast.body)}`;
+   	              case 'Literal':
+   	                return ast.raw;
+   	              case 'Identifier':
+   	                return ast.name;
+   	              case 'MemberExpression':
+   	                if (ast.object.type === 'ThisExpression') {
+   	                  return thisLookup(ast.property.name);
+   	                }
+   	                if (ast.computed) {
+   	                  return `${flatten(ast.object)}[${flatten(ast.property)}]`;
+   	                }
+   	                return flatten(ast.object) + '.' + flatten(ast.property);
+   	              case 'ThisExpression':
+   	                return 'this';
+   	              case 'NewExpression':
+   	                return `new ${flatten(ast.callee)}(${ast.arguments.map(value => flatten(value)).join(', ')})`;
+   	              case 'ForStatement':
+   	                return `for (${flatten(ast.init)};${flatten(ast.test)};${flatten(ast.update)}) ${flatten(ast.body)}`;
+   	              case 'AssignmentExpression':
+   	                return `${flatten(ast.left)}${ast.operator}${flatten(ast.right)}`;
+   	              case 'UpdateExpression':
+   	                return `${flatten(ast.argument)}${ast.operator}`;
+   	              case 'IfStatement':
+   	                return `if (${flatten(ast.test)}) ${flatten(ast.consequent)}`;
+   	              case 'ThrowStatement':
+   	                return `throw ${flatten(ast.argument)}`;
+   	              case 'ObjectPattern':
+   	                return ast.properties.map(flatten).join(', ');
+   	              case 'ArrayPattern':
+   	                return ast.elements.map(flatten).join(', ');
+   	              case 'DebuggerStatement':
+   	                return 'debugger;';
+   	              case 'ConditionalExpression':
+   	                return `${flatten(ast.test)}?${flatten(ast.consequent)}:${flatten(ast.alternate)}`;
+   	              case 'Property':
+   	                if (ast.kind === 'init') {
+   	                  return flatten(ast.key);
+   	                }
+   	      }
+   	      throw new Error(`unhandled ast.type of ${ ast.type }`);
+   	    }
+   	    const result = flatten(ast);
+   	    if (functionDependencies.length > 0) {
+   	      const flattenedFunctionDependencies = [];
+   	      for (let i = 0; i < functionDependencies.length; i++) {
+   	        const functionDependency = functionDependencies[i];
+   	        if (!flattened[functionDependency]) {
+   	          flattened[functionDependency] = true;
+   	        }
+   	        functionDependency ? flattenedFunctionDependencies.push(utils.flattenFunctionToString(functionDependency, settings) + '\n') : '';
+   	      }
+   	      return flattenedFunctionDependencies.join('') + result;
+   	    }
+   	    return result;
+   	  },
+
+   	  normalizeDeclarations: (ast) => {
+   	    if (ast.type !== 'VariableDeclaration') throw new Error('Ast is not of type "VariableDeclaration"');
+   	    const normalizedDeclarations = [];
+   	    for (let declarationIndex = 0; declarationIndex < ast.declarations.length; declarationIndex++) {
+   	      const declaration = ast.declarations[declarationIndex];
+   	      if (declaration.id && declaration.id.type === 'ObjectPattern' && declaration.id.properties) {
+   	        const { properties } = declaration.id;
+   	        for (let propertyIndex = 0; propertyIndex < properties.length; propertyIndex++) {
+   	          const property = properties[propertyIndex];
+   	          if (property.value.type === 'ObjectPattern' && property.value.properties) {
+   	            for (let subPropertyIndex = 0; subPropertyIndex < property.value.properties.length; subPropertyIndex++) {
+   	              const subProperty = property.value.properties[subPropertyIndex];
+   	              if (subProperty.type === 'Property') {
+   	                normalizedDeclarations.push({
+   	                  type: 'VariableDeclarator',
+   	                  id: {
+   	                    type: 'Identifier',
+   	                    name: subProperty.key.name
+   	                  },
+   	                  init: {
+   	                    type: 'MemberExpression',
+   	                    object: {
+   	                      type: 'MemberExpression',
+   	                      object: declaration.init,
+   	                      property: {
+   	                        type: 'Identifier',
+   	                        name: property.key.name
+   	                      },
+   	                      computed: false
+   	                    },
+   	                    property: {
+   	                      type: 'Identifier',
+   	                      name: subProperty.key.name
+   	                    },
+   	                    computed: false
+   	                  }
+   	                });
+   	              } else {
+   	                throw new Error('unexpected state');
+   	              }
+   	            }
+   	          } else if (property.value.type === 'Identifier') {
+   	            normalizedDeclarations.push({
+   	              type: 'VariableDeclarator',
+   	              id: {
+   	                type: 'Identifier',
+   	                name: property.value && property.value.name ? property.value.name : property.key.name
+   	              },
+   	              init: {
+   	                type: 'MemberExpression',
+   	                object: declaration.init,
+   	                property: {
+   	                  type: 'Identifier',
+   	                  name: property.key.name
+   	                },
+   	                computed: false
+   	              }
+   	            });
+   	          } else {
+   	            throw new Error('unexpected state');
+   	          }
+   	        }
+   	      } else if (declaration.id && declaration.id.type === 'ArrayPattern' && declaration.id.elements) {
+   	        const { elements } = declaration.id;
+   	        for (let elementIndex = 0; elementIndex < elements.length; elementIndex++) {
+   	          const element = elements[elementIndex];
+   	          if (element.type === 'Identifier') {
+   	            normalizedDeclarations.push({
+   	              type: 'VariableDeclarator',
+   	              id: {
+   	                type: 'Identifier',
+   	                name: element.name
+   	              },
+   	              init: {
+   	                type: 'MemberExpression',
+   	                object: declaration.init,
+   	                property: {
+   	                  type: 'Literal',
+   	                  value: elementIndex,
+   	                  raw: elementIndex.toString(),
+   	                  start: element.start,
+   	                  end: element.end
+   	                },
+   	                computed: true
+   	              }
+   	            });
+   	          } else {
+   	            throw new Error('unexpected state');
+   	          }
+   	        }
+   	      } else {
+   	        normalizedDeclarations.push(declaration);
+   	      }
+   	    }
+   	    return normalizedDeclarations;
+   	  },
+
+   	  splitHTMLImageToRGB: (gpu, image) => {
+   	    const rKernel = gpu.createKernel(function(a) {
+   	      const pixel = a[this.thread.y][this.thread.x];
+   	      return pixel.r * 255;
+   	    }, {
+   	      output: [image.width, image.height],
+   	      precision: 'unsigned',
+   	      argumentTypes: { a: 'HTMLImage' },
+   	    });
+   	    const gKernel = gpu.createKernel(function(a) {
+   	      const pixel = a[this.thread.y][this.thread.x];
+   	      return pixel.g * 255;
+   	    }, {
+   	      output: [image.width, image.height],
+   	      precision: 'unsigned',
+   	      argumentTypes: { a: 'HTMLImage' },
+   	    });
+   	    const bKernel = gpu.createKernel(function(a) {
+   	      const pixel = a[this.thread.y][this.thread.x];
+   	      return pixel.b * 255;
+   	    }, {
+   	      output: [image.width, image.height],
+   	      precision: 'unsigned',
+   	      argumentTypes: { a: 'HTMLImage' },
+   	    });
+   	    const aKernel = gpu.createKernel(function(a) {
+   	      const pixel = a[this.thread.y][this.thread.x];
+   	      return pixel.a * 255;
+   	    }, {
+   	      output: [image.width, image.height],
+   	      precision: 'unsigned',
+   	      argumentTypes: { a: 'HTMLImage' },
+   	    });
+   	    const result = [
+   	      rKernel(image),
+   	      gKernel(image),
+   	      bKernel(image),
+   	      aKernel(image),
+   	    ];
+   	    result.rKernel = rKernel;
+   	    result.gKernel = gKernel;
+   	    result.bKernel = bKernel;
+   	    result.aKernel = aKernel;
+   	    result.gpu = gpu;
+   	    return result;
+   	  },
+
+   	  splitRGBAToCanvases: (gpu, rgba, width, height) => {
+   	    const visualKernelR = gpu.createKernel(function(v) {
+   	      const pixel = v[this.thread.y][this.thread.x];
+   	      this.color(pixel.r / 255, 0, 0, 255);
+   	    }, {
+   	      output: [width, height],
+   	      graphical: true,
+   	      argumentTypes: { v: 'Array2D(4)' }
+   	    });
+   	    visualKernelR(rgba);
+
+   	    const visualKernelG = gpu.createKernel(function(v) {
+   	      const pixel = v[this.thread.y][this.thread.x];
+   	      this.color(0, pixel.g / 255, 0, 255);
+   	    }, {
+   	      output: [width, height],
+   	      graphical: true,
+   	      argumentTypes: { v: 'Array2D(4)' }
+   	    });
+   	    visualKernelG(rgba);
+
+   	    const visualKernelB = gpu.createKernel(function(v) {
+   	      const pixel = v[this.thread.y][this.thread.x];
+   	      this.color(0, 0, pixel.b / 255, 255);
+   	    }, {
+   	      output: [width, height],
+   	      graphical: true,
+   	      argumentTypes: { v: 'Array2D(4)' }
+   	    });
+   	    visualKernelB(rgba);
+
+   	    const visualKernelA = gpu.createKernel(function(v) {
+   	      const pixel = v[this.thread.y][this.thread.x];
+   	      this.color(255, 255, 255, pixel.a / 255);
+   	    }, {
+   	      output: [width, height],
+   	      graphical: true,
+   	      argumentTypes: { v: 'Array2D(4)' }
+   	    });
+   	    visualKernelA(rgba);
+   	    return [
+   	      visualKernelR.canvas,
+   	      visualKernelG.canvas,
+   	      visualKernelB.canvas,
+   	      visualKernelA.canvas,
+   	    ];
+   	  },
+
+   	  getMinifySafeName: (fn) => {
+   	    try {
+   	      const ast = acorn.parse(`const value = ${fn.toString()}`);
+   	      const { init } = ast.body[0].declarations[0];
+   	      return init.body.name || init.body.body[0].argument.name;
+   	    } catch (e) {
+   	      throw new Error('Unrecognized function type.  Please use `() => yourFunctionVariableHere` or function() { return yourFunctionVariableHere; }');
+   	    }
+   	  },
+   	  sanitizeName: function(name) {
+   	    if (dollarSign.test(name)) {
+   	      name = name.replace(dollarSign, 'S_S');
+   	    }
+   	    if (doubleUnderscore.test(name)) {
+   	      name = name.replace(doubleUnderscore, 'U_U');
+   	    } else if (singleUnderscore.test(name)) {
+   	      name = name.replace(singleUnderscore, 'u_u');
+   	    }
+   	    return name;
+   	  }
+   	};
+
+   	const dollarSign = /\$/;
+   	const doubleUnderscore = /__/;
+   	const singleUnderscore = /_/;
+
+   	const _systemEndianness = utils.getSystemEndianness();
+
+   	module.exports = {
+   	  utils
+   	};
+   	},{"./input":110,"./texture":113,"acorn":1}]},{},[107])(107)
+   	});
+   } (gpuBrowser));
+
+   class Bitfolly {
+     constructor(getAudioData, canvas) {
+       if (!canvas) {
+         canvas = document.createElement("canvas");
+         canvas.width = Math.floor(window.innerWidth);
+         canvas.height = Math.floor(window.innerHeight);
+       }
+       this.gpu = new gpuBrowserExports.GPU({canvas});
+       this.canvas = canvas;
+       this.getAudioData = getAudioData || (() => []);
+       this.started = false;
+       this.audioTime = 0;
+       this.previousTime = 0;
+       this.start();
+     }
+
+     callKernel(kernel) {
+       let width = this.canvas.width;
+       let height = this.canvas.height;
+       let audioData = this.getAudioData();
+       this.audioTime += audioData.reduce((a,b) => a+b, 0)/1000;
+       kernel(this.previousTime, this.canvas, width, height, audioData, this.audioTime);
+     }
+
+     update(code) {
+       const codeFn = Function("t", "p", "w", "h", "a", "at", `
+      let x = this.thread.x;
+      let y = this.thread.y;
+      let c = [-1,-1,-1,-1];
+      let o = -1;
+      ${/\w\s=\s/.test(code) ? code : "o = " + code}
+      if (c[0] !== -1 || c[1] !== -1 || c[2] !== -1 || c[3] !== -1) {
+        this.color(
+          c[0]==-1?0:c[0]/255,
+          c[1]==-1?0:c[1]/255,
+          c[2]==-1?0:c[2]/255,
+          c[3]==-1?0:c[3]/255,
+        );
+      } else {
+        o = o==-1?0:o/255;
+        this.color(o, o, o, 1);
+      }
+    `);
+       let width = this.canvas.width;
+       let height = this.canvas.height;
+       let kernel = this.gpu.createKernel(codeFn)
+         .setOutput([width, height])
+         .setGraphical(true);
+       // Call it to catch errors early
+       this.callKernel(kernel);
+       this.kernel = kernel;
+     }
+
+     render(time) {
+       this.previousTime = time;
+       if (this.kernel) {
+         try {
+           this.callKernel(this.kernel);
+         } catch (err) {
+           console.error(err);
+         }
+       }
+       requestAnimationFrame(this.render.bind(this));
+     }
+
+     start() {
+       if (!this.started) {
+         this.started = true;
+         requestAnimationFrame(this.render.bind(this));
+       }
+     }
+   }
+
    // basicSetup imports
 
-
-   const canvas = document.getElementById("canvas");
-   canvas.width = Math.floor(window.innerWidth);
-   canvas.height = Math.floor(window.innerHeight);
-   const width = canvas.width;
-   const height = canvas.height;
-   const gpu = new GPU({canvas});
-   let kernel;
-   let previousTime;
    const audioCtx = new AudioContext();
    if (audioCtx.state === 'suspended') {
        const unlock = () => {
@@ -31958,11 +51307,14 @@
    });
    const samples = analyser.frequencyBinCount;
    const audioData = new Uint8Array(samples);
-   let audioTime = 0;
 
-   function isStatement(code) {
-     return /\w\s=\s/.test(code);
-   }
+   const canvas = document.getElementById("canvas");
+   canvas.width = Math.floor(window.innerWidth);
+   canvas.height = Math.floor(window.innerHeight);
+   const bitfolly = new Bitfolly(() => {
+     analyser.getByteFrequencyData(audioData);
+     return audioData;
+   }, canvas);
 
    let errors = [];
    function errorLint(view) {
@@ -31977,31 +51329,8 @@
    }
 
    function evalCode(code, view) {
-     let newKernel;
      try {
-       const codeFn = Function("t", "p", "w", "h", "a", "at", `
-      let x = this.thread.x;
-      let y = this.thread.y;
-      let c = [-1,-1,-1,-1];
-      let o = -1;
-      ${isStatement(code) ? code : "o = " + code}
-      if (c[0] !== -1 || c[1] !== -1 || c[2] !== -1 || c[3] !== -1) {
-        this.color(
-          c[0]==-1?0:c[0]/255,
-          c[1]==-1?0:c[1]/255,
-          c[2]==-1?0:c[2]/255,
-          c[3]==-1?0:c[3]/255,
-        );
-      } else {
-        o = o==-1?0:o/255;
-        this.color(o, o, o, 1);
-      }
-    `);
-       newKernel = gpu.createKernel(codeFn)
-         .setDebug(true)
-         .setOutput([width, height])
-         .setGraphical(true);
-       newKernel(previousTime, canvas, width, height, audioData, audioTime);
+       bitfolly.update(code);
      } catch (err) {
        errors = [err];
        console.error(err);
@@ -32009,7 +51338,6 @@
        view?.setState(view?.state);
        return true;
      }
-     kernel = newKernel;
      params.set("c", code);
      window.history.pushState({}, '', `${location.pathname}?${params.toString()}`);
      errors = [];
@@ -32096,21 +51424,6 @@
    Vim.defineEx('write', 'w', function() {
      evalCode(editor.state.doc.toString(), editor);
    });
-
-   function render(time) {
-     previousTime = time;
-     if (kernel) {
-       analyser.getByteFrequencyData(audioData );
-       audioTime += audioData.reduce((a,b) => a+b, 0)/1000;
-       try {
-         kernel(time, canvas, width, height, audioData, audioTime);
-       } catch (err) {
-         console.error(err);
-       }
-     }
-     requestAnimationFrame(render);
-   }
-   requestAnimationFrame(render);
 
    exports.basicSetup = basicSetup;
 
